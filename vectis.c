@@ -30,8 +30,8 @@
 #define BUFFER_SIZE 4096
 #define RESET_PULSE_MS 200
 #define DEFAULT_TCP_PORT 35240
-#define PROGRAM_VERSION "1.1.0"
-#define PROGRAM_BUILD_DATE __DATE__
+#define PROGRAM_VERSION "1.1.1"
+#define PROGRAM_RELEASE_DATE "2026-04-30"
 
 // Global variables
 volatile sig_atomic_t running = 1;
@@ -114,6 +114,10 @@ void signal_handler(int sig) {
 // Configure the terminal for raw input.
 int setup_terminal() {
     struct termios new_termios;
+
+    if (!isatty(STDIN_FILENO)) {
+        return 0;
+    }
     
     // Read current terminal settings.
     if (tcgetattr(STDIN_FILENO, &orig_termios) != 0) {
@@ -290,6 +294,43 @@ static void set_tcp_echo_suppression(const char *data, size_t len)
     tcp_echo_len = len;
 }
 
+static size_t filter_input_buffer(const char *src, size_t len, char *dst, size_t dst_size, int allow_exit_keys,
+                                  int *reset_requested, int *exit_requested)
+{
+    size_t out = 0;
+
+    if (reset_requested != NULL) {
+        *reset_requested = 0;
+    }
+    if (exit_requested != NULL) {
+        *exit_requested = 0;
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)src[i];
+
+        if (ch == 16) {
+            if (reset_requested != NULL) {
+                *reset_requested = 1;
+            }
+            continue;
+        }
+
+        if (allow_exit_keys && (ch == 3 || ch == 24)) {
+            if (exit_requested != NULL) {
+                *exit_requested = 1;
+            }
+            continue;
+        }
+
+        if (out < dst_size) {
+            dst[out++] = (char)ch;
+        }
+    }
+
+    return out;
+}
+
 static size_t normalize_tcp_input(const char *src, size_t len, char *dst, size_t dst_size)
 {
     size_t out = 0;
@@ -419,16 +460,24 @@ static void accept_tcp_client(void)
 static void handle_tcp_client_input(void)
 {
     char buffer[BUFFER_SIZE];
+    char filtered[BUFFER_SIZE];
     char normalized[BUFFER_SIZE];
+    int reset_requested;
     ssize_t n = read(tcp_client_fd, buffer, sizeof(buffer));
 
     if (n > 0) {
-        if (n == 1 && buffer[0] == 16) {
+        size_t filtered_len = filter_input_buffer(buffer, (size_t)n, filtered, sizeof(filtered), 0,
+                                                 &reset_requested, NULL);
+
+        if (reset_requested) {
             generate_reset_pulse();
+        }
+
+        if (filtered_len == 0) {
             return;
         }
 
-        size_t normalized_len = normalize_tcp_input(buffer, (size_t)n, normalized, sizeof(normalized));
+        size_t normalized_len = normalize_tcp_input(filtered, filtered_len, normalized, sizeof(normalized));
 
         if (write_all(fd, normalized, normalized_len) != 0) {
             log_errno_message("Failed to write TCP input to UART");
@@ -561,7 +610,7 @@ void show_signal_status() {
 void print_help(const char *program_name) {
     printf("Vectis UART terminal with reset pulse support\n\n");
     printf("Version: %s\n", PROGRAM_VERSION);
-    printf("Build date: %s\n\n", PROGRAM_BUILD_DATE);
+    printf("Release date: %s\n\n", PROGRAM_RELEASE_DATE);
     printf("Usage: %s [options]\n\n", program_name);
     printf("Options:\n");
     printf("  -p, --port <port>     Serial port (default: /dev/ttyUSB0)\n");
@@ -588,7 +637,7 @@ void print_help(const char *program_name) {
 static void print_version(const char *program_name)
 {
     printf("%s %s\n", program_name, PROGRAM_VERSION);
-    printf("Build date: %s\n", PROGRAM_BUILD_DATE);
+    printf("Release date: %s\n", PROGRAM_RELEASE_DATE);
 }
 
 int main(int argc, char *argv[]) {
@@ -672,7 +721,7 @@ int main(int argc, char *argv[]) {
     printf("==========================================\n");
     printf("Vectis started\n");
     printf("Version: %s\n", PROGRAM_VERSION);
-    printf("Build date: %s\n", PROGRAM_BUILD_DATE);
+    printf("Release date: %s\n", PROGRAM_RELEASE_DATE);
     printf("Startup state: asserted\n");
     printf("Shutdown state: deasserted\n");
     printf("Ctrl+P - Reset pulse (RTS+DTR %d ms)\n", RESET_PULSE_MS);
@@ -693,7 +742,7 @@ int main(int argc, char *argv[]) {
             log_message(LOG_ERR, stderr, "TCP listener unavailable; continuing with console only");
         }
     }
-    
+
     // Configure the terminal for input.
     if (setup_terminal() != 0) {
         goto cleanup;
@@ -755,14 +804,21 @@ int main(int argc, char *argv[]) {
         if (FD_ISSET(STDIN_FILENO, &readfds)) {
             n = read(STDIN_FILENO, buffer, sizeof(buffer));
             if (n > 0) {
-                // Check for Ctrl+P (ASCII 16).
-                if (n == 1 && buffer[0] == 16) {  // Ctrl+P
+                char filtered[BUFFER_SIZE];
+                int reset_requested;
+                int exit_requested;
+                size_t filtered_len = filter_input_buffer(buffer, (size_t)n, filtered, sizeof(filtered), 1,
+                                                         &reset_requested, &exit_requested);
+
+                if (reset_requested) {
                     generate_reset_pulse();
-                } else if (n == 1 && (buffer[0] == 3 || buffer[0] == 24)) {
+                }
+
+                if (exit_requested) {
                     running = 0;
-                } else {
+                } else if (filtered_len > 0) {
                     // Send data to UART.
-                    if (write_all(fd, buffer, (size_t)n) != 0) {
+                    if (write_all(fd, filtered, filtered_len) != 0) {
                         log_errno_message("Failed to write to UART");
                         break;
                     }

@@ -6,6 +6,7 @@
 
 TARGET := vectis
 CC ?= cc
+STRIP ?= strip
 CFLAGS ?= -std=gnu99 -Wall -Wextra -Wpedantic -Os -ffunction-sections -fdata-sections
 LDFLAGS ?= -Wl,--gc-sections
 
@@ -13,6 +14,7 @@ all: $(TARGET)
 
 $(TARGET): vectis.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(STRIP) $@
 
 clean:
 	rm -f $(TARGET)

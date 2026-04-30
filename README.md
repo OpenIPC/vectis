@@ -77,3 +77,13 @@ On Debian/Ubuntu, install `inetd` with:
 sudo apt update
 sudo apt install inetutils-inetd
 ```
+
+## The inittab integration
+
+Vectis can also be started from `inittab` on systems with BusyBox init:
+
+```conf
+# OpenIPC
+#
+ttyS0::respawn:/usr/local/sbin/vectis -s -p /dev/ttyUSB0 -b 115200
+```
