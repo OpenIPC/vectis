@@ -61,7 +61,7 @@ socat -,raw,echo=0 TCP:192.168.1.10:35240
 nc -C 192.168.1.10 35240
 ```
 
-## inetd integration
+## The inetd integration
 
 Vectis can also be launched from `inetd`:
 
@@ -77,8 +77,3 @@ On Debian/Ubuntu, install `inetd` with:
 sudo apt update
 sudo apt install inetutils-inetd
 ```
-
-- Use `-t` and `-s` as short aliases for TCP port and status.
-- Use `-t` without a port to listen on `35240`.
-- Use `-v` as a short alias for version information.
-- Use `make clean` to remove build artifacts.
