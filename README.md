@@ -152,8 +152,10 @@ Wire format (client → server):
 
 ```
 IAC SB COMPORT BOOTROM-CATCH
-    <pulse_ms : 4 bytes BE> <max_wait_ms : 4 bytes BE>
-    [<mode : 1 byte>]                    # optional, default 0 = MARKER
+    <pulse_ms     : 4 bytes BE>
+    <max_wait_ms  : 4 bytes BE>
+    [<mode        : 1 byte>]   # optional, default 0 = MARKER
+    [<min_markers : 1 byte>]   # optional, MARKER threshold; 0 → default (5)
 IAC SE
 ```
 
@@ -163,19 +165,29 @@ IAC SE
 - `max_wait_ms` (clamped to `100..30000`) — overall catch deadline.
   `5000` is a comfortable default.
 - `mode` (optional, default `0`):
-  - `0  MARKER` — wait for 5 consecutive `0x20` markers from the
-    chip, then send a final `0xAA`.  Matches the documented hi3516
-    bootrom protocol; finishes early (typically ~500 ms) when the
-    chip emits markers.  Returns ``OK`` on confirmation, ``TIMEOUT``
-    if no marker run within `max_wait_ms`.
+  - `0  MARKER` — wait for `min_markers` consecutive `0x20` bytes
+    from the chip, then send a final `0xAA`.  Matches the documented
+    hi3516 bootrom protocol; finishes early (typically ~500 ms) when
+    the chip emits markers.  Returns ``OK`` on confirmation,
+    ``TIMEOUT`` if no qualifying run within `max_wait_ms`.
   - `1  BLIND` — keep blasting `0xAA` for the full `max_wait_ms`
     and unconditionally return ``OK``.  Use for chip variants that
     enter download mode silently without emitting markers we can
     observe.  The client confirms by sending a HEAD frame and
     watching for an ACK.
+- `min_markers` (optional, MARKER mode only).  How many *consecutive*
+  `0x20` bytes the chip must emit before the catch is declared
+  successful.  `0` (and the no-byte default) → 5, the canonical
+  HiSilicon protocol value.  Some hi3516 variants emit shorter
+  bursts and need `4` (or even `3`).  Clamped server-side to `1..16`.
+  An adaptive client can issue the catch with `0`, observe the
+  reply's `max_marker_run`, and retry with `min_markers =
+  max_marker_run` if the first attempt timed out — purely
+  protocol-driven, no operator intervention.
 
-Older clients that send only the 8-byte (no-mode) payload default to
-MARKER mode — no behaviour change.
+Older clients that send only the 8-byte (no-mode) or 9-byte
+(no-`min_markers`) payload default to MARKER mode and the canonical
+threshold respectively — no behaviour change.
 
 Wire format (server → client):
 

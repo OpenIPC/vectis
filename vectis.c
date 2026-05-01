@@ -92,7 +92,7 @@
 
 #define BOOTROM_MARKER         0x20
 #define BOOTROM_ACK            0xaa
-#define BOOTROM_MARKER_COUNT   5
+#define BOOTROM_MARKER_COUNT   5  /* default; overridable per-request */
 
 /* Optional 9th payload byte selects how to detect "boot ROM is in
  * download mode":
@@ -219,6 +219,7 @@ struct bootrom_catch_result {
 };
 
 static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
+                                int min_markers,
                                 struct bootrom_catch_result *out);
 
 static void log_message(int priority, FILE *stream, const char *fmt, ...)
@@ -861,6 +862,14 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
         if (mode != BOOTROM_MODE_MARKER && mode != BOOTROM_MODE_BLIND) {
             mode = BOOTROM_MODE_MARKER;
         }
+        /* Optional min_markers byte: how many consecutive 0x20 bytes
+         * the chip must emit before we declare success in MARKER mode.
+         * The standard is 5 (BOOTROM_MARKER_COUNT); some hi3516cv300
+         * variants emit shorter bursts (max 4) and need a lower
+         * threshold.  ``0`` and "byte missing" → use the default. */
+        int min_markers = (len >= 11) ? (int)data[10] : 0;
+        if (min_markers <= 0) min_markers = BOOTROM_MARKER_COUNT;
+        if (min_markers > 16) min_markers = 16;
         /* Clamp to sane bounds so a bad client can't pin the server
          * indefinitely or pulse for an unreasonable duration. */
         if (pulse_ms > 5000)    pulse_ms = 5000;
@@ -868,10 +877,12 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
         if (max_wait_ms < 100)   max_wait_ms = 100;
 
         syslog(LOG_INFO,
-               "bootrom_catch requested: pulse=%u ms, max_wait=%u ms, mode=%d",
-               pulse_ms, max_wait_ms, mode);
+               "bootrom_catch requested: pulse=%u ms, max_wait=%u ms, mode=%d, "
+               "min_markers=%d",
+               pulse_ms, max_wait_ms, mode, min_markers);
         struct bootrom_catch_result r;
-        bootrom_catch_local((int)pulse_ms, (int)max_wait_ms, mode, &r);
+        bootrom_catch_local((int)pulse_ms, (int)max_wait_ms, mode,
+                            min_markers, &r);
 
         /* Reply payload: status (1) + markers_seen (4 BE) + max_run (1)
          * + bytes_rx (4 BE) + bytes_tx (4 BE) + elapsed_ms (4 BE) +
@@ -1280,6 +1291,7 @@ static void generate_reset_pulse(void) {
  * ROM.
  */
 static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
+                                int min_markers,
                                 struct bootrom_catch_result *out)
 {
     memset(out, 0, sizeof(*out));
@@ -1290,8 +1302,10 @@ static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
     }
 
     /* 1. Reset the camera. */
-    syslog(LOG_INFO, "bootrom_catch: start (pulse=%d ms, max_wait=%d ms, mode=%d)",
-           pulse_ms, max_wait_ms, mode);
+    syslog(LOG_INFO,
+           "bootrom_catch: start (pulse=%d ms, max_wait=%d ms, mode=%d, "
+           "min_markers=%d)",
+           pulse_ms, max_wait_ms, mode, min_markers);
     set_signal_state(TIOCM_RTS, 0);
     set_signal_state(TIOCM_DTR, 0);
     usleep((useconds_t)pulse_ms * 1000);
@@ -1388,8 +1402,7 @@ static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
                 } else if (run > 255 && out->max_marker_run < 255) {
                     out->max_marker_run = 255;
                 }
-                if (mode == BOOTROM_MODE_MARKER &&
-                    run >= BOOTROM_MARKER_COUNT) {
+                if (mode == BOOTROM_MODE_MARKER && run >= min_markers) {
                     /* Confirmed.  Send the final 0xAA so the boot ROM
                      * commits to serial-download mode, then return. */
                     unsigned char one = BOOTROM_ACK;
