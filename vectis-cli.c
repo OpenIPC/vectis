@@ -164,7 +164,8 @@ static void restore_terminal(void)
 static void restore_serial(void)
 {
     if (g_dev_tio_saved && g_sock >= 0) {
-        tcsetattr(g_sock, TCSANOW, &g_old_dev_tio);
+        if (tcsetattr(g_sock, TCSANOW, &g_old_dev_tio) != 0)
+            log_errno(LOG_WARNING, "restore_serial: tcsetattr failed");
         g_dev_tio_saved = 0;
     }
 }
@@ -400,28 +401,31 @@ static void handle_negot(uint8_t cmd, uint8_t opt)
 {
     /* Basic policy: accept binary/SGA/com-port and reject everything else.
        We also tell the server that we want binary/SGA/com-port ourselves. */
+    int rc = 0;
     switch (cmd) {
     case DO:
         if (opt == TELOPT_BINARY || opt == TELOPT_SGA || opt == TELOPT_COMPORT)
-            telnet_send_negot(WILL, opt);
+            rc = telnet_send_negot(WILL, opt);
         else
-            telnet_send_negot(WONT, opt);
+            rc = telnet_send_negot(WONT, opt);
         break;
     case DONT:
-        telnet_send_negot(WONT, opt);
+        rc = telnet_send_negot(WONT, opt);
         break;
     case WILL:
         if (opt == TELOPT_BINARY || opt == TELOPT_SGA || opt == TELOPT_ECHO || opt == TELOPT_COMPORT)
-            telnet_send_negot(DO, opt);
+            rc = telnet_send_negot(DO, opt);
         else
-            telnet_send_negot(DONT, opt);
+            rc = telnet_send_negot(DONT, opt);
         break;
     case WONT:
-        telnet_send_negot(DONT, opt);
+        rc = telnet_send_negot(DONT, opt);
         break;
     default:
         break;
     }
+    if (rc < 0)
+        log_errno(LOG_WARNING, "handle_negot: failed to send response for opt %u", (unsigned)opt);
 }
 
 /* Process COM-PORT sub-negotiation replies from the server. */
@@ -481,10 +485,9 @@ static int flush_stdout_buf(uint8_t *out, size_t *pos)
 {
     if (*pos == 0)
         return 0;
-    if (write(STDOUT_FILENO, out, *pos) != (ssize_t)*pos)
-        return -1;
+    int rc = write_all(STDOUT_FILENO, out, *pos);
     *pos = 0;
-    return 0;
+    return rc;
 }
 
 /* Parse a chunk of incoming data. Plain data is written to stdout.
@@ -544,8 +547,14 @@ static int process_incoming(const uint8_t *buf, size_t n)
             if (b == IAC) {
                 g_state = TS_SB_IAC;
             } else {
-                if (g_sb_len < sizeof(g_sb_buf))
+                if (g_sb_len < sizeof(g_sb_buf)) {
                     g_sb_buf[g_sb_len++] = b;
+                } else if (g_sb_len == sizeof(g_sb_buf)) {
+                    /* Log once at the overflow boundary; increment so we don't repeat. */
+                    log_message(LOG_WARNING, "SB payload exceeds %zu bytes, truncating",
+                                sizeof(g_sb_buf));
+                    g_sb_len++;
+                }
             }
             break;
 
@@ -630,6 +639,9 @@ static int connect_to(const char *host, const char *port)
             int one = 1;
             if (setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) != 0)
                 log_errno(LOG_WARNING, "setsockopt(TCP_NODELAY)");
+            /* Enable keep-alive probes so a silent TCP drop is eventually detected. */
+            if (setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one) != 0)
+                log_errno(LOG_WARNING, "setsockopt(SO_KEEPALIVE)");
             break;
         }
         close(s);
@@ -700,7 +712,17 @@ int main(int argc, char **argv)
     while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:v?", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'h': host = optarg; break;
-        case 'p': port = optarg; break;
+        case 'p': {
+            char *endp;
+            errno = 0;
+            long pv = strtol(optarg, &endp, 10);
+            if (errno != 0 || *endp != '\0' || pv < 1 || pv > 65535) {
+                log_message(LOG_ERR, "Invalid port number: %s", optarg);
+                return 1;
+            }
+            port = optarg;
+            break;
+        }
         case 'b': {
             char *endp;
             errno = 0;
@@ -714,8 +736,9 @@ int main(int argc, char **argv)
         }
         case 'd': {
             char *endp;
+            errno = 0;
             long v = strtol(optarg, &endp, 10);
-            if (*endp != '\0') {
+            if (errno != 0 || *endp != '\0') {
                 log_message(LOG_ERR, "Invalid data bits: %s", optarg);
                 return 1;
             }
@@ -724,8 +747,9 @@ int main(int argc, char **argv)
         }
         case 's': {
             char *endp;
+            errno = 0;
             long v = strtol(optarg, &endp, 10);
-            if (*endp != '\0') {
+            if (errno != 0 || *endp != '\0') {
                 log_message(LOG_ERR, "Invalid stop bits: %s", optarg);
                 return 1;
             }
@@ -820,8 +844,14 @@ int main(int argc, char **argv)
         /* Clear O_NONBLOCK so subsequent reads/writes block normally. */
         {
             int flags = fcntl(g_sock, F_GETFL);
-            if (flags >= 0)
-                (void)fcntl(g_sock, F_SETFL, flags & ~O_NONBLOCK);
+            if (flags < 0) {
+                log_errno(LOG_ERR, "fcntl(F_GETFL)");
+                return 1;
+            }
+            if (fcntl(g_sock, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+                log_errno(LOG_ERR, "fcntl(F_SETFL)");
+                return 1;
+            }
         }
         if (configure_serial(g_sock, (int)baud, data_bits, stop_bits, parity) != 0) {
             return 1;
@@ -918,12 +948,23 @@ int main(int argc, char **argv)
             if (n <= 0)
                 break;
 
-            /* Walk the input buffer: handle special keys,
-               send the rest to the server with IAC escaping. */
+            /* Walk the input buffer: handle special keys, batch the rest
+             * (with IAC escaping) into a single write to avoid per-byte syscalls. */
+            uint8_t outbuf[sizeof(buf) * 2]; /* worst case: every byte is IAC */
+            size_t  outlen = 0;
+
             for (ssize_t i = 0; i < n; i++) {
                 uint8_t c = buf[i];
 
                 if (c == 0x10) { /* Ctrl+P -> reset pulse */
+                    /* Flush pending bytes before the blocking pulse. */
+                    if (outlen > 0) {
+                        if (write_all(g_sock, outbuf, outlen) < 0) {
+                            g_quit = 1;
+                            break;
+                        }
+                        outlen = 0;
+                    }
                     send_reset_pulse();
                     continue;
                 }
@@ -933,26 +974,18 @@ int main(int argc, char **argv)
                 }
 
                 if (g_serial_mode) {
-                    if (write_all(g_sock, &c, 1) < 0) {
-                        g_quit = 1;
-                        break;
-                    }
-                    continue;
-                }
-
-                if (c == IAC) {
-                    /* IAC IAC */
-                    uint8_t pair[2] = { IAC, IAC };
-                    if (write_all(g_sock, pair, 2) < 0) {
-                        g_quit = 1;
-                        break;
-                    }
+                    outbuf[outlen++] = c;
+                } else if (c == IAC) {
+                    outbuf[outlen++] = IAC;
+                    outbuf[outlen++] = IAC; /* escape IAC */
                 } else {
-                    if (write_all(g_sock, &c, 1) < 0) {
-                        g_quit = 1;
-                        break;
-                    }
+                    outbuf[outlen++] = c;
                 }
+            }
+
+            if (!g_quit && outlen > 0) {
+                if (write_all(g_sock, outbuf, outlen) < 0)
+                    g_quit = 1;
             }
         }
     }
