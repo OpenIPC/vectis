@@ -153,6 +153,7 @@ Wire format (client → server):
 ```
 IAC SB COMPORT BOOTROM-CATCH
     <pulse_ms : 4 bytes BE> <max_wait_ms : 4 bytes BE>
+    [<mode : 1 byte>]                    # optional, default 0 = MARKER
 IAC SE
 ```
 
@@ -161,17 +162,43 @@ IAC SE
   PoE switch) handles the actual reset.
 - `max_wait_ms` (clamped to `100..30000`) — overall catch deadline.
   `5000` is a comfortable default.
+- `mode` (optional, default `0`):
+  - `0  MARKER` — wait for 5 consecutive `0x20` markers from the
+    chip, then send a final `0xAA`.  Matches the documented hi3516
+    bootrom protocol; finishes early (typically ~500 ms) when the
+    chip emits markers.  Returns ``OK`` on confirmation, ``TIMEOUT``
+    if no marker run within `max_wait_ms`.
+  - `1  BLIND` — keep blasting `0xAA` for the full `max_wait_ms`
+    and unconditionally return ``OK``.  Use for chip variants that
+    enter download mode silently without emitting markers we can
+    observe.  The client confirms by sending a HEAD frame and
+    watching for an ACK.
+
+Older clients that send only the 8-byte (no-mode) payload default to
+MARKER mode — no behaviour change.
 
 Wire format (server → client):
 
 ```
-IAC SB COMPORT (BOOTROM-CATCH+100=150) <status : 1 byte> IAC SE
-
-  status:
-    0  ok       — boot ROM is in serial-download mode
-    1  timeout  — no markers within max_wait_ms
-    2  io_err   — UART I/O error
+IAC SB COMPORT (BOOTROM-CATCH+100=150)
+    <status        : 1 byte>      0=ok / 1=timeout / 2=io_err
+    <markers_seen  : 4 bytes BE>  total 0x20 bytes counted
+    <max_marker_run: 1 byte>      longest consecutive 0x20 run (capped 255)
+    <bytes_rx      : 4 bytes BE>  total bytes received from UART
+    <bytes_tx      : 4 bytes BE>  total 0xAA bytes blasted
+    <elapsed_ms    : 4 bytes BE>  actual catch-loop runtime
+    <last_byte     : 1 byte>      last non-marker byte (0 if none)
+IAC SE
 ```
+
+The trailing counters are diagnostic: a high-RTT or noisy-link
+client can see whether the catch failed because the chip really
+emitted nothing (`bytes_rx=0`), because a different byte family
+arrived (`last_byte` non-zero, `markers_seen=0`), or because some
+markers arrived but never strung together (`markers_seen` high but
+`max_marker_run < 5`).  Older clients that read just the first
+byte (status) still work — the extra counters are appended after
+it.
 
 While the catch loop runs, Vectis owns the local UART exclusively
 (no bytes forwarded to the client).  After it returns, normal
@@ -185,8 +212,12 @@ import serial, struct, socket
 ser = serial.serial_for_url("rfc2217://vectis.lan:35240", baudrate=115200)
 sock = ser._socket
 # Ask Vectis to do a 200 ms RTS/DTR pulse, then catch the bootrom
-# locally with a 5-second deadline.
-sock.sendall(b"\xff\xfa\x2c\x32" + struct.pack(">II", 200, 5000) + b"\xff\xf0")
+# locally with a 5-second deadline.  Mode 0 = MARKER (default), 1 = BLIND.
+sock.sendall(
+    b"\xff\xfa\x2c\x32"
+    + struct.pack(">IIB", 200, 5000, 0)
+    + b"\xff\xf0",
+)
 # (Read the IAC SB 44 150 <status> IAC SE reply with your IAC parser.)
 ser.write(head_frame)            # bootrom is now in download mode
 print(ser.read(1))                # → b"\xaa"
