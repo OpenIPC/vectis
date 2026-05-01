@@ -28,6 +28,43 @@ It can also expose the same UART bridge over TCP/IP for one remote client at a t
 make
 ```
 
+This builds both `vectis` and `vectis-cli`.
+
+## vectis-cli
+
+`vectis-cli` is a simple RFC 2217 terminal client for Linux. It connects to
+an RFC 2217 server over TCP, configures baud rate, data bits, stop bits, and
+parity, and supports a reset pulse with **Ctrl+P**.
+
+### Usage
+
+```sh
+./vectis-cli -h <host> -p <port> [options]
+```
+
+Required parameters:
+
+- `-h HOST` — RFC 2217 server address
+- `-p PORT` — TCP port
+
+Optional parameters (default **115200 8N1**):
+
+- `-b BAUD` — baud rate (default 115200)
+- `-d 5|6|7|8` — data bits (default 8)
+- `-s 1|2` — stop bits (default 1)
+- `-y N|E|O` — parity None/Even/Odd (default N)
+- `--help`, `-?` — help
+
+### Examples
+
+```sh
+# 115200 8N1 — all parameters at their defaults
+./vectis-cli -h 192.168.1.10 -p 7000
+
+# 9600 8E1
+./vectis-cli -h 192.168.1.10 -p 7000 -b 9600 -y E
+```
+
 ## Usage
 
 ```sh
