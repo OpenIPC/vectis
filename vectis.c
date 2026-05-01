@@ -69,6 +69,15 @@ static int tcp_client_fd = -1;
 static char tcp_echo_buffer[BUFFER_SIZE];
 static size_t tcp_echo_len = 0;
 
+/* Inetd integration mode: when started by inetd in `nowait` form,
+ * stdin/stdout *is* the TCP socket (one process per connection).  In
+ * this mode we apply RFC 2217 detection on stdin and route Telnet
+ * replies to stdout, mirroring the standalone `-t` listener behaviour.
+ *
+ * Detection: stdin is not a tty AND no `-t` listener was requested.
+ * The interactive local-console mode (isatty stdin) is unchanged. */
+static int inetd_mode = 0;
+
 /* --- RFC 2217 / Telnet session state for the TCP client ---
  *
  * Vectis stays in legacy raw mode (Ctrl+P intercept, CRLF normalisation,
@@ -532,6 +541,9 @@ static void tn_send(const unsigned char *bytes, size_t len)
 {
     if (tcp_client_fd != -1) {
         write_all_socket(tcp_client_fd, (const char *)bytes, len);
+    } else if (inetd_mode) {
+        /* In inetd nowait mode stdout is the TCP socket. */
+        write_all(STDOUT_FILENO, (const char *)bytes, len);
     }
 }
 
@@ -761,62 +773,91 @@ static size_t tn_process(const unsigned char *in, size_t n,
     return out_pos;
 }
 
+/* Process bytes received from a remote client (either the standalone
+ * `-t` listener's accepted socket or, in inetd nowait mode, stdin).
+ *
+ * - Auto-detects the Telnet/RFC 2217 handshake on the first IAC byte
+ *   (interactive `socat` / `nc` clients never send 0xFF, so they stay
+ *   in legacy raw mode for the whole connection).
+ * - In legacy mode applies the historic Ctrl+P intercept and CRLF
+ *   normalisation for interactive use.  `allow_exit_keys` is true on
+ *   the local-console stdin path so a human pressing Ctrl+C/X exits;
+ *   it is false on the TCP path (closing the socket is the way out)
+ *   and on the inetd-stdin path (same socket semantics).
+ * - In Telnet mode runs bytes through the state machine, forwarding
+ *   only payload bytes to UART.  The data path is binary safe.
+ *
+ * Returns 0 on success, -1 if an unrecoverable I/O error occurred. */
+static int handle_remote_input(const unsigned char *buffer, size_t n,
+                               int allow_exit_keys)
+{
+    int reset_requested = 0;
+    int exit_requested = 0;
+    char filtered[BUFFER_SIZE];
+    char normalized[BUFFER_SIZE];
+
+    if (!tn.telnet) {
+        for (size_t i = 0; i < n; i++) {
+            if (buffer[i] == TN_IAC_BYTE) { tn.telnet = 1; break; }
+        }
+        if (tn.telnet) {
+            tn_announce_options();
+        }
+    }
+
+    if (tn.telnet) {
+        unsigned char data[BUFFER_SIZE];
+        size_t data_len = tn_process(buffer, n, data, sizeof(data));
+        if (data_len > 0) {
+            if (write_all(fd, (const char *)data, data_len) != 0) {
+                log_errno_message("Failed to write client input to UART");
+                return -1;
+            }
+        }
+        return 0;
+    }
+
+    /* Legacy path. */
+    size_t filtered_len = filter_input_buffer((const char *)buffer, n,
+                                              filtered, sizeof(filtered),
+                                              allow_exit_keys,
+                                              &reset_requested, &exit_requested);
+    if (reset_requested) {
+        generate_reset_pulse();
+    }
+    if (exit_requested) {
+        running = 0;
+        return 0;
+    }
+    if (filtered_len == 0) {
+        return 0;
+    }
+
+    size_t normalized_len = normalize_tcp_input(filtered, filtered_len,
+                                                normalized, sizeof(normalized));
+    if (write_all(fd, normalized, normalized_len) != 0) {
+        log_errno_message("Failed to write client input to UART");
+        return -1;
+    }
+    /* Echo suppression is only meaningful on the standalone `-t`
+     * listener — that's the path where stdout still receives the same
+     * bytes locally and we don't want them to round-trip back to the
+     * remote.  Skip it for inetd mode. */
+    if (tcp_client_fd != -1) {
+        set_tcp_echo_suppression(normalized, normalized_len);
+    }
+    return 0;
+}
+
 static void handle_tcp_client_input(void)
 {
     unsigned char buffer[BUFFER_SIZE];
-    char filtered[BUFFER_SIZE];
-    char normalized[BUFFER_SIZE];
-    int reset_requested;
     ssize_t n = read(tcp_client_fd, buffer, sizeof(buffer));
 
     if (n > 0) {
-        /* Detect the first IAC byte and lock into Telnet/RFC 2217 mode. */
-        if (!tn.telnet) {
-            for (ssize_t i = 0; i < n; i++) {
-                if (buffer[i] == TN_IAC_BYTE) { tn.telnet = 1; break; }
-            }
-            if (tn.telnet) {
-                tn_announce_options();
-            }
-        }
-
-        if (tn.telnet) {
-            /* RFC 2217 path: state machine extracts data bytes and
-             * processes Telnet commands inline.  No Ctrl+P intercept,
-             * no CRLF normalisation, no echo suppression — the
-             * connection is now binary-safe. */
-            unsigned char data[BUFFER_SIZE];
-            size_t data_len = tn_process(buffer, (size_t)n, data, sizeof(data));
-            if (data_len > 0) {
-                if (write_all(fd, (const char *)data, data_len) != 0) {
-                    log_errno_message("Failed to write TCP input to UART");
-                    running = 0;
-                }
-            }
-            return;
-        }
-
-        /* Legacy path — unchanged behaviour for raw socat / nc / cat. */
-        size_t filtered_len = filter_input_buffer((const char *)buffer, (size_t)n,
-                                                  filtered, sizeof(filtered), 0,
-                                                  &reset_requested, NULL);
-
-        if (reset_requested) {
-            generate_reset_pulse();
-        }
-
-        if (filtered_len == 0) {
-            return;
-        }
-
-        size_t normalized_len = normalize_tcp_input(filtered, filtered_len, normalized, sizeof(normalized));
-
-        if (write_all(fd, normalized, normalized_len) != 0) {
-            log_errno_message("Failed to write TCP input to UART");
+        if (handle_remote_input(buffer, (size_t)n, 0) != 0) {
             running = 0;
-            return;
         }
-        set_tcp_echo_suppression(normalized, normalized_len);
         return;
     }
 
@@ -833,14 +874,12 @@ static void handle_tcp_client_input(void)
     }
 }
 
-/* Forward UART bytes to the TCP client, escaping IAC bytes in Telnet
- * mode as required by RFC 854 (IAC IAC = literal 0xFF). */
-static int tn_send_uart_bytes(const char *data, size_t len)
+/* Forward UART bytes to the active client, escaping IAC bytes per
+ * RFC 854 (IAC IAC = literal 0xFF).  Routes via tn_send so the same
+ * code works for the standalone -t path (writes to tcp_client_fd) and
+ * the inetd nowait path (writes to stdout). */
+static void tn_send_uart_bytes(const char *data, size_t len)
 {
-    if (!tn.telnet) {
-        return write_all_socket(tcp_client_fd, data, len);
-    }
-
     /* Worst case: every byte is 0xFF and gets doubled.  Stream out in
      * chunks so a long UART read doesn't need a 2*BUFFER_SIZE stack. */
     unsigned char chunk[BUFFER_SIZE];
@@ -848,9 +887,7 @@ static int tn_send_uart_bytes(const char *data, size_t len)
     for (size_t i = 0; i < len; i++) {
         unsigned char b = (unsigned char)data[i];
         if (out + 2 > sizeof(chunk)) {
-            if (write_all_socket(tcp_client_fd, (const char *)chunk, out) != 0) {
-                return -1;
-            }
+            tn_send(chunk, out);
             out = 0;
         }
         if (b == TN_IAC_BYTE) {
@@ -860,36 +897,40 @@ static int tn_send_uart_bytes(const char *data, size_t len)
             chunk[out++] = b;
         }
     }
-    if (out > 0 && write_all_socket(tcp_client_fd, (const char *)chunk, out) != 0) {
-        return -1;
+    if (out > 0) {
+        tn_send(chunk, out);
     }
-    return 0;
 }
 
 static void forward_uart_output(const char *data, size_t len)
 {
+    if (len == 0) {
+        return;
+    }
+
+    if (tn.telnet) {
+        /* Binary-safe path: escape IAC and route to the active client.
+         * In inetd mode this writes to stdout (the TCP socket); in
+         * standalone -t mode this writes to tcp_client_fd.  No echo
+         * suppression — RFC 2217 clients don't expect their input
+         * mirrored back to them. */
+        tn_send_uart_bytes(data, len);
+        return;
+    }
+
+    /* Legacy path: write raw to stdout (local console OR inetd's
+     * socket), and additionally to the standalone TCP client (with
+     * echo suppression) when one is connected. */
     if (fwrite(data, 1, len, stdout) != len || fflush(stdout) != 0) {
         log_errno_message("stdout");
         running = 0;
         return;
     }
 
-    if (tcp_client_fd == -1 || len == 0) {
+    if (tcp_client_fd == -1) {
         return;
     }
 
-    if (tn.telnet) {
-        /* Binary-safe path: just escape IAC, no echo suppression
-         * (the RFC 2217 client isn't expecting its own input back). */
-        if (tn_send_uart_bytes(data, len) != 0) {
-            log_errno_message("Failed to write UART output to TCP client");
-            syslog(LOG_INFO, "Closing TCP client after write failure");
-            close_tcp_client();
-        }
-        return;
-    }
-
-    /* Legacy path: echo suppression for interactive socat/nc clients. */
     size_t suppressed = consume_tcp_echo_prefix(data, len);
     if (suppressed > 0 && suppressed < len && data[suppressed - 1] == '\r' && data[suppressed] == '\n') {
         suppressed++;
@@ -1127,7 +1168,11 @@ int main(int argc, char *argv[]) {
     if (configure_uart(fd, baudrate) == -1) {
         goto cleanup;
     }
-    
+
+    /* Inetd nowait mode: stdin is the TCP socket, no `-t` listener.
+     * The stdin handler below will apply RFC 2217 detection. */
+    inetd_mode = (!tcp_enabled && !isatty(STDIN_FILENO));
+
     // Initialize signals (inactive HIGH state).
     init_signals();
     
@@ -1214,29 +1259,25 @@ int main(int argc, char *argv[]) {
             }
         }
         
-        // Read from the keyboard.
+        // Read from the keyboard / inetd socket.
         if (FD_ISSET(STDIN_FILENO, &readfds)) {
             n = read(STDIN_FILENO, buffer, sizeof(buffer));
             if (n > 0) {
-                char filtered[BUFFER_SIZE];
-                int reset_requested;
-                int exit_requested;
-                size_t filtered_len = filter_input_buffer(buffer, (size_t)n, filtered, sizeof(filtered), 1,
-                                                         &reset_requested, &exit_requested);
-
-                if (reset_requested) {
-                    generate_reset_pulse();
+                /* When stdin IS the TCP socket (inetd nowait mode),
+                 * treat it like the standalone -t client path so the
+                 * same RFC 2217 detection + state machine apply.
+                 * In interactive console mode (isatty stdin), keep
+                 * the historic Ctrl+C/Ctrl+X exit semantics — humans
+                 * don't speak Telnet by hand, so RFC 2217 detection
+                 * here is a no-op for them. */
+                int allow_exit_keys = !inetd_mode;
+                if (handle_remote_input((const unsigned char *)buffer, (size_t)n,
+                                        allow_exit_keys) != 0) {
+                    break;
                 }
-
-                if (exit_requested) {
-                    running = 0;
-                } else if (filtered_len > 0) {
-                    // Send data to UART.
-                    if (write_all(fd, filtered, filtered_len) != 0) {
-                        log_errno_message("Failed to write to UART");
-                        break;
-                    }
-                }
+            } else if (n == 0 && inetd_mode) {
+                /* Inetd socket closed by remote end. */
+                running = 0;
             }
         }
     }
