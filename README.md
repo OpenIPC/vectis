@@ -133,7 +133,64 @@ locks into Telnet mode for the rest of that connection and:
   (values `8`/`9` = DTR ON/OFF, `10`/`11` = RTS ON/OFF);
 - accepts `SET-BAUDRATE` (the same fixed list `9600`, `19200`, `38400`,
   `57600`, `115200`, `230400` that `-b` supports);
-- replies to `SIGNATURE` with `Vectis <version>`.
+- replies to `SIGNATURE` with `Vectis <version>`;
+- accepts a vendor-extension sub-option `BOOTROM-CATCH` (50) that
+  pulses RTS/DTR and runs the HiSilicon bootrom `0x20`-marker /
+  `0xAA`-ack handshake locally — see "BOOTROM-CATCH" below.
+
+### BOOTROM-CATCH (vendor extension, sub-option 50)
+
+The HiSilicon boot ROM emits `0x20` markers and listens for `0xAA`
+in a ~100 ms window after reset.  Over a network with one-way
+latency above ~25 ms a remote client cannot complete a marker→ack
+round trip in time, so the camera autoboots before the client sees
+the markers.  The `BOOTROM-CATCH` sub-option moves the catch loop
+into Vectis itself, next to the UART, where the response time is
+in microseconds — RTT and jitter no longer matter.
+
+Wire format (client → server):
+
+```
+IAC SB COMPORT BOOTROM-CATCH
+    <pulse_ms : 4 bytes BE> <max_wait_ms : 4 bytes BE>
+IAC SE
+```
+
+- `pulse_ms` (clamped to `0..5000`) — RTS+DTR low time before the
+  catch loop starts.  Set to `0` when external hardware (e.g. a
+  PoE switch) handles the actual reset.
+- `max_wait_ms` (clamped to `100..30000`) — overall catch deadline.
+  `5000` is a comfortable default.
+
+Wire format (server → client):
+
+```
+IAC SB COMPORT (BOOTROM-CATCH+100=150) <status : 1 byte> IAC SE
+
+  status:
+    0  ok       — boot ROM is in serial-download mode
+    1  timeout  — no markers within max_wait_ms
+    2  io_err   — UART I/O error
+```
+
+While the catch loop runs, Vectis owns the local UART exclusively
+(no bytes forwarded to the client).  After it returns, normal
+forwarding resumes — the client can immediately send a `HEAD` frame
+and proceed with the firmware upload.
+
+Example client (Python, with `pyserial`):
+
+```python
+import serial, struct, socket
+ser = serial.serial_for_url("rfc2217://vectis.lan:35240", baudrate=115200)
+sock = ser._socket
+# Ask Vectis to do a 200 ms RTS/DTR pulse, then catch the bootrom
+# locally with a 5-second deadline.
+sock.sendall(b"\xff\xfa\x2c\x32" + struct.pack(">II", 200, 5000) + b"\xff\xf0")
+# (Read the IAC SB 44 150 <status> IAC SE reply with your IAC parser.)
+ser.write(head_frame)            # bootrom is now in download mode
+print(ser.read(1))                # → b"\xaa"
+```
 
 RFC 2217 detection runs on **both** TCP entry points:
 
