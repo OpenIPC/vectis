@@ -94,6 +94,26 @@
 #define BOOTROM_ACK            0xaa
 #define BOOTROM_MARKER_COUNT   5
 
+/* Optional 9th payload byte selects how to detect "boot ROM is in
+ * download mode":
+ *
+ *   0 = MARKER (default, current behaviour) — wait for 5 consecutive
+ *       0x20 markers from the chip and then send a final 0xAA.  This
+ *       matches the behaviour documented for typical hi3516cv* / ev*
+ *       bootroms.
+ *
+ *   1 = BLIND  — keep blasting 0xAA for the full ``max_wait_ms`` and
+ *       always return ``OK``.  Some camera variants enter download
+ *       mode silently on receiving 0xAA without ever emitting markers
+ *       we can observe; for those, marker mode times out even though
+ *       the bootrom is in fact ready.  In blind mode the client
+ *       confirms by sending a HEAD frame and watching for an ACK.
+ *
+ * Older clients that send only 8 bytes of payload get MARKER mode
+ * automatically — no behaviour change. */
+#define BOOTROM_MODE_MARKER 0
+#define BOOTROM_MODE_BLIND  1
+
 #define COMPORT_SERVER_OFFSET 100  /* server replies use sub-opt + 100 */
 
 /* Fixed line parameters reported to RFC 2217 clients.  Vectis is
@@ -185,7 +205,21 @@ static struct {
 static void generate_reset_pulse(void);
 void set_signal_state(int signal_flag, int active);
 static int set_uart_baudrate(int target);
-static int bootrom_catch_local(int pulse_ms, int max_wait_ms);
+
+/* BOOTROM-CATCH result with diagnostic counters; see definition near
+ * COMPORT_BOOTROM_CATCH for the wire format. */
+struct bootrom_catch_result {
+    int      status;          /* BOOTROM_STATUS_* */
+    uint32_t markers_seen;    /* total 0x20 bytes counted */
+    uint8_t  max_marker_run;  /* longest consecutive 0x20 run (capped 255) */
+    uint32_t bytes_rx;        /* total bytes received from UART */
+    uint32_t bytes_tx;        /* total 0xAA bytes written to UART */
+    uint32_t elapsed_ms;      /* actual catch-loop runtime */
+    uint8_t  last_byte;       /* last non-marker byte (0 if none) */
+};
+
+static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
+                                struct bootrom_catch_result *out);
 
 static void log_message(int priority, FILE *stream, const char *fmt, ...)
 {
@@ -821,6 +855,12 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
                             ((uint32_t)data[3] << 8)  |  (uint32_t)data[4];
         uint32_t max_wait_ms = ((uint32_t)data[5] << 24) | ((uint32_t)data[6] << 16) |
                                ((uint32_t)data[7] << 8)  |  (uint32_t)data[8];
+        /* Optional mode byte (0 = MARKER, 1 = BLIND).  Older clients
+         * that send only 8 payload bytes default to MARKER mode. */
+        int mode = (len >= 10) ? (int)data[9] : BOOTROM_MODE_MARKER;
+        if (mode != BOOTROM_MODE_MARKER && mode != BOOTROM_MODE_BLIND) {
+            mode = BOOTROM_MODE_MARKER;
+        }
         /* Clamp to sane bounds so a bad client can't pin the server
          * indefinitely or pulse for an unreasonable duration. */
         if (pulse_ms > 5000)    pulse_ms = 5000;
@@ -828,10 +868,45 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
         if (max_wait_ms < 100)   max_wait_ms = 100;
 
         syslog(LOG_INFO,
-               "bootrom_catch requested: pulse=%u ms, max_wait=%u ms",
-               pulse_ms, max_wait_ms);
-        int status = bootrom_catch_local((int)pulse_ms, (int)max_wait_ms);
-        tn_send_byte_param_reply((unsigned char)subopt, (unsigned char)status);
+               "bootrom_catch requested: pulse=%u ms, max_wait=%u ms, mode=%d",
+               pulse_ms, max_wait_ms, mode);
+        struct bootrom_catch_result r;
+        bootrom_catch_local((int)pulse_ms, (int)max_wait_ms, mode, &r);
+
+        /* Reply payload: status (1) + markers_seen (4 BE) + max_run (1)
+         * + bytes_rx (4 BE) + bytes_tx (4 BE) + elapsed_ms (4 BE) +
+         * last_byte (1) = 19 bytes after the sub-option byte.  Older
+         * clients that read just the first byte (status) are
+         * unaffected; new clients introspect the trailing counters to
+         * see what actually happened during the catch. */
+        unsigned char reply[7 /* IAC SB COMPORT subopt */ + 19 + 2 /* IAC SE */];
+        size_t p = 0;
+        reply[p++] = TN_IAC_BYTE;
+        reply[p++] = TN_SB;
+        reply[p++] = TN_OPT_COMPORT;
+        reply[p++] = (unsigned char)(subopt + COMPORT_SERVER_OFFSET);
+        reply[p++] = (unsigned char)r.status;
+        reply[p++] = (unsigned char)(r.markers_seen >> 24);
+        reply[p++] = (unsigned char)(r.markers_seen >> 16);
+        reply[p++] = (unsigned char)(r.markers_seen >> 8);
+        reply[p++] = (unsigned char)(r.markers_seen);
+        reply[p++] = r.max_marker_run;
+        reply[p++] = (unsigned char)(r.bytes_rx >> 24);
+        reply[p++] = (unsigned char)(r.bytes_rx >> 16);
+        reply[p++] = (unsigned char)(r.bytes_rx >> 8);
+        reply[p++] = (unsigned char)(r.bytes_rx);
+        reply[p++] = (unsigned char)(r.bytes_tx >> 24);
+        reply[p++] = (unsigned char)(r.bytes_tx >> 16);
+        reply[p++] = (unsigned char)(r.bytes_tx >> 8);
+        reply[p++] = (unsigned char)(r.bytes_tx);
+        reply[p++] = (unsigned char)(r.elapsed_ms >> 24);
+        reply[p++] = (unsigned char)(r.elapsed_ms >> 16);
+        reply[p++] = (unsigned char)(r.elapsed_ms >> 8);
+        reply[p++] = (unsigned char)(r.elapsed_ms);
+        reply[p++] = r.last_byte;
+        reply[p++] = TN_IAC_BYTE;
+        reply[p++] = TN_SE;
+        tn_send(reply, p);
         break;
     }
     case COMPORT_SIGNATURE: {
@@ -1191,28 +1266,32 @@ static void generate_reset_pulse(void) {
 /* Server-side HiSilicon bootrom catch.
  *
  * Reset the camera, then run the canonical 0x20-marker / 0xAA-ack
- * handshake locally on the UART so it isn't subject to TCP RTT.
- * Returns BOOTROM_STATUS_OK once the boot ROM is in serial-download
- * mode, BOOTROM_STATUS_TIMEOUT if the marker phase ends without a
- * full match within ``max_wait_ms``, or BOOTROM_STATUS_IO_ERR on
- * fatal UART errors.
+ * handshake locally on the UART so it isn't subject to TCP RTT.  Fills
+ * ``out`` with the final status plus diagnostic counters that let the
+ * client see what actually happened on the wire (markers seen, total
+ * UART bytes, blast budget consumed, last non-marker byte).  The
+ * counters are exposed in the reply payload so a high-RTT client can
+ * tell why a catch failed without a separate trace mechanism.
  *
  * While running, the function owns the local UART exclusively: bytes
  * are not forwarded to the TCP client.  After return, normal
  * forwarding resumes — the client can read the ACK byte we already
- * deposited (clients typically flush the input buffer before sending
- * their first HEAD frame, so the trailing 0xAA is harmless either
- * way) and proceed with HEAD/DATA frames against an in-mode boot ROM.
+ * deposited and proceed with HEAD/DATA frames against an in-mode boot
+ * ROM.
  */
-static int bootrom_catch_local(int pulse_ms, int max_wait_ms)
+static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
+                                struct bootrom_catch_result *out)
 {
+    memset(out, 0, sizeof(*out));
+
     if (fd == -1) {
-        return BOOTROM_STATUS_IO_ERR;
+        out->status = BOOTROM_STATUS_IO_ERR;
+        return;
     }
 
     /* 1. Reset the camera. */
-    syslog(LOG_INFO, "bootrom_catch: start (pulse=%d ms, max_wait=%d ms)",
-           pulse_ms, max_wait_ms);
+    syslog(LOG_INFO, "bootrom_catch: start (pulse=%d ms, max_wait=%d ms, mode=%d)",
+           pulse_ms, max_wait_ms, mode);
     set_signal_state(TIOCM_RTS, 0);
     set_signal_state(TIOCM_DTR, 0);
     usleep((useconds_t)pulse_ms * 1000);
@@ -1222,36 +1301,51 @@ static int bootrom_catch_local(int pulse_ms, int max_wait_ms)
     /* 2. Drop any stale UART data before starting the listen loop. */
     tcflush(fd, TCIFLUSH);
 
-    /* 3. Marker / ACK loop, deadline-bound.  ``max_wait_ms`` covers
-     *    the cold-boot delay (~50 ms) plus the boot ROM's poll
-     *    window (~100 ms) plus generous slack for CPU variance. */
+    /* 3. Marker / ACK loop, deadline-bound. */
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
-    int marker_count = 0;
+    int run = 0;  /* current consecutive-0x20 run length */
     while (1) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
         long elapsed_ms = (long)((now.tv_sec - start.tv_sec) * 1000L
                                  + (now.tv_nsec - start.tv_nsec) / 1000000L);
         if (elapsed_ms >= max_wait_ms) {
-            return BOOTROM_STATUS_TIMEOUT;
+            out->elapsed_ms = (uint32_t)elapsed_ms;
+            /* In BLIND mode we don't need to see markers — we've been
+             * blasting 0xAA the whole time and the bootrom will have
+             * entered download mode silently if it's a variant that
+             * doesn't emit markers.  The client confirms by sending a
+             * HEAD frame and watching for an ACK. */
+            if (mode == BOOTROM_MODE_BLIND) {
+                syslog(LOG_INFO,
+                       "bootrom_catch: blind blast complete (%ums, %u rx bytes)",
+                       out->elapsed_ms, out->bytes_rx);
+                out->status = BOOTROM_STATUS_OK;
+                return;
+            }
+            out->status = BOOTROM_STATUS_TIMEOUT;
+            return;
         }
 
         /* Keep the wire saturated with 0xAA — at 115200 baud the UART
-         * clocks ~11.5 KB/s, so 64 bytes ≈ 5.5 ms of wire time.  By
-         * blasting in chunks rather than one-byte-per-iteration we
-         * still have headroom for the read poll between writes. */
+         * clocks ~11.5 KB/s, so 64 bytes ≈ 5.5 ms of wire time. */
         unsigned char ack_burst[64];
         memset(ack_burst, BOOTROM_ACK, sizeof(ack_burst));
         ssize_t w = write(fd, ack_burst, sizeof(ack_burst));
         if (w < 0 && errno != EAGAIN && errno != EINTR) {
             log_errno_message("bootrom_catch: write(0xAA)");
-            return BOOTROM_STATUS_IO_ERR;
+            out->elapsed_ms = (uint32_t)elapsed_ms;
+            out->status = BOOTROM_STATUS_IO_ERR;
+            return;
+        }
+        if (w > 0) {
+            out->bytes_tx += (uint32_t)w;
         }
 
-        /* Poll the UART for new bytes with a short timeout so the
-         * write/read alternation is tight. */
+        /* Poll the UART with a short timeout so write/read alternates
+         * tightly. */
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
@@ -1260,7 +1354,9 @@ static int bootrom_catch_local(int pulse_ms, int max_wait_ms)
         if (sel < 0) {
             if (errno == EINTR) continue;
             log_errno_message("bootrom_catch: select");
-            return BOOTROM_STATUS_IO_ERR;
+            out->elapsed_ms = (uint32_t)elapsed_ms;
+            out->status = BOOTROM_STATUS_IO_ERR;
+            return;
         }
         if (sel == 0 || !FD_ISSET(fd, &rfds)) {
             continue;
@@ -1271,32 +1367,50 @@ static int bootrom_catch_local(int pulse_ms, int max_wait_ms)
         if (n < 0) {
             if (errno == EAGAIN || errno == EINTR) continue;
             log_errno_message("bootrom_catch: read");
-            return BOOTROM_STATUS_IO_ERR;
+            out->elapsed_ms = (uint32_t)elapsed_ms;
+            out->status = BOOTROM_STATUS_IO_ERR;
+            return;
         }
+        if (n > 0) {
+            out->bytes_rx += (uint32_t)n;
+        }
+
+        /* Update diagnostic counters for every received byte regardless
+         * of mode — the counters are part of the reply so the client
+         * can see what was on the wire even when the catch succeeded
+         * silently. */
         for (ssize_t i = 0; i < n; i++) {
             if (rxbuf[i] == BOOTROM_MARKER) {
-                marker_count++;
-                if (marker_count >= BOOTROM_MARKER_COUNT) {
+                out->markers_seen++;
+                run++;
+                if (run > out->max_marker_run && run <= 255) {
+                    out->max_marker_run = (uint8_t)run;
+                } else if (run > 255 && out->max_marker_run < 255) {
+                    out->max_marker_run = 255;
+                }
+                if (mode == BOOTROM_MODE_MARKER &&
+                    run >= BOOTROM_MARKER_COUNT) {
                     /* Confirmed.  Send the final 0xAA so the boot ROM
-                     * commits to serial-download mode, then return —
-                     * the caller (TCP client) takes over. */
+                     * commits to serial-download mode, then return. */
                     unsigned char one = BOOTROM_ACK;
                     ssize_t wr = write(fd, &one, 1);
-                    (void)wr;
+                    if (wr > 0) out->bytes_tx += (uint32_t)wr;
+                    out->elapsed_ms = (uint32_t)elapsed_ms;
+                    out->status = BOOTROM_STATUS_OK;
                     syslog(LOG_INFO,
-                           "bootrom_catch: caught after %ld ms (%d markers)",
-                           elapsed_ms, marker_count);
-                    return BOOTROM_STATUS_OK;
+                           "bootrom_catch: caught after %u ms (%u markers, "
+                           "max-run %u, %u rx bytes)",
+                           out->elapsed_ms, out->markers_seen,
+                           out->max_marker_run, out->bytes_rx);
+                    return;
                 }
-            } else {
-                /* Markers must be consecutive on this chip family;
-                 * any non-0x20, non-0x00 byte resets the run.  The
-                 * 0x00 exclusion mirrors the legacy Vectis stdin
-                 * handler — bootroms occasionally interleave a stray
-                 * NUL between markers under noisy conditions. */
-                if (rxbuf[i] != 0x00) {
-                    marker_count = 0;
-                }
+            } else if (rxbuf[i] != 0x00) {
+                /* Non-marker, non-NUL byte: reset the run and remember
+                 * it for diagnostics.  NULs are tolerated mid-run
+                 * because some bootroms interleave a stray NUL under
+                 * noisy conditions. */
+                run = 0;
+                out->last_byte = rxbuf[i];
             }
         }
     }
