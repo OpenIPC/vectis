@@ -378,6 +378,7 @@ static void process_incoming(const uint8_t *buf, size_t n)
 
 static void send_reset_pulse(void)
 {
+    fputs("\r\n", stderr);
     log_message(LOG_INFO, "[reset] RTS+DTR off for 200 ms");
 
     /* Release DTR and RTS to reset the device. */
