@@ -184,6 +184,37 @@ ser2net -t '192.168.1.10,35240,RFC2217'
 `ser2net` natively groks Vectis's RFC 2217 server, so Vectis can be
 slotted into existing serial-server fleets without new conventions.
 
+For a YAML-based `ser2net` setup, this pattern works well:
+
+```yaml
+%YAML 1.1
+---
+# one, please submit it as a bugreport
+
+define: &banner \r\nser2net port \p device \d [\B] (Debian GNU/Linux)\r\n\r\n
+
+connection: &usb0
+    accepter: telnet(rfc2217),tcp,4440
+    enable: on
+    options:
+      banner: *banner
+      kickolduser: true
+      telnet-brk-on-sync: true
+    connector: serialdev,/dev/ttyUSB0,115200n81,local
+
+connection: &usb1
+    accepter: telnet(rfc2217),tcp,4441
+    enable: on
+    options:
+      banner: *banner
+      kickolduser: true
+      telnet-brk-on-sync: true
+    connector: serialdev,/dev/ttyUSB1,115200n81,local
+```
+
+This exposes `/dev/ttyUSB0` on port `4440` and `/dev/ttyUSB1` on port
+`4441` with RFC 2217 enabled.
+
 ## The inetd integration
 
 Vectis can also be launched from `inetd`:
