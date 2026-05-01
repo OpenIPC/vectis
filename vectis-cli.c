@@ -23,7 +23,7 @@
 #include <termios.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/select.h>
+#include <poll.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <time.h>
@@ -137,12 +137,8 @@ static void die_errno(const char *msg)
 
 static void sleep_us(unsigned int usec)
 {
-    while (usec > 0) {
-        if (usleep(usec) == 0)
-            return;
-        if (errno != EINTR)
-            return;
-    }
+    while (usleep(usec) != 0 && errno == EINTR)
+        ;
 }
 
 static void print_version(const char *prog)
@@ -346,26 +342,30 @@ static int telnet_send_negot(uint8_t cmd, uint8_t opt)
  * IAC SB COM-PORT-OPTION <subcmd> <data...> IAC SE
  *
  * Inside payload data, bytes with value 255 (IAC) are doubled.
+ * The entire packet is assembled in a stack buffer and sent in one
+ * write_all call to avoid partial-send races and excess syscalls.
  */
 static int comport_send(uint8_t subcmd, const uint8_t *data, size_t len)
 {
-    uint8_t hdr[4] = { IAC, SB, TELOPT_COMPORT, subcmd };
-    if (write_all(g_sock, hdr, 4) < 0)
-        return -1;
+    /* Max payload: 4 bytes × 2 (worst-case IAC escaping) + 4 hdr + 2 tail. */
+    uint8_t pkt[32];
+    size_t  pos = 0;
 
-    for (size_t i = 0; i < len; i++) {
-        uint8_t b = data[i];
-        if (write_all(g_sock, &b, 1) < 0)
-            return -1;
-        if (b == IAC) {
-            /* Escape IAC inside payload. */
-            if (write_all(g_sock, &b, 1) < 0)
-                return -1;
-        }
+    pkt[pos++] = IAC;
+    pkt[pos++] = SB;
+    pkt[pos++] = TELOPT_COMPORT;
+    pkt[pos++] = subcmd;
+
+    for (size_t i = 0; i < len && pos < sizeof(pkt) - 2; i++) {
+        pkt[pos++] = data[i];
+        if (data[i] == IAC)
+            pkt[pos++] = IAC; /* escape IAC inside payload */
     }
 
-    uint8_t tail[2] = { IAC, SE };
-    return write_all(g_sock, tail, 2);
+    pkt[pos++] = IAC;
+    pkt[pos++] = SE;
+
+    return write_all(g_sock, pkt, pos);
 }
 
 /* Set the baud rate (4 bytes, big-endian). */
@@ -414,21 +414,39 @@ static void handle_negot(uint8_t cmd, uint8_t opt)
     }
 }
 
-/* Process COM-PORT sub-negotiation for diagnostics. */
+/* Process COM-PORT sub-negotiation replies from the server. */
 static void handle_subneg(const uint8_t *buf, size_t len)
 {
-    if (len < 1)
+    if (len < 2)
         return;
     if (buf[0] != TELOPT_COMPORT)
         return; /* We only care about COM-PORT. */
 
-    if (len < 2)
-        return;
     uint8_t sub = buf[1];
-
-    /* The server answers our commands with an offset of +100 (see RFC 2217 §4.3).
-       The exact value does not matter here; we only keep the hook for debugging. */
-    (void)sub;
+    /* Server replies use sub-option + 100 (RFC 2217 §4.3). */
+    switch (sub) {
+    case CPC_SET_BAUDRATE + 100:
+        if (len >= 6) {
+            uint32_t baud = ((uint32_t)buf[2] << 24) | ((uint32_t)buf[3] << 16)
+                          | ((uint32_t)buf[4] <<  8) |  (uint32_t)buf[5];
+            log_message(LOG_DEBUG, "[RFC2217] server confirmed baud: %u", baud);
+        }
+        break;
+    case CPC_SET_DATASIZE + 100:
+        if (len >= 3)
+            log_message(LOG_DEBUG, "[RFC2217] server confirmed data bits: %u", buf[2]);
+        break;
+    case CPC_SET_PARITY + 100:
+        if (len >= 3)
+            log_message(LOG_DEBUG, "[RFC2217] server confirmed parity: %u", buf[2]);
+        break;
+    case CPC_SET_STOPSIZE + 100:
+        if (len >= 3)
+            log_message(LOG_DEBUG, "[RFC2217] server confirmed stop bits: %u", buf[2]);
+        break;
+    default:
+        break;
+    }
 }
 
 /* ---------- Incoming stream parser ---------- */
@@ -443,11 +461,14 @@ enum tn_state {
 
 static enum tn_state g_state = TS_DATA;
 static uint8_t       g_negot_cmd = 0;
+/* 512 bytes: generous for any RFC 2217 sub-negotiation payload (e.g. BOOTROM_CATCH uses 8
+ * bytes of parameters; baud-rate uses 4). Oversized to be safe with non-standard extensions. */
 static uint8_t       g_sb_buf[512];
 static size_t        g_sb_len = 0;
 
-/* Parse a chunk of incoming data. Plain data is written to stdout. */
-static void process_incoming(const uint8_t *buf, size_t n)
+/* Parse a chunk of incoming data. Plain data is written to stdout.
+ * Returns 0 on success, -1 if a write to stdout fails. */
+static int process_incoming(const uint8_t *buf, size_t n)
 {
     for (size_t i = 0; i < n; i++) {
         uint8_t b = buf[i];
@@ -455,14 +476,15 @@ static void process_incoming(const uint8_t *buf, size_t n)
         case TS_DATA:
             if (b == IAC)
                 g_state = TS_IAC;
-            else
-                (void)!write(STDOUT_FILENO, &b, 1);
+            else if (write(STDOUT_FILENO, &b, 1) != 1)
+                return -1;
             break;
 
         case TS_IAC:
             if (b == IAC) {
                 /* Escaped 0xFF becomes data. */
-                (void)!write(STDOUT_FILENO, &b, 1);
+                if (write(STDOUT_FILENO, &b, 1) != 1)
+                    return -1;
                 g_state = TS_DATA;
             } else if (b == DO || b == DONT || b == WILL || b == WONT) {
                 g_negot_cmd = b;
@@ -507,6 +529,7 @@ static void process_incoming(const uint8_t *buf, size_t n)
             break;
         }
     }
+    return 0;
 }
 
 /* ---------- Reset pulse (RTS+DTR are released for 200 ms) ---------- */
@@ -556,6 +579,9 @@ static int connect_to(const char *host, const char *port)
         s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (s < 0)
             continue;
+        /* Limit blocking time so the user is not stuck indefinitely. */
+        struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
+        (void)setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
         if (connect(s, ai->ai_addr, ai->ai_addrlen) == 0)
             break;
         close(s);
@@ -564,7 +590,7 @@ static int connect_to(const char *host, const char *port)
     freeaddrinfo(res);
 
     if (s < 0)
-        log_message(LOG_ERR, "Unable to connect to %s:%s", host, port);
+        log_errno(LOG_ERR, "Unable to connect to %s:%s", host, port);
     return s;
 }
 
@@ -627,10 +653,44 @@ int main(int argc, char **argv)
         switch (opt) {
         case 'h': host = optarg; break;
         case 'p': port = optarg; break;
-        case 'b': baud = (uint32_t)strtoul(optarg, NULL, 10); break;
-        case 'd': data_bits = atoi(optarg); break;
-        case 's': stop_bits = atoi(optarg); break;
-        case 'y': parity = (char)toupper((unsigned char)optarg[0]); break;
+        case 'b': {
+            char *endp;
+            errno = 0;
+            unsigned long v = strtoul(optarg, &endp, 10);
+            if (errno != 0 || *endp != '\0' || v == 0 || v > (uint32_t)-1) {
+                log_message(LOG_ERR, "Invalid baud rate: %s", optarg);
+                return 1;
+            }
+            baud = (uint32_t)v;
+            break;
+        }
+        case 'd': {
+            char *endp;
+            long v = strtol(optarg, &endp, 10);
+            if (*endp != '\0') {
+                log_message(LOG_ERR, "Invalid data bits: %s", optarg);
+                return 1;
+            }
+            data_bits = (int)v;
+            break;
+        }
+        case 's': {
+            char *endp;
+            long v = strtol(optarg, &endp, 10);
+            if (*endp != '\0') {
+                log_message(LOG_ERR, "Invalid stop bits: %s", optarg);
+                return 1;
+            }
+            stop_bits = (int)v;
+            break;
+        }
+        case 'y':
+            if (optarg[0] == '\0') {
+                log_message(LOG_ERR, "Invalid parity: empty value");
+                return 1;
+            }
+            parity = (char)toupper((unsigned char)optarg[0]);
+            break;
         case 'u': device = optarg; break;
         case 'v': want_version = 1; break;
         case 0:
@@ -695,10 +755,16 @@ int main(int argc, char **argv)
 
     g_serial_mode = (device != NULL);
     if (g_serial_mode) {
-        g_sock = open(device, O_RDWR | O_NOCTTY);
+        g_sock = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK);
         if (g_sock < 0) {
             log_errno(LOG_ERR, "open(serial)");
             return 1;
+        }
+        /* Clear O_NONBLOCK so subsequent reads/writes block normally. */
+        {
+            int flags = fcntl(g_sock, F_GETFL);
+            if (flags >= 0)
+                (void)fcntl(g_sock, F_SETFL, flags & ~O_NONBLOCK);
         }
         if (configure_serial(g_sock, (int)baud, data_bits, stop_bits, parity) != 0) {
             return 1;
@@ -744,25 +810,25 @@ int main(int argc, char **argv)
     /* Switch the terminal to raw mode. */
     set_raw_terminal();
 
-    /* Main loop: select on the transport and stdin. */
+    /* Main loop: poll on the transport and stdin. */
     uint8_t buf[4096];
     while (!g_quit) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(g_sock, &rfds);
-        FD_SET(STDIN_FILENO, &rfds);
-        int maxfd = g_sock > STDIN_FILENO ? g_sock : STDIN_FILENO;
+        struct pollfd pfds[2];
+        pfds[0].fd     = g_sock;
+        pfds[0].events = POLLIN;
+        pfds[1].fd     = STDIN_FILENO;
+        pfds[1].events = POLLIN;
 
-        int r = select(maxfd + 1, &rfds, NULL, NULL, NULL);
+        int r = poll(pfds, 2, -1);
         if (r < 0) {
             if (errno == EINTR)
                 continue;
-            log_errno(LOG_ERR, "select");
+            log_errno(LOG_ERR, "poll");
             break;
         }
 
         /* Data from the transport. */
-        if (FD_ISSET(g_sock, &rfds)) {
+        if (pfds[0].revents & POLLIN) {
             ssize_t n = read(g_sock, buf, sizeof buf);
             if (n <= 0) {
                 log_message(LOG_INFO, g_serial_mode ? "Serial device closed" : "Connection closed");
@@ -774,12 +840,15 @@ int main(int argc, char **argv)
                     break;
                 }
             } else {
-                process_incoming(buf, (size_t)n);
+                if (process_incoming(buf, (size_t)n) != 0) {
+                    log_errno(LOG_ERR, "stdout");
+                    break;
+                }
             }
         }
 
         /* Keyboard input. */
-        if (FD_ISSET(STDIN_FILENO, &rfds)) {
+        if (pfds[1].revents & POLLIN) {
             ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
             if (n <= 0)
                 break;
