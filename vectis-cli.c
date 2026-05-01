@@ -392,6 +392,7 @@ static void send_reset_pulse(void)
     comport_set_control(CPC_CTRL_DTR_ON);
     comport_set_control(CPC_CTRL_RTS_ON);
 
+    fputc('\r', stderr);
     log_message(LOG_INFO, "[reset] done");
 }
 
