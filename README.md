@@ -4,6 +4,8 @@ Vectis is intended for fast debugging and device control during development and 
 It opens a serial port, bridges keyboard input to UART, prints UART data to the terminal, and can generate a reset pulse on RTS/DTR lines.
 It can also expose the same UART bridge over TCP/IP for one remote client at a time.
 
+![image](device.jpg)
+
 ## Features
 
 - Configurable serial port and baud rate
