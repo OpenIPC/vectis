@@ -48,14 +48,35 @@
 
 #define COMPORT_SIGNATURE     0
 #define COMPORT_SET_BAUDRATE  1
+#define COMPORT_SET_DATASIZE  2
+#define COMPORT_SET_PARITY    3
+#define COMPORT_SET_STOPSIZE  4
 #define COMPORT_SET_CONTROL   5
+#define COMPORT_PURGE_DATA    12
 #define COMPORT_SERVER_OFFSET 100  /* server replies use sub-opt + 100 */
+
+/* Fixed line parameters reported to RFC 2217 clients.  Vectis is
+ * hard-wired 8N1 (see configure_uart), so we always advertise that.
+ * The values below are the on-the-wire RFC 2217 codes. */
+#define COMPORT_DATASIZE_8     8   /* 8 data bits */
+#define COMPORT_PARITY_NONE    1   /* no parity */
+#define COMPORT_STOPSIZE_1     1   /* 1 stop bit */
+
+/* PURGE-DATA values (RFC 2217 §3.7). */
+#define COMPORT_PURGE_RX       1
+#define COMPORT_PURGE_TX       2
+#define COMPORT_PURGE_BOTH     3
 
 #define COMPORT_CTRL_REQUEST 0
 #define COMPORT_CTRL_DTR_ON  8
 #define COMPORT_CTRL_DTR_OFF 9
-#define COMPORT_CTRL_RTS_ON  10
-#define COMPORT_CTRL_RTS_OFF 11
+/* Per RFC 2217 §3.5: value 10 is "Request RTS Signal State"; 11/12
+ * set the line.  Earlier Vectis versions used 10/11 for ON/OFF, which
+ * silently misrouted pyserial's `ser.rts = True` (sub-opt 11) onto
+ * the deassert path.  These constants now match the standard. */
+#define COMPORT_CTRL_RTS_REQ 10
+#define COMPORT_CTRL_RTS_ON  11
+#define COMPORT_CTRL_RTS_OFF 12
 
 // Global variables
 volatile sig_atomic_t running = 1;
@@ -622,6 +643,18 @@ static void tn_send_set_baudrate_reply(uint32_t baud)
     tn_send(buf, sizeof(buf));
 }
 
+/* Single-byte port-parameter reply (DATASIZE/PARITY/STOPSIZE follow
+ * the same wire shape: IAC SB COMPORT (subopt+100) value IAC SE). */
+static void tn_send_byte_param_reply(unsigned char subopt, unsigned char value)
+{
+    unsigned char buf[7] = {
+        TN_IAC_BYTE, TN_SB, TN_OPT_COMPORT,
+        (unsigned char)(subopt + COMPORT_SERVER_OFFSET), value,
+        TN_IAC_BYTE, TN_SE,
+    };
+    tn_send(buf, sizeof(buf));
+}
+
 static int current_uart_baud(void)
 {
     if (fd == -1) return 0;
@@ -656,12 +689,17 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
         case COMPORT_CTRL_RTS_ON:  set_signal_state(TIOCM_RTS, 1); break;
         case COMPORT_CTRL_RTS_OFF: set_signal_state(TIOCM_RTS, 0); break;
         case COMPORT_CTRL_REQUEST: {
-            /* Reply with the current line state we know about.  Since
-             * Vectis only exposes RTS+DTR, report DTR as a representative
-             * value.  Most clients only care about the round-trip ack. */
+            /* Request DTR state (sub-value 7 in the spec collapses to
+             * 0 = "Request Com Port Control" in our minimal mapping). */
             int status = 0;
             if (fd != -1) ioctl(fd, TIOCMGET, &status);
             value = (status & TIOCM_DTR) ? COMPORT_CTRL_DTR_ON : COMPORT_CTRL_DTR_OFF;
+            break;
+        }
+        case COMPORT_CTRL_RTS_REQ: {
+            int status = 0;
+            if (fd != -1) ioctl(fd, TIOCMGET, &status);
+            value = (status & TIOCM_RTS) ? COMPORT_CTRL_RTS_ON : COMPORT_CTRL_RTS_OFF;
             break;
         }
         default:
@@ -685,6 +723,49 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
             baud = (uint32_t)current_uart_baud();
         }
         tn_send_set_baudrate_reply(baud);
+        break;
+    }
+    case COMPORT_SET_DATASIZE:
+    case COMPORT_SET_PARITY:
+    case COMPORT_SET_STOPSIZE: {
+        /* Vectis is hard-wired to 8N1 by configure_uart(), so the
+         * reply is the same regardless of the client's request: we
+         * report the value actually in effect (RFC 2217 §3.2-§3.4 say
+         * the server replies with what was applied, not what was
+         * asked for).  This unblocks pyserial's rfc2217:// transport,
+         * which sets DATASIZE/PARITY/STOPSIZE at startup and waits
+         * synchronously for an ack.  A request value of 0 ("query
+         * current") produces the same answer. */
+        unsigned char reply;
+        switch (subopt) {
+        case COMPORT_SET_DATASIZE: reply = COMPORT_DATASIZE_8;  break;
+        case COMPORT_SET_PARITY:   reply = COMPORT_PARITY_NONE; break;
+        case COMPORT_SET_STOPSIZE: reply = COMPORT_STOPSIZE_1;  break;
+        default:                   reply = 0; break;  /* unreachable */
+        }
+        tn_send_byte_param_reply((unsigned char)subopt, reply);
+        break;
+    }
+    case COMPORT_PURGE_DATA: {
+        /* RFC 2217 §3.7: 1=purge RX, 2=purge TX, 3=purge both.  pyserial
+         * calls this from reset_input_buffer() / reset_output_buffer()
+         * during open() and waits synchronously for the ack — without
+         * it the connection times out before any data flows. */
+        if (len < 2) return;
+        unsigned char value = data[1];
+        if (fd != -1) {
+            int how = -1;
+            switch (value) {
+            case COMPORT_PURGE_RX:   how = TCIFLUSH;  break;
+            case COMPORT_PURGE_TX:   how = TCOFLUSH;  break;
+            case COMPORT_PURGE_BOTH: how = TCIOFLUSH; break;
+            default: break;
+            }
+            if (how != -1) {
+                tcflush(fd, how);
+            }
+        }
+        tn_send_byte_param_reply((unsigned char)subopt, value);
         break;
     }
     case COMPORT_SIGNATURE: {
