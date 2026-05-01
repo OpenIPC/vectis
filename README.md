@@ -88,8 +88,14 @@ locks into Telnet mode for the rest of that connection and:
   `57600`, `115200`, `230400` that `-b` supports);
 - replies to `SIGNATURE` with `Vectis <version>`.
 
-The legacy `Ctrl+P` hotkey on the local console (the `-t`-less stdin
-path) is unchanged.
+RFC 2217 detection runs on **both** TCP entry points:
+
+- the standalone `-t [port]` listener, and
+- the inetd `nowait` socket (where stdin/stdout *is* the TCP socket).
+
+The legacy `Ctrl+P` hotkey on the local interactive console (no `-t`,
+stdin is a tty) is unchanged — humans don't speak Telnet by hand, so
+the detection is a no-op for them.
 
 ### User stories
 
@@ -150,6 +156,12 @@ Vectis can also be launched from `inetd`:
 #
 35240   stream  tcp     nowait  root    /usr/local/sbin/vectis vectis -s -p /dev/ttyUSB0 -b 115200
 ```
+
+In `nowait` mode each TCP connection spawns a fresh Vectis with the
+socket wired to its stdin/stdout. RFC 2217 detection works on this
+path too: a programmatic client sending `IAC` flips the connection
+into Telnet mode, sub-options like `SET-CONTROL` are answered over
+the same socket, and `0xFF` bytes are escaped per RFC 854.
 
 On Debian/Ubuntu, install `inetd` with:
 
