@@ -195,8 +195,6 @@ static void set_raw_terminal(void)
     struct termios tio;
     if (tcgetattr(STDIN_FILENO, &g_old_tio) != 0)
         die_errno("tcgetattr(stdin)");
-    g_tio_saved = 1;
-
     tio = g_old_tio;
     /* Full raw mode so every key press (including Ctrl+P) reaches us. */
     cfmakeraw(&tio);
@@ -204,6 +202,8 @@ static void set_raw_terminal(void)
     tio.c_cc[VTIME] = 0;
     if (tcsetattr(STDIN_FILENO, TCSANOW, &tio) != 0)
         die_errno("tcsetattr(stdin)");
+    /* Mark saved only after terminal is actually configured (N5). */
+    g_tio_saved = 1;
 }
 
 static int speed_for_baud(int baud, speed_t *out)
@@ -560,7 +560,9 @@ static int process_incoming(const uint8_t *buf, size_t n)
 
         case TS_SB_IAC:
             if (b == SE) {
-                handle_subneg(g_sb_buf, g_sb_len);
+                /* Pass only the valid (non-overflowed) length (N1). */
+                size_t valid_len = g_sb_len < sizeof(g_sb_buf) ? g_sb_len : sizeof(g_sb_buf);
+                handle_subneg(g_sb_buf, valid_len);
                 g_sb_len = 0;
                 g_state = TS_DATA;
             } else if (b == IAC) {
@@ -900,7 +902,7 @@ int main(int argc, char **argv)
     set_raw_terminal();
 
     /* Main loop: poll on the transport and stdin. */
-    uint8_t buf[4096];
+    static uint8_t buf[4096]; /* static to avoid large stack allocation (N2) */
     while (!g_quit) {
         struct pollfd pfds[2];
         pfds[0].fd     = g_sock;
@@ -917,7 +919,7 @@ int main(int argc, char **argv)
         }
 
         /* Transport error or hangup — no point continuing. */
-        if (pfds[0].revents & (POLLERR | POLLHUP)) {
+        if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
             log_message(LOG_INFO, g_serial_mode ? "Serial device error/hangup" : "Connection error/hangup");
             break;
         }
@@ -925,7 +927,14 @@ int main(int argc, char **argv)
         /* Data from the transport. */
         if (pfds[0].revents & POLLIN) {
             ssize_t n = read(g_sock, buf, sizeof buf);
-            if (n <= 0) {
+            if (n < 0) {
+                /* Retry on signal interruption (N3). */
+                if (errno == EINTR || errno == EAGAIN)
+                    continue;
+                log_errno(LOG_ERR, g_serial_mode ? "read(serial)" : "read(socket)");
+                break;
+            }
+            if (n == 0) {
                 log_message(LOG_INFO, g_serial_mode ? "Serial device closed" : "Connection closed");
                 break;
             }
@@ -945,12 +954,17 @@ int main(int argc, char **argv)
         /* Keyboard input. */
         if (pfds[1].revents & POLLIN) {
             ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
-            if (n <= 0)
+            if (n < 0) {
+                if (errno == EINTR || errno == EAGAIN) /* signal or spurious wakeup (N3) */
+                    continue;
+                break;
+            }
+            if (n == 0)
                 break;
 
             /* Walk the input buffer: handle special keys, batch the rest
              * (with IAC escaping) into a single write to avoid per-byte syscalls. */
-            uint8_t outbuf[sizeof(buf) * 2]; /* worst case: every byte is IAC */
+            static uint8_t outbuf[sizeof(buf) * 2]; /* worst case: every byte is IAC; static = no stack (N2) */
             size_t  outlen = 0;
 
             for (ssize_t i = 0; i < n; i++) {
