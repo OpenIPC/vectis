@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <getopt.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -85,12 +86,19 @@
 #define CPC_STOP_2   2
 #define CPC_STOP_15  3   /* 1.5 */
 
+#define PROGRAM_VERSION "1.2.1"
+#define PROGRAM_RELEASE_DATE "2026-05-01"
+
 /* Global state */
 static int g_sock = -1;
 static struct termios g_old_tio;
+static struct termios g_old_dev_tio;
 static int g_tio_saved = 0;
+static int g_dev_tio_saved = 0;
 static volatile sig_atomic_t g_quit = 0;
 static const char *g_progname = "vectis-cli";
+static int g_serial_mode = 0;
+static void set_serial_signal_state(int signal_flag, int active);
 
 /* ---------- Logging ---------- */
 
@@ -137,6 +145,12 @@ static void sleep_us(unsigned int usec)
     }
 }
 
+static void print_version(const char *prog)
+{
+    printf("%s %s\n", prog, PROGRAM_VERSION);
+    printf("Release date: %s\n", PROGRAM_RELEASE_DATE);
+}
+
 /* ---------- Utilities ---------- */
 
 static void restore_terminal(void)
@@ -147,9 +161,22 @@ static void restore_terminal(void)
     }
 }
 
+static void restore_serial(void)
+{
+    if (g_dev_tio_saved && g_sock >= 0) {
+        tcsetattr(g_sock, TCSANOW, &g_old_dev_tio);
+        g_dev_tio_saved = 0;
+    }
+}
+
 static void cleanup(void)
 {
     restore_terminal();
+    if (g_serial_mode && g_sock >= 0) {
+        set_serial_signal_state(TIOCM_RTS, 0);
+        set_serial_signal_state(TIOCM_DTR, 0);
+    }
+    restore_serial();
     if (g_sock >= 0) {
         close(g_sock);
         g_sock = -1;
@@ -176,6 +203,114 @@ static void set_raw_terminal(void)
     tio.c_cc[VTIME] = 0;
     if (tcsetattr(STDIN_FILENO, TCSANOW, &tio) != 0)
         die_errno("tcsetattr(stdin)");
+}
+
+static int speed_for_baud(int baud, speed_t *out)
+{
+    switch (baud) {
+    case 9600:   *out = B9600;   return 0;
+    case 19200:  *out = B19200;  return 0;
+    case 38400:  *out = B38400;  return 0;
+    case 57600:  *out = B57600;  return 0;
+    case 115200: *out = B115200; return 0;
+    case 230400: *out = B230400; return 0;
+    default:                   return -1;
+    }
+}
+
+static int configure_serial(int fd, int baud, int data_bits, int stop_bits, char parity)
+{
+    struct termios tio;
+    speed_t speed;
+
+    if (speed_for_baud(baud, &speed) != 0) {
+        log_message(LOG_ERR, "Unsupported baud rate: %d", baud);
+        return -1;
+    }
+    if (tcgetattr(fd, &g_old_dev_tio) != 0) {
+        log_errno(LOG_ERR, "tcgetattr(serial)");
+        return -1;
+    }
+
+    tio = g_old_dev_tio;
+    cfsetispeed(&tio, speed);
+    cfsetospeed(&tio, speed);
+    tio.c_cflag |= (CREAD | CLOCAL);
+    tio.c_cflag &= ~CSIZE;
+
+    switch (data_bits) {
+    case 5: tio.c_cflag |= CS5; break;
+    case 6: tio.c_cflag |= CS6; break;
+    case 7: tio.c_cflag |= CS7; break;
+    case 8: tio.c_cflag |= CS8; break;
+    default:
+        log_message(LOG_ERR, "Invalid data bits: %d", data_bits);
+        return -1;
+    }
+
+    switch (parity) {
+    case 'N':
+        tio.c_cflag &= ~PARENB;
+        break;
+    case 'E':
+        tio.c_cflag |= PARENB;
+        tio.c_cflag &= ~PARODD;
+        break;
+    case 'O':
+        tio.c_cflag |= PARENB;
+        tio.c_cflag |= PARODD;
+        break;
+    default:
+        log_message(LOG_ERR, "Invalid parity: %c (must be N/E/O)", parity);
+        return -1;
+    }
+
+    if (stop_bits == 1) {
+        tio.c_cflag &= ~CSTOPB;
+    } else if (stop_bits == 2) {
+        tio.c_cflag |= CSTOPB;
+    } else {
+        log_message(LOG_ERR, "Stop bits must be 1 or 2");
+        return -1;
+    }
+
+#ifdef CRTSCTS
+    tio.c_cflag &= ~CRTSCTS;
+#endif
+    tio.c_iflag &= ~(IXON | IXOFF | IXANY | INLCR | ICRNL | IGNCR);
+    tio.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+    tio.c_oflag &= ~OPOST;
+    tio.c_cc[VMIN] = 1;
+    tio.c_cc[VTIME] = 0;
+
+    if (tcflush(fd, TCIFLUSH) != 0) {
+        log_errno(LOG_ERR, "tcflush(serial)");
+        return -1;
+    }
+    if (tcsetattr(fd, TCSANOW, &tio) != 0) {
+        log_errno(LOG_ERR, "tcsetattr(serial)");
+        return -1;
+    }
+
+    g_dev_tio_saved = 1;
+    return 0;
+}
+
+static void set_serial_signal_state(int signal_flag, int active)
+{
+    if (g_sock < 0) {
+        return;
+    }
+
+    if (active) {
+        if (ioctl(g_sock, TIOCMBIS, &signal_flag) == -1) {
+            log_errno(LOG_ERR, "Failed to activate serial signal");
+        }
+    } else {
+        if (ioctl(g_sock, TIOCMBIC, &signal_flag) == -1) {
+            log_errno(LOG_ERR, "Failed to deactivate serial signal");
+        }
+    }
 }
 
 /* Guaranteed write of N bytes to a file descriptor. Returns -1 on error. */
@@ -379,19 +514,24 @@ static void process_incoming(const uint8_t *buf, size_t n)
 static void send_reset_pulse(void)
 {
     fputs("\r\n", stderr);
-    log_message(LOG_INFO, "[reset] RTS+DTR off for 200 ms");
+    if (g_serial_mode) {
+        log_message(LOG_INFO, "[reset] RTS+DTR off for 200 ms");
+        set_serial_signal_state(TIOCM_DTR, 0);
+        set_serial_signal_state(TIOCM_RTS, 0);
+        sleep_us(200 * 1000);
+        set_serial_signal_state(TIOCM_DTR, 1);
+        set_serial_signal_state(TIOCM_RTS, 1);
+        fputc('\r', stderr);
+        log_message(LOG_INFO, "[reset] done");
+        return;
+    }
 
-    /* Release DTR and RTS to reset the device. */
+    log_message(LOG_INFO, "[reset] RTS+DTR off for 200 ms");
     comport_set_control(CPC_CTRL_DTR_OFF);
     comport_set_control(CPC_CTRL_RTS_OFF);
-
-    /* Hold for 200 ms. */
     sleep_us(200 * 1000);
-
-    /* Return to active state so the device exits reset. */
     comport_set_control(CPC_CTRL_DTR_ON);
     comport_set_control(CPC_CTRL_RTS_ON);
-
     fputc('\r', stderr);
     log_message(LOG_INFO, "[reset] done");
 }
@@ -434,50 +574,56 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
         "Usage: %s -h <host> -p <port> [options]\n"
+        "   or: %s -u <device> [options]\n"
         "\n"
-        "Required:\n"
+        "RFC 2217/Telnet mode:\n"
         "  -h HOST         RFC 2217 server address\n"
         "  -p PORT         TCP port\n"
+        "\n"
+        "Direct serial mode:\n"
+        "  -u DEVICE       local tty device path, for example /dev/ttyUSB0\n"
         "\n"
         "Port settings (default 115200 8N1):\n"
         "  -b BAUD         baud rate (default 115200)\n"
         "  -d 5|6|7|8      data bits (default 8)\n"
         "  -s 1|2          stop bits (default 1)\n"
         "  -y N|E|O        parity: None/Even/Odd (default N)\n"
+        "  -v, --version   print version and release date\n"
         "  --help, -?      this help\n"
         "\n"
         "Examples:\n"
         "  %s -h 192.168.1.10 -p 7000                    # 115200 8N1\n"
         "  %s -h 192.168.1.10 -p 7000 -b 9600 -y E       # 9600 8E1\n"
+        "  %s -u /dev/ttyUSB0                             # direct serial mode\n"
         "\n"
         "Session controls:\n"
         "  Ctrl+P   RTS+DTR pulse (200 ms) — reset the target device\n"
         "  Ctrl+]   exit\n",
-        prog, prog, prog);
+        prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char **argv)
 {
     const char *host = NULL;
     const char *port = NULL;
+    const char *device = NULL;
     uint32_t baud = 115200;
     int data_bits = 8;
     int stop_bits = 1;
     char parity = 'N';
+    int want_help = 0;
+    int want_version = 0;
+    const struct option long_opts[] = {
+        { "help",   no_argument,       &want_help, 1 },
+        { "version", no_argument,       &want_version, 1 },
+        { "device", required_argument, NULL, 'u' },
+        { 0, 0, 0, 0 }
+    };
 
     openlog(g_progname, LOG_PID | LOG_NDELAY, LOG_DAEMON);
     atexit(closelog);
-
-    /* Support --help outside getopt. */
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--help") == 0) {
-            usage(argv[0]);
-            return 0;
-        }
-    }
-
     int opt;
-    while ((opt = getopt(argc, argv, "h:p:b:d:s:y:?")) != -1) {
+    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:v?", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'h': host = optarg; break;
         case 'p': port = optarg; break;
@@ -485,21 +631,40 @@ int main(int argc, char **argv)
         case 'd': data_bits = atoi(optarg); break;
         case 's': stop_bits = atoi(optarg); break;
         case 'y': parity = (char)toupper((unsigned char)optarg[0]); break;
+        case 'u': device = optarg; break;
+        case 'v': want_version = 1; break;
+        case 0:
+            break;
         case '?':
-            if (optopt == 0) {
-                usage(argv[0]);
-                return 0;
+            if (optopt == '?') {
+                want_help = 1;
+                break;
             }
             usage(argv[0]);
             return 1;
         default:
-            usage(argv[0]);
             return 1;
         }
     }
 
-    if (!host || !port) {
-        log_message(LOG_ERR, "Missing -h <host> and/or -p <port>");
+    if (want_help) {
+        usage(argv[0]);
+        return 0;
+    }
+
+    if (want_version) {
+        print_version(argv[0]);
+        return 0;
+    }
+
+    if ((device != NULL) && (host != NULL || port != NULL)) {
+        log_message(LOG_ERR, "Choose either RFC 2217 mode or direct serial mode");
+        usage(argv[0]);
+        return 1;
+    }
+
+    if (device == NULL && (!host || !port)) {
+        log_message(LOG_ERR, "Missing -h <host> and/or -p <port> or -u <device>");
         usage(argv[0]);
         return 1;
     }
@@ -522,47 +687,64 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Connect. */
-    g_sock = connect_to(host, port);
-    if (g_sock < 0)
-        return 1;
-
-    atexit(cleanup);
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
 
-    log_message(LOG_INFO, "Connected to %s:%s. baud=%u, data=%d, stop=%d, parity=%c",
-        host, port, baud, data_bits, stop_bits, parity);
-    log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for 200 ms, Ctrl+] exits");
+    atexit(cleanup);
 
-    /* Request negotiations with the server. */
-    telnet_send_negot(WILL, TELOPT_BINARY);
-    telnet_send_negot(DO,   TELOPT_BINARY);
-    telnet_send_negot(WILL, TELOPT_SGA);
-    telnet_send_negot(DO,   TELOPT_SGA);
-    telnet_send_negot(WILL, TELOPT_COMPORT);
+    g_serial_mode = (device != NULL);
+    if (g_serial_mode) {
+        g_sock = open(device, O_RDWR | O_NOCTTY);
+        if (g_sock < 0) {
+            log_errno(LOG_ERR, "open(serial)");
+            return 1;
+        }
+        if (configure_serial(g_sock, (int)baud, data_bits, stop_bits, parity) != 0) {
+            return 1;
+        }
+        set_serial_signal_state(TIOCM_DTR, 1);
+        set_serial_signal_state(TIOCM_RTS, 1);
+        log_message(LOG_INFO, "Opened serial device %s. baud=%u, data=%d, stop=%d, parity=%c",
+            device, baud, data_bits, stop_bits, parity);
+        log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for 200 ms, Ctrl+] exits");
+    } else {
+        g_sock = connect_to(host, port);
+        if (g_sock < 0)
+            return 1;
 
-    /* Configure the port parameters.
-       A small delay after WILL COM-PORT helps some servers reply with DO first. */
-    sleep_us(100 * 1000);
+        log_message(LOG_INFO, "Connected to %s:%s. baud=%u, data=%d, stop=%d, parity=%c",
+            host, port, baud, data_bits, stop_bits, parity);
+        log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for 200 ms, Ctrl+] exits");
 
-    comport_set_baudrate(baud);
-    comport_set_datasize((uint8_t)data_bits);
-    comport_set_stop((uint8_t)stop_bits);
-    comport_set_parity(parity_v);
-    /* No hardware flow control by default. */
-    comport_set_control(CPC_CTRL_NO_FLOW);
-    /* Bring lines into the active state so the device runs normally.
-       This also keeps Ctrl+P working: the reset pulse drops the lines for
-       200 ms and then restores them here. */
-    comport_set_control(CPC_CTRL_DTR_ON);
-    comport_set_control(CPC_CTRL_RTS_ON);
+        /* Request negotiations with the server. */
+        telnet_send_negot(WILL, TELOPT_BINARY);
+        telnet_send_negot(DO,   TELOPT_BINARY);
+        telnet_send_negot(WILL, TELOPT_SGA);
+        telnet_send_negot(DO,   TELOPT_SGA);
+        telnet_send_negot(WILL, TELOPT_COMPORT);
+
+        /* Configure the port parameters.
+           A small delay after WILL COM-PORT helps some servers reply with DO first. */
+        sleep_us(100 * 1000);
+
+        comport_set_baudrate(baud);
+        comport_set_datasize((uint8_t)data_bits);
+        comport_set_stop((uint8_t)stop_bits);
+        comport_set_parity(parity_v);
+        /* No hardware flow control by default. */
+        comport_set_control(CPC_CTRL_NO_FLOW);
+        /* Bring lines into the active state so the device runs normally.
+           This also keeps Ctrl+P working: the reset pulse drops the lines for
+           200 ms and then restores them here. */
+        comport_set_control(CPC_CTRL_DTR_ON);
+        comport_set_control(CPC_CTRL_RTS_ON);
+    }
 
     /* Switch the terminal to raw mode. */
     set_raw_terminal();
 
-    /* Main loop: select on socket and stdin. */
+    /* Main loop: select on the transport and stdin. */
     uint8_t buf[4096];
     while (!g_quit) {
         fd_set rfds;
@@ -579,14 +761,21 @@ int main(int argc, char **argv)
             break;
         }
 
-        /* Data from the server. */
+        /* Data from the transport. */
         if (FD_ISSET(g_sock, &rfds)) {
             ssize_t n = read(g_sock, buf, sizeof buf);
             if (n <= 0) {
-                log_message(LOG_INFO, "Connection closed");
+                log_message(LOG_INFO, g_serial_mode ? "Serial device closed" : "Connection closed");
                 break;
             }
-            process_incoming(buf, (size_t)n);
+            if (g_serial_mode) {
+                if (write_all(STDOUT_FILENO, buf, (size_t)n) != 0) {
+                    log_errno(LOG_ERR, "stdout");
+                    break;
+                }
+            } else {
+                process_incoming(buf, (size_t)n);
+            }
         }
 
         /* Keyboard input. */
@@ -607,6 +796,14 @@ int main(int argc, char **argv)
                 if (c == 0x1D) { /* Ctrl+] -> exit */
                     g_quit = 1;
                     break;
+                }
+
+                if (g_serial_mode) {
+                    if (write_all(g_sock, &c, 1) < 0) {
+                        g_quit = 1;
+                        break;
+                    }
+                    continue;
                 }
 
                 if (c == IAC) {

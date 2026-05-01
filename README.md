@@ -32,20 +32,26 @@ This builds both `vectis` and `vectis-cli`.
 
 ## vectis-cli
 
-`vectis-cli` is a simple RFC 2217 terminal client for Linux. It connects to
-an RFC 2217 server over TCP, configures baud rate, data bits, stop bits, and
-parity, and supports a reset pulse with **Ctrl+P**.
+`vectis-cli` is a simple RFC 2217 terminal client for Linux. It also supports
+direct access to local serial devices such as `/dev/ttyUSB0`. In both modes it
+configures baud rate, data bits, stop bits, and parity, and supports a reset
+pulse with **Ctrl+P**.
 
 ### Usage
 
 ```sh
 ./vectis-cli -h <host> -p <port> [options]
+./vectis-cli -u <device> [options]
 ```
 
-Required parameters:
+RFC 2217/Telnet mode:
 
 - `-h HOST` — RFC 2217 server address
 - `-p PORT` — TCP port
+
+Direct serial mode:
+
+- `-u DEVICE` — local tty device path, for example `/dev/ttyUSB0`
 
 Optional parameters (default **115200 8N1**):
 
@@ -53,6 +59,7 @@ Optional parameters (default **115200 8N1**):
 - `-d 5|6|7|8` — data bits (default 8)
 - `-s 1|2` — stop bits (default 1)
 - `-y N|E|O` — parity None/Even/Odd (default N)
+- `-v`, `--version` — print version and release date
 - `--help`, `-?` — help
 
 ### Examples
@@ -63,6 +70,9 @@ Optional parameters (default **115200 8N1**):
 
 # 9600 8E1
 ./vectis-cli -h 192.168.1.10 -p 7000 -b 9600 -y E
+
+# Direct serial device
+./vectis-cli -u /dev/ttyUSB0 -b 115200
 ```
 
 ## Usage
