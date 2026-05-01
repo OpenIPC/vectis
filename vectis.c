@@ -216,10 +216,17 @@ struct bootrom_catch_result {
     uint32_t bytes_tx;        /* total 0xAA bytes written to UART */
     uint32_t elapsed_ms;      /* actual catch-loop runtime */
     uint8_t  last_byte;       /* last non-marker byte (0 if none) */
+    uint8_t  head_ack;        /* chip's reply to a pipelined HEAD frame, or
+                                 0 if no HEAD was provided in the request */
+    uint8_t  head_ack_seen;   /* 1 if any byte arrived after the HEAD send
+                                 (so callers can distinguish "got 0x00" from
+                                 "no reply") */
 };
 
 static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
                                 int min_markers,
+                                const unsigned char *head_frame,
+                                size_t head_frame_len,
                                 struct bootrom_catch_result *out);
 
 static void log_message(int priority, FILE *stream, const char *fmt, ...)
@@ -870,6 +877,22 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
         int min_markers = (len >= 11) ? (int)data[10] : 0;
         if (min_markers <= 0) min_markers = BOOTROM_MARKER_COUNT;
         if (min_markers > 16) min_markers = 16;
+        /* Optional pipelined HEAD frame: any bytes after byte 10
+         * are taken as the first HEAD frame to send to the chip
+         * IMMEDIATELY after the catch's final 0xAA (no network RTT).
+         * The chip's reply is captured locally and returned in
+         * ``head_ack``.  This is the bit that makes the catch
+         * RTT-independent end-to-end on links where the chip's
+         * download-mode hold window is shorter than one round trip. */
+        const unsigned char *head_frame = NULL;
+        size_t head_frame_len = 0;
+        if (len > 11) {
+            head_frame = data + 11;
+            head_frame_len = len - 11;
+            /* Cap to the largest reasonable HEAD-class frame so a
+             * stray giant payload doesn't pin the loop. */
+            if (head_frame_len > 64) head_frame_len = 64;
+        }
         /* Clamp to sane bounds so a bad client can't pin the server
          * indefinitely or pulse for an unreasonable duration. */
         if (pulse_ms > 5000)    pulse_ms = 5000;
@@ -878,19 +901,24 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
 
         syslog(LOG_INFO,
                "bootrom_catch requested: pulse=%u ms, max_wait=%u ms, mode=%d, "
-               "min_markers=%d",
-               pulse_ms, max_wait_ms, mode, min_markers);
+               "min_markers=%d, head_frame=%zu bytes",
+               pulse_ms, max_wait_ms, mode, min_markers, head_frame_len);
         struct bootrom_catch_result r;
         bootrom_catch_local((int)pulse_ms, (int)max_wait_ms, mode,
-                            min_markers, &r);
+                            min_markers, head_frame, head_frame_len, &r);
 
-        /* Reply payload: status (1) + markers_seen (4 BE) + max_run (1)
-         * + bytes_rx (4 BE) + bytes_tx (4 BE) + elapsed_ms (4 BE) +
-         * last_byte (1) = 19 bytes after the sub-option byte.  Older
-         * clients that read just the first byte (status) are
-         * unaffected; new clients introspect the trailing counters to
-         * see what actually happened during the catch. */
-        unsigned char reply[7 /* IAC SB COMPORT subopt */ + 19 + 2 /* IAC SE */];
+        /* Reply payload (after the sub-option byte):
+         *   status (1) + markers_seen (4 BE) + max_run (1)
+         *   + bytes_rx (4 BE) + bytes_tx (4 BE) + elapsed_ms (4 BE)
+         *   + last_byte (1) + head_ack (1) + head_ack_seen (1)
+         * = 21 bytes.  ``head_ack`` is the single byte the chip
+         * emitted in response to the pipelined HEAD frame, captured
+         * locally on the server (no network RTT in the loop).
+         * ``head_ack_seen`` distinguishes "got 0x00" from "no reply
+         * within the post-HEAD window".  Older clients that read only
+         * earlier bytes are unaffected — the trailing two bytes are
+         * a strict suffix extension. */
+        unsigned char reply[7 /* IAC SB COMPORT subopt */ + 21 + 2 /* IAC SE */];
         size_t p = 0;
         reply[p++] = TN_IAC_BYTE;
         reply[p++] = TN_SB;
@@ -915,6 +943,8 @@ static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
         reply[p++] = (unsigned char)(r.elapsed_ms >> 8);
         reply[p++] = (unsigned char)(r.elapsed_ms);
         reply[p++] = r.last_byte;
+        reply[p++] = r.head_ack;
+        reply[p++] = r.head_ack_seen;
         reply[p++] = TN_IAC_BYTE;
         reply[p++] = TN_SE;
         tn_send(reply, p);
@@ -1279,19 +1309,24 @@ static void generate_reset_pulse(void) {
  * Reset the camera, then run the canonical 0x20-marker / 0xAA-ack
  * handshake locally on the UART so it isn't subject to TCP RTT.  Fills
  * ``out`` with the final status plus diagnostic counters that let the
- * client see what actually happened on the wire (markers seen, total
- * UART bytes, blast budget consumed, last non-marker byte).  The
- * counters are exposed in the reply payload so a high-RTT client can
- * tell why a catch failed without a separate trace mechanism.
+ * client see what actually happened on the wire.
+ *
+ * If ``head_frame`` is non-NULL, after the final 0xAA we immediately
+ * write that frame to the local UART and capture the chip's reply
+ * byte into ``out->head_ack``.  This is the bit that closes the
+ * RTT-window problem: on links where the chip's download-mode hold
+ * window is shorter than one client round trip, the client can
+ * piggyback its first HEAD frame here and learn the ACK without
+ * leaving the same atomic operation.
  *
  * While running, the function owns the local UART exclusively: bytes
  * are not forwarded to the TCP client.  After return, normal
- * forwarding resumes — the client can read the ACK byte we already
- * deposited and proceed with HEAD/DATA frames against an in-mode boot
- * ROM.
+ * forwarding resumes.
  */
 static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
                                 int min_markers,
+                                const unsigned char *head_frame,
+                                size_t head_frame_len,
                                 struct bootrom_catch_result *out)
 {
     memset(out, 0, sizeof(*out));
@@ -1301,11 +1336,16 @@ static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
         return;
     }
 
+    /* Local helper: pipeline a HEAD frame after the catch's final
+     * 0xAA and capture one byte of ACK locally.  Called from both
+     * success sites (BLIND timeout and MARKER threshold reached). */
+    int pipe_head = (head_frame != NULL && head_frame_len > 0);
+
     /* 1. Reset the camera. */
     syslog(LOG_INFO,
            "bootrom_catch: start (pulse=%d ms, max_wait=%d ms, mode=%d, "
-           "min_markers=%d)",
-           pulse_ms, max_wait_ms, mode, min_markers);
+           "min_markers=%d, head_frame=%zu bytes)",
+           pulse_ms, max_wait_ms, mode, min_markers, head_frame_len);
     set_signal_state(TIOCM_RTS, 0);
     set_signal_state(TIOCM_DTR, 0);
     usleep((useconds_t)pulse_ms * 1000);
@@ -1337,6 +1377,24 @@ static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
                        "bootrom_catch: blind blast complete (%ums, %u rx bytes)",
                        out->elapsed_ms, out->bytes_rx);
                 out->status = BOOTROM_STATUS_OK;
+                /* In BLIND mode we never sent the "I saw markers" final
+                 * 0xAA; the chip is presumed in download mode by the
+                 * fact that we blasted the whole window.  Pipeline the
+                 * HEAD if the client provided one. */
+                if (pipe_head) {
+                    ssize_t wr = write(fd, head_frame, head_frame_len);
+                    if (wr > 0) out->bytes_tx += (uint32_t)wr;
+                    fd_set hfds; FD_ZERO(&hfds); FD_SET(fd, &hfds);
+                    struct timeval ht = { .tv_sec = 0, .tv_usec = 200000 };
+                    if (select(fd + 1, &hfds, NULL, NULL, &ht) > 0) {
+                        unsigned char b = 0;
+                        if (read(fd, &b, 1) == 1) {
+                            out->head_ack = b;
+                            out->head_ack_seen = 1;
+                            out->bytes_rx += 1;
+                        }
+                    }
+                }
                 return;
             }
             out->status = BOOTROM_STATUS_TIMEOUT;
@@ -1404,7 +1462,7 @@ static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
                 }
                 if (mode == BOOTROM_MODE_MARKER && run >= min_markers) {
                     /* Confirmed.  Send the final 0xAA so the boot ROM
-                     * commits to serial-download mode, then return. */
+                     * commits to serial-download mode. */
                     unsigned char one = BOOTROM_ACK;
                     ssize_t wr = write(fd, &one, 1);
                     if (wr > 0) out->bytes_tx += (uint32_t)wr;
@@ -1415,6 +1473,39 @@ static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
                            "max-run %u, %u rx bytes)",
                            out->elapsed_ms, out->markers_seen,
                            out->max_marker_run, out->bytes_rx);
+                    /* If the client pipelined a HEAD frame, write it
+                     * NOW — straight after the final 0xAA.  This is
+                     * the round trip we must keep local: on a remote
+                     * link the chip's download-mode hold window is
+                     * shorter than the network RTT, so by the time a
+                     * client-side HEAD arrives the chip has already
+                     * moved on to SPL/U-Boot. */
+                    if (pipe_head) {
+                        /* The chip may still be flushing residual
+                         * markers from its UART TX when we wrote our
+                         * final 0xAA.  Discard anything queued so the
+                         * post-HEAD read returns the chip's *actual*
+                         * reply to HEAD rather than a stale marker. */
+                        usleep(5000);  /* 5 ms grace */
+                        tcflush(fd, TCIFLUSH);
+
+                        ssize_t hwr = write(fd, head_frame, head_frame_len);
+                        if (hwr > 0) out->bytes_tx += (uint32_t)hwr;
+                        /* Wait briefly for the chip's HEAD ACK.  200 ms
+                         * is comfortably more than a HiSilicon bootrom
+                         * needs at 115200 baud to process a 14-byte
+                         * frame and emit one ACK byte. */
+                        fd_set hfds; FD_ZERO(&hfds); FD_SET(fd, &hfds);
+                        struct timeval ht = { .tv_sec = 0, .tv_usec = 200000 };
+                        if (select(fd + 1, &hfds, NULL, NULL, &ht) > 0) {
+                            unsigned char b = 0;
+                            if (read(fd, &b, 1) == 1) {
+                                out->head_ack = b;
+                                out->head_ack_seen = 1;
+                                out->bytes_rx += 1;
+                            }
+                        }
+                    }
                     return;
                 }
             } else if (rxbuf[i] != 0x00) {

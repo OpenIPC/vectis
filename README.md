@@ -156,6 +156,7 @@ IAC SB COMPORT BOOTROM-CATCH
     <max_wait_ms  : 4 bytes BE>
     [<mode        : 1 byte>]   # optional, default 0 = MARKER
     [<min_markers : 1 byte>]   # optional, MARKER threshold; 0 → default (5)
+    [<head_frame  : ≤ 64 bytes>] # optional pipelined HEAD frame
 IAC SE
 ```
 
@@ -185,9 +186,20 @@ IAC SE
   max_marker_run` if the first attempt timed out — purely
   protocol-driven, no operator intervention.
 
-Older clients that send only the 8-byte (no-mode) or 9-byte
-(no-`min_markers`) payload default to MARKER mode and the canonical
-threshold respectively — no behaviour change.
+- `head_frame` (optional, any bytes appended after byte 10).  The
+  *first* HEAD frame the client wants to send to the chip after the
+  catch.  When present, Vectis writes the final `0xAA` followed —
+  with no network round trip in between — by the HEAD frame and
+  captures the chip's reply byte locally.  This is the bit that
+  closes the RTT-window problem: on links where the chip's
+  download-mode hold window is shorter than one client→server round
+  trip, the chip otherwise moves on to SPL before any client-issued
+  HEAD can arrive.  Capped server-side to 64 bytes (a HiSilicon
+  HEAD frame is 14, with margin for variants).
+
+Older clients that send only the 8/9/10-byte payload default to
+MARKER mode, the canonical threshold, and no HEAD pipelining
+respectively — no behaviour change.
 
 Wire format (server → client):
 
@@ -200,6 +212,11 @@ IAC SB COMPORT (BOOTROM-CATCH+100=150)
     <bytes_tx      : 4 bytes BE>  total 0xAA bytes blasted
     <elapsed_ms    : 4 bytes BE>  actual catch-loop runtime
     <last_byte     : 1 byte>      last non-marker byte (0 if none)
+    <head_ack      : 1 byte>      chip's reply to the pipelined HEAD,
+                                  or 0 if no HEAD was provided
+    <head_ack_seen : 1 byte>      1 if any byte arrived during the
+                                  post-HEAD window (so a `head_ack=0`
+                                  can be told from "no reply at all")
 IAC SE
 ```
 
