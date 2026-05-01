@@ -30,8 +30,32 @@
 #define BUFFER_SIZE 4096
 #define RESET_PULSE_MS 200
 #define DEFAULT_TCP_PORT 35240
-#define PROGRAM_VERSION "1.1.1"
-#define PROGRAM_RELEASE_DATE "2026-04-30"
+#define PROGRAM_VERSION "1.2.0"
+#define PROGRAM_RELEASE_DATE "2026-05-01"
+
+/* --- RFC 854 / RFC 2217 protocol constants --- */
+#define TN_IAC_BYTE   255
+#define TN_DONT       254
+#define TN_DO         253
+#define TN_WONT       252
+#define TN_WILL       251
+#define TN_SB         250
+#define TN_SE         240
+
+#define TN_OPT_BINARY  0   /* RFC 856 */
+#define TN_OPT_SGA     3   /* RFC 858 */
+#define TN_OPT_COMPORT 44  /* RFC 2217 */
+
+#define COMPORT_SIGNATURE     0
+#define COMPORT_SET_BAUDRATE  1
+#define COMPORT_SET_CONTROL   5
+#define COMPORT_SERVER_OFFSET 100  /* server replies use sub-opt + 100 */
+
+#define COMPORT_CTRL_REQUEST 0
+#define COMPORT_CTRL_DTR_ON  8
+#define COMPORT_CTRL_DTR_OFF 9
+#define COMPORT_CTRL_RTS_ON  10
+#define COMPORT_CTRL_RTS_OFF 11
 
 // Global variables
 volatile sig_atomic_t running = 1;
@@ -45,7 +69,51 @@ static int tcp_client_fd = -1;
 static char tcp_echo_buffer[BUFFER_SIZE];
 static size_t tcp_echo_len = 0;
 
+/* --- RFC 2217 / Telnet session state for the TCP client ---
+ *
+ * Vectis stays in legacy raw mode (Ctrl+P intercept, CRLF normalisation,
+ * echo suppression) until the client transmits a Telnet IAC byte.  At
+ * that point we lock into Telnet mode for the rest of the connection,
+ * announce BINARY + SUPPRESS-GO-AHEAD + COM-PORT-OPTION, and process
+ * SET-CONTROL / SET-BAUDRATE sub-negotiations.
+ *
+ * The detection rule is safe because:
+ *   - Interactive humans never type 0xFF (it's an undefined Latin-1
+ *     byte; all keyboards produce printable ASCII or named control
+ *     codes like Ctrl+C/Ctrl+P).
+ *   - Programmatic RFC 2217 clients (pyserial's rfc2217:// transport,
+ *     ser2net, picocom --rfc2217, plain `telnet`) always send IAC at
+ *     connect time during option negotiation.
+ *
+ * Existing socat / nc / cat workflows therefore stay legacy and
+ * continue to fire the Ctrl+P pulse on a single 0x10.
+ */
+typedef enum {
+    TN_STATE_DATA = 0,
+    TN_STATE_IAC,
+    TN_STATE_NEG,      /* saw IAC WILL/WONT/DO/DONT, awaiting option byte */
+    TN_STATE_SB_OPT,   /* saw IAC SB, awaiting option byte */
+    TN_STATE_SB_DATA,  /* collecting sub-negotiation parameters */
+    TN_STATE_SB_IAC,   /* saw IAC inside SB; expecting SE or IAC */
+} tn_state_t;
+
+static struct {
+    int telnet;             /* 0 = legacy mode, 1 = Telnet/RFC 2217 mode */
+    tn_state_t state;
+    int neg_cmd;            /* WILL/WONT/DO/DONT being processed */
+    int sb_opt;
+    unsigned char sb_buf[64];
+    size_t sb_len;
+
+    /* Negotiated options.  *_local = "we WILL X", *_remote = "they WILL X". */
+    int binary_local, binary_remote;
+    int sga_local, sga_remote;
+    int comport_local, comport_remote;
+} tn = { 0 };
+
 static void generate_reset_pulse(void);
+void set_signal_state(int signal_flag, int active);
+static int set_uart_baudrate(int target);
 
 static void log_message(int priority, FILE *stream, const char *fmt, ...)
 {
@@ -75,6 +143,7 @@ static void close_tcp_client(void)
         tcp_client_fd = -1;
     }
     tcp_echo_len = 0;
+    memset(&tn, 0, sizeof(tn));
 }
 
 static void close_tcp_listener(void)
@@ -457,17 +526,280 @@ static void accept_tcp_client(void)
     printf("[TCP] Client connected from %s:%u\n", peer_addr, (unsigned)ntohs(peer.sin_port));
 }
 
+/* --- RFC 2217 helpers --- */
+
+static void tn_send(const unsigned char *bytes, size_t len)
+{
+    if (tcp_client_fd != -1) {
+        write_all_socket(tcp_client_fd, (const char *)bytes, len);
+    }
+}
+
+static void tn_send_neg(unsigned char cmd, unsigned char opt)
+{
+    unsigned char buf[3] = { TN_IAC_BYTE, cmd, opt };
+    tn_send(buf, sizeof(buf));
+}
+
+static void tn_announce_options(void)
+{
+    /* Proactively offer BINARY (both directions), SUPPRESS-GO-AHEAD,
+     * and COM-PORT-OPTION.  The client confirms what it wants. */
+    tn_send_neg(TN_WILL, TN_OPT_BINARY);
+    tn_send_neg(TN_DO,   TN_OPT_BINARY);
+    tn_send_neg(TN_WILL, TN_OPT_SGA);
+    tn_send_neg(TN_DO,   TN_OPT_SGA);
+    tn_send_neg(TN_WILL, TN_OPT_COMPORT);
+    tn_send_neg(TN_DO,   TN_OPT_COMPORT);
+    syslog(LOG_INFO, "Telnet/RFC 2217 mode entered; announced BINARY+SGA+COM-PORT-OPTION");
+    printf("[TCP] Telnet/RFC 2217 mode\n");
+    fflush(stdout);
+}
+
+static void tn_handle_neg(int cmd, int opt)
+{
+    int *local = NULL;   /* tracks WILL state on our (server) side */
+    int *remote = NULL;  /* tracks WILL state on the client side */
+
+    switch (opt) {
+    case TN_OPT_BINARY:  local = &tn.binary_local;  remote = &tn.binary_remote;  break;
+    case TN_OPT_SGA:     local = &tn.sga_local;     remote = &tn.sga_remote;     break;
+    case TN_OPT_COMPORT: local = &tn.comport_local; remote = &tn.comport_remote; break;
+    default:
+        /* Refuse anything else — Q method: respond once, no loop. */
+        if (cmd == TN_WILL) tn_send_neg(TN_DONT, (unsigned char)opt);
+        else if (cmd == TN_DO) tn_send_neg(TN_WONT, (unsigned char)opt);
+        return;
+    }
+
+    switch (cmd) {
+    case TN_WILL:  /* peer will send option — accept iff state changes */
+        if (!*remote) { *remote = 1; tn_send_neg(TN_DO, (unsigned char)opt); }
+        break;
+    case TN_WONT:
+        if (*remote) { *remote = 0; tn_send_neg(TN_DONT, (unsigned char)opt); }
+        break;
+    case TN_DO:    /* peer wants us to send option */
+        if (!*local) { *local = 1; tn_send_neg(TN_WILL, (unsigned char)opt); }
+        break;
+    case TN_DONT:
+        if (*local) { *local = 0; tn_send_neg(TN_WONT, (unsigned char)opt); }
+        break;
+    }
+}
+
+static void tn_send_set_control_reply(unsigned char value)
+{
+    unsigned char buf[7] = {
+        TN_IAC_BYTE, TN_SB, TN_OPT_COMPORT,
+        COMPORT_SET_CONTROL + COMPORT_SERVER_OFFSET, value,
+        TN_IAC_BYTE, TN_SE,
+    };
+    tn_send(buf, sizeof(buf));
+}
+
+static void tn_send_set_baudrate_reply(uint32_t baud)
+{
+    unsigned char buf[11] = {
+        TN_IAC_BYTE, TN_SB, TN_OPT_COMPORT,
+        COMPORT_SET_BAUDRATE + COMPORT_SERVER_OFFSET,
+        (unsigned char)(baud >> 24), (unsigned char)(baud >> 16),
+        (unsigned char)(baud >> 8),  (unsigned char)baud,
+        TN_IAC_BYTE, TN_SE,
+    };
+    tn_send(buf, sizeof(buf));
+}
+
+static int current_uart_baud(void)
+{
+    if (fd == -1) return 0;
+    struct termios t;
+    if (tcgetattr(fd, &t) != 0) return 0;
+    speed_t s = cfgetospeed(&t);
+    switch (s) {
+    case B9600:   return 9600;
+    case B19200:  return 19200;
+    case B38400:  return 38400;
+    case B57600:  return 57600;
+    case B115200: return 115200;
+    case B230400: return 230400;
+    default:      return 0;
+    }
+}
+
+static void tn_handle_subneg(int opt, const unsigned char *data, size_t len)
+{
+    if (opt != TN_OPT_COMPORT || len < 1) {
+        return;
+    }
+    unsigned char subopt = data[0];
+
+    switch (subopt) {
+    case COMPORT_SET_CONTROL: {
+        if (len < 2) return;
+        unsigned char value = data[1];
+        switch (value) {
+        case COMPORT_CTRL_DTR_ON:  set_signal_state(TIOCM_DTR, 1); break;
+        case COMPORT_CTRL_DTR_OFF: set_signal_state(TIOCM_DTR, 0); break;
+        case COMPORT_CTRL_RTS_ON:  set_signal_state(TIOCM_RTS, 1); break;
+        case COMPORT_CTRL_RTS_OFF: set_signal_state(TIOCM_RTS, 0); break;
+        case COMPORT_CTRL_REQUEST: {
+            /* Reply with the current line state we know about.  Since
+             * Vectis only exposes RTS+DTR, report DTR as a representative
+             * value.  Most clients only care about the round-trip ack. */
+            int status = 0;
+            if (fd != -1) ioctl(fd, TIOCMGET, &status);
+            value = (status & TIOCM_DTR) ? COMPORT_CTRL_DTR_ON : COMPORT_CTRL_DTR_OFF;
+            break;
+        }
+        default:
+            /* Unsupported control (flow control etc.) — ack the value
+             * we received so the client doesn't hang waiting. */
+            break;
+        }
+        tn_send_set_control_reply(value);
+        break;
+    }
+    case COMPORT_SET_BAUDRATE: {
+        if (len < 5) return;
+        uint32_t baud = ((uint32_t)data[1] << 24) | ((uint32_t)data[2] << 16) |
+                        ((uint32_t)data[3] << 8)  |  (uint32_t)data[4];
+        if (baud != 0) {
+            if (set_uart_baudrate((int)baud) != 0) {
+                /* Couldn't set — reply with current to inform the client. */
+                baud = (uint32_t)current_uart_baud();
+            }
+        } else {
+            baud = (uint32_t)current_uart_baud();
+        }
+        tn_send_set_baudrate_reply(baud);
+        break;
+    }
+    case COMPORT_SIGNATURE: {
+        /* RFC 2217 §3.5: server may answer with its own signature. */
+        const char sig[] = "Vectis " PROGRAM_VERSION;
+        unsigned char hdr[4] = {
+            TN_IAC_BYTE, TN_SB, TN_OPT_COMPORT,
+            COMPORT_SIGNATURE + COMPORT_SERVER_OFFSET,
+        };
+        unsigned char tail[2] = { TN_IAC_BYTE, TN_SE };
+        tn_send(hdr, sizeof(hdr));
+        tn_send((const unsigned char *)sig, sizeof(sig) - 1);
+        tn_send(tail, sizeof(tail));
+        break;
+    }
+    default:
+        /* Unsupported sub-option — silently ignore. */
+        break;
+    }
+}
+
+/* Run incoming TCP bytes through the Telnet state machine.  Extracted
+ * payload bytes (with IAC IAC unescaped) land in out[]. */
+static size_t tn_process(const unsigned char *in, size_t n,
+                         unsigned char *out, size_t out_size)
+{
+    size_t out_pos = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        unsigned char b = in[i];
+        switch (tn.state) {
+        case TN_STATE_DATA:
+            if (b == TN_IAC_BYTE) {
+                tn.state = TN_STATE_IAC;
+            } else if (out_pos < out_size) {
+                out[out_pos++] = b;
+            }
+            break;
+        case TN_STATE_IAC:
+            if (b == TN_IAC_BYTE) {
+                if (out_pos < out_size) out[out_pos++] = TN_IAC_BYTE;
+                tn.state = TN_STATE_DATA;
+            } else if (b == TN_WILL || b == TN_WONT || b == TN_DO || b == TN_DONT) {
+                tn.neg_cmd = b;
+                tn.state = TN_STATE_NEG;
+            } else if (b == TN_SB) {
+                tn.state = TN_STATE_SB_OPT;
+            } else {
+                /* NOP/BRK/AYT/etc. — ignore. */
+                tn.state = TN_STATE_DATA;
+            }
+            break;
+        case TN_STATE_NEG:
+            tn_handle_neg(tn.neg_cmd, b);
+            tn.state = TN_STATE_DATA;
+            break;
+        case TN_STATE_SB_OPT:
+            tn.sb_opt = b;
+            tn.sb_len = 0;
+            tn.state = TN_STATE_SB_DATA;
+            break;
+        case TN_STATE_SB_DATA:
+            if (b == TN_IAC_BYTE) {
+                tn.state = TN_STATE_SB_IAC;
+            } else if (tn.sb_len < sizeof(tn.sb_buf)) {
+                tn.sb_buf[tn.sb_len++] = b;
+            }
+            break;
+        case TN_STATE_SB_IAC:
+            if (b == TN_SE) {
+                tn_handle_subneg(tn.sb_opt, tn.sb_buf, tn.sb_len);
+                tn.state = TN_STATE_DATA;
+            } else if (b == TN_IAC_BYTE) {
+                if (tn.sb_len < sizeof(tn.sb_buf)) {
+                    tn.sb_buf[tn.sb_len++] = TN_IAC_BYTE;
+                }
+                tn.state = TN_STATE_SB_DATA;
+            } else {
+                /* Bad escape inside SB — abort. */
+                tn.state = TN_STATE_DATA;
+            }
+            break;
+        }
+    }
+
+    return out_pos;
+}
+
 static void handle_tcp_client_input(void)
 {
-    char buffer[BUFFER_SIZE];
+    unsigned char buffer[BUFFER_SIZE];
     char filtered[BUFFER_SIZE];
     char normalized[BUFFER_SIZE];
     int reset_requested;
     ssize_t n = read(tcp_client_fd, buffer, sizeof(buffer));
 
     if (n > 0) {
-        size_t filtered_len = filter_input_buffer(buffer, (size_t)n, filtered, sizeof(filtered), 0,
-                                                 &reset_requested, NULL);
+        /* Detect the first IAC byte and lock into Telnet/RFC 2217 mode. */
+        if (!tn.telnet) {
+            for (ssize_t i = 0; i < n; i++) {
+                if (buffer[i] == TN_IAC_BYTE) { tn.telnet = 1; break; }
+            }
+            if (tn.telnet) {
+                tn_announce_options();
+            }
+        }
+
+        if (tn.telnet) {
+            /* RFC 2217 path: state machine extracts data bytes and
+             * processes Telnet commands inline.  No Ctrl+P intercept,
+             * no CRLF normalisation, no echo suppression — the
+             * connection is now binary-safe. */
+            unsigned char data[BUFFER_SIZE];
+            size_t data_len = tn_process(buffer, (size_t)n, data, sizeof(data));
+            if (data_len > 0) {
+                if (write_all(fd, (const char *)data, data_len) != 0) {
+                    log_errno_message("Failed to write TCP input to UART");
+                    running = 0;
+                }
+            }
+            return;
+        }
+
+        /* Legacy path — unchanged behaviour for raw socat / nc / cat. */
+        size_t filtered_len = filter_input_buffer((const char *)buffer, (size_t)n,
+                                                  filtered, sizeof(filtered), 0,
+                                                  &reset_requested, NULL);
 
         if (reset_requested) {
             generate_reset_pulse();
@@ -501,6 +833,39 @@ static void handle_tcp_client_input(void)
     }
 }
 
+/* Forward UART bytes to the TCP client, escaping IAC bytes in Telnet
+ * mode as required by RFC 854 (IAC IAC = literal 0xFF). */
+static int tn_send_uart_bytes(const char *data, size_t len)
+{
+    if (!tn.telnet) {
+        return write_all_socket(tcp_client_fd, data, len);
+    }
+
+    /* Worst case: every byte is 0xFF and gets doubled.  Stream out in
+     * chunks so a long UART read doesn't need a 2*BUFFER_SIZE stack. */
+    unsigned char chunk[BUFFER_SIZE];
+    size_t out = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char b = (unsigned char)data[i];
+        if (out + 2 > sizeof(chunk)) {
+            if (write_all_socket(tcp_client_fd, (const char *)chunk, out) != 0) {
+                return -1;
+            }
+            out = 0;
+        }
+        if (b == TN_IAC_BYTE) {
+            chunk[out++] = TN_IAC_BYTE;
+            chunk[out++] = TN_IAC_BYTE;
+        } else {
+            chunk[out++] = b;
+        }
+    }
+    if (out > 0 && write_all_socket(tcp_client_fd, (const char *)chunk, out) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static void forward_uart_output(const char *data, size_t len)
 {
     if (fwrite(data, 1, len, stdout) != len || fflush(stdout) != 0) {
@@ -509,20 +874,69 @@ static void forward_uart_output(const char *data, size_t len)
         return;
     }
 
-    if (tcp_client_fd != -1 && len > 0) {
-        size_t suppressed = consume_tcp_echo_prefix(data, len);
-        if (suppressed > 0 && suppressed < len && data[suppressed - 1] == '\r' && data[suppressed] == '\n') {
-            suppressed++;
-        }
-        const char *tcp_data = data + suppressed;
-        size_t tcp_len = len - suppressed;
+    if (tcp_client_fd == -1 || len == 0) {
+        return;
+    }
 
-        if (tcp_len > 0 && write_all_socket(tcp_client_fd, tcp_data, tcp_len) != 0) {
+    if (tn.telnet) {
+        /* Binary-safe path: just escape IAC, no echo suppression
+         * (the RFC 2217 client isn't expecting its own input back). */
+        if (tn_send_uart_bytes(data, len) != 0) {
             log_errno_message("Failed to write UART output to TCP client");
             syslog(LOG_INFO, "Closing TCP client after write failure");
             close_tcp_client();
         }
+        return;
     }
+
+    /* Legacy path: echo suppression for interactive socat/nc clients. */
+    size_t suppressed = consume_tcp_echo_prefix(data, len);
+    if (suppressed > 0 && suppressed < len && data[suppressed - 1] == '\r' && data[suppressed] == '\n') {
+        suppressed++;
+    }
+    const char *tcp_data = data + suppressed;
+    size_t tcp_len = len - suppressed;
+
+    if (tcp_len > 0 && write_all_socket(tcp_client_fd, tcp_data, tcp_len) != 0) {
+        log_errno_message("Failed to write UART output to TCP client");
+        syslog(LOG_INFO, "Closing TCP client after write failure");
+        close_tcp_client();
+    }
+}
+
+/* Translate an integer baud rate to the matching speed_t.  Returns -1
+ * on unsupported values. */
+static int speed_for_baud(int baud, speed_t *out)
+{
+    switch (baud) {
+    case 9600:   *out = B9600;   return 0;
+    case 19200:  *out = B19200;  return 0;
+    case 38400:  *out = B38400;  return 0;
+    case 57600:  *out = B57600;  return 0;
+    case 115200: *out = B115200; return 0;
+    case 230400: *out = B230400; return 0;
+    default:                     return -1;
+    }
+}
+
+static int set_uart_baudrate(int target)
+{
+    speed_t s;
+    struct termios t;
+
+    if (fd == -1 || speed_for_baud(target, &s) != 0) {
+        return -1;
+    }
+    if (tcgetattr(fd, &t) != 0) {
+        return -1;
+    }
+    cfsetispeed(&t, s);
+    cfsetospeed(&t, s);
+    if (tcsetattr(fd, TCSANOW, &t) != 0) {
+        return -1;
+    }
+    syslog(LOG_INFO, "RFC 2217: UART baud rate changed to %d", target);
+    return 0;
 }
 
 static int install_signal_handlers(void)
