@@ -26,6 +26,7 @@
 #include <poll.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <time.h>
 #include <ctype.h>
 #include <stdarg.h>
@@ -112,7 +113,8 @@ static void log_message(int priority, const char *fmt, ...)
     va_end(ap);
 
     syslog(priority, "%s", buf);
-    fprintf(stderr, "%s: %s\n", g_progname, buf);
+    /* Use \r\n: terminal may be in raw mode (OPOST/ONLCR off). */
+    fprintf(stderr, "%s: %s\r\n", g_progname, buf);
 }
 
 static void log_errno(int priority, const char *fmt, ...)
@@ -126,13 +128,14 @@ static void log_errno(int priority, const char *fmt, ...)
     va_end(ap);
 
     syslog(priority, "%s: %s", buf, strerror(saved_errno));
-    fprintf(stderr, "%s: %s: %s\n", g_progname, buf, strerror(saved_errno));
+    /* Use \r\n: terminal may be in raw mode (OPOST/ONLCR off). */
+    fprintf(stderr, "%s: %s: %s\r\n", g_progname, buf, strerror(saved_errno));
 }
 
 static void die_errno(const char *msg)
 {
     log_errno(LOG_ERR, "%s", msg);
-    exit(1);
+    exit(EXIT_FAILURE);
 }
 
 static void sleep_us(unsigned int usec)
@@ -152,7 +155,8 @@ static void print_version(const char *prog)
 static void restore_terminal(void)
 {
     if (g_tio_saved) {
-        tcsetattr(STDIN_FILENO, TCSANOW, &g_old_tio);
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &g_old_tio) != 0)
+            log_errno(LOG_WARNING, "restore_terminal: tcsetattr failed");
         g_tio_saved = 0;
     }
 }
@@ -351,12 +355,18 @@ static int comport_send(uint8_t subcmd, const uint8_t *data, size_t len)
     uint8_t pkt[32];
     size_t  pos = 0;
 
+    /* Verify payload fits before writing: 4 hdr + worst-case 2×len + 2 tail. */
+    if (4 + 2 * len + 2 > sizeof(pkt)) {
+        log_message(LOG_ERR, "comport_send: payload too large (%zu bytes)", len);
+        return -1;
+    }
+
     pkt[pos++] = IAC;
     pkt[pos++] = SB;
     pkt[pos++] = TELOPT_COMPORT;
     pkt[pos++] = subcmd;
 
-    for (size_t i = 0; i < len && pos < sizeof(pkt) - 2; i++) {
+    for (size_t i = 0; i < len; i++) {
         pkt[pos++] = data[i];
         if (data[i] == IAC)
             pkt[pos++] = IAC; /* escape IAC inside payload */
@@ -466,25 +476,52 @@ static uint8_t       g_negot_cmd = 0;
 static uint8_t       g_sb_buf[512];
 static size_t        g_sb_len = 0;
 
+/* Flush the local output buffer to stdout. Returns 0 on success, -1 on error. */
+static int flush_stdout_buf(uint8_t *out, size_t *pos)
+{
+    if (*pos == 0)
+        return 0;
+    if (write(STDOUT_FILENO, out, *pos) != (ssize_t)*pos)
+        return -1;
+    *pos = 0;
+    return 0;
+}
+
 /* Parse a chunk of incoming data. Plain data is written to stdout.
+ * LF (0x0A) is translated to CR+LF so the display is correct in raw
+ * terminal mode (OPOST/ONLCR is disabled by cfmakeraw).
+ * Data bytes are batched into a stack buffer to minimise write(2) calls.
  * Returns 0 on success, -1 if a write to stdout fails. */
 static int process_incoming(const uint8_t *buf, size_t n)
 {
+    uint8_t out[256];
+    size_t  out_pos = 0;
+
     for (size_t i = 0; i < n; i++) {
         uint8_t b = buf[i];
         switch (g_state) {
         case TS_DATA:
-            if (b == IAC)
+            if (b == IAC) {
+                if (flush_stdout_buf(out, &out_pos) != 0)
+                    return -1;
                 g_state = TS_IAC;
-            else if (write(STDOUT_FILENO, &b, 1) != 1)
-                return -1;
+            } else {
+                /* Reserve space for up to 2 bytes (LF expands to CR+LF). */
+                if (out_pos + 2 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
+                    return -1;
+                /* Prepend CR before LF for correct display in raw mode. */
+                if (b == '\n')
+                    out[out_pos++] = '\r';
+                out[out_pos++] = b;
+            }
             break;
 
         case TS_IAC:
             if (b == IAC) {
                 /* Escaped 0xFF becomes data. */
-                if (write(STDOUT_FILENO, &b, 1) != 1)
+                if (out_pos + 1 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
                     return -1;
+                out[out_pos++] = b;
                 g_state = TS_DATA;
             } else if (b == DO || b == DONT || b == WILL || b == WONT) {
                 g_negot_cmd = b;
@@ -529,13 +566,15 @@ static int process_incoming(const uint8_t *buf, size_t n)
             break;
         }
     }
-    return 0;
+    return flush_stdout_buf(out, &out_pos);
 }
 
 /* ---------- Reset pulse (RTS+DTR are released for 200 ms) ---------- */
 
 static void send_reset_pulse(void)
 {
+    if (g_sock < 0)
+        return;
     fputs("\r\n", stderr);
     if (g_serial_mode) {
         log_message(LOG_INFO, "[reset] RTS+DTR off for 200 ms");
@@ -579,11 +618,20 @@ static int connect_to(const char *host, const char *port)
         s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (s < 0)
             continue;
-        /* Limit blocking time so the user is not stuck indefinitely. */
+        /* 10-second connect timeout so the user is not stuck indefinitely. */
         struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
-        (void)setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-        if (connect(s, ai->ai_addr, ai->ai_addrlen) == 0)
+        if (setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0)
+            log_errno(LOG_WARNING, "setsockopt(SO_SNDTIMEO)");
+        if (connect(s, ai->ai_addr, ai->ai_addrlen) == 0) {
+            /* Clear connect timeout: SO_SNDTIMEO affects all writes, not just connect(). */
+            struct timeval zero = { 0, 0 };
+            (void)setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &zero, sizeof zero);
+            /* Disable Nagle algorithm so keystrokes are sent immediately. */
+            int one = 1;
+            if (setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) != 0)
+                log_errno(LOG_WARNING, "setsockopt(TCP_NODELAY)");
             break;
+        }
         close(s);
         s = -1;
     }
@@ -747,9 +795,18 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    signal(SIGINT,  on_signal);
-    signal(SIGTERM, on_signal);
-    signal(SIGPIPE, SIG_IGN);
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_signal;
+        sa.sa_flags   = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGINT,  &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+        sa.sa_handler = SIG_IGN;
+        sa.sa_flags   = 0;
+        sigaction(SIGPIPE, &sa, NULL);
+    }
 
     atexit(cleanup);
 
@@ -784,27 +841,29 @@ int main(int argc, char **argv)
         log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for 200 ms, Ctrl+] exits");
 
         /* Request negotiations with the server. */
-        telnet_send_negot(WILL, TELOPT_BINARY);
-        telnet_send_negot(DO,   TELOPT_BINARY);
-        telnet_send_negot(WILL, TELOPT_SGA);
-        telnet_send_negot(DO,   TELOPT_SGA);
-        telnet_send_negot(WILL, TELOPT_COMPORT);
+        if (telnet_send_negot(WILL, TELOPT_BINARY) < 0 ||
+            telnet_send_negot(DO,   TELOPT_BINARY) < 0 ||
+            telnet_send_negot(WILL, TELOPT_SGA)    < 0 ||
+            telnet_send_negot(DO,   TELOPT_SGA)    < 0 ||
+            telnet_send_negot(WILL, TELOPT_COMPORT) < 0) {
+            log_errno(LOG_ERR, "Telnet negotiation failed");
+            return 1;
+        }
 
         /* Configure the port parameters.
            A small delay after WILL COM-PORT helps some servers reply with DO first. */
         sleep_us(100 * 1000);
 
-        comport_set_baudrate(baud);
-        comport_set_datasize((uint8_t)data_bits);
-        comport_set_stop((uint8_t)stop_bits);
-        comport_set_parity(parity_v);
-        /* No hardware flow control by default. */
-        comport_set_control(CPC_CTRL_NO_FLOW);
-        /* Bring lines into the active state so the device runs normally.
-           This also keeps Ctrl+P working: the reset pulse drops the lines for
-           200 ms and then restores them here. */
-        comport_set_control(CPC_CTRL_DTR_ON);
-        comport_set_control(CPC_CTRL_RTS_ON);
+        if (comport_set_baudrate(baud)               < 0 ||
+            comport_set_datasize((uint8_t)data_bits) < 0 ||
+            comport_set_stop((uint8_t)stop_bits)     < 0 ||
+            comport_set_parity(parity_v)             < 0 ||
+            comport_set_control(CPC_CTRL_NO_FLOW)    < 0 ||
+            comport_set_control(CPC_CTRL_DTR_ON)     < 0 ||
+            comport_set_control(CPC_CTRL_RTS_ON)     < 0) {
+            log_errno(LOG_ERR, "Port configuration failed");
+            return 1;
+        }
     }
 
     /* Switch the terminal to raw mode. */
@@ -824,6 +883,12 @@ int main(int argc, char **argv)
             if (errno == EINTR)
                 continue;
             log_errno(LOG_ERR, "poll");
+            break;
+        }
+
+        /* Transport error or hangup — no point continuing. */
+        if (pfds[0].revents & (POLLERR | POLLHUP)) {
+            log_message(LOG_INFO, g_serial_mode ? "Serial device error/hangup" : "Connection error/hangup");
             break;
         }
 
