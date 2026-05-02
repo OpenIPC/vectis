@@ -48,32 +48,32 @@
 #define TELOPT_COMPORT    44   /* RFC 2217 */
 
 /* Port-control commands (client -> server) */
-#define CPC_SET_BAUDRATE      1
-#define CPC_SET_DATASIZE      2
-#define CPC_SET_PARITY        3
-#define CPC_SET_STOPSIZE      4
-#define CPC_SET_CONTROL       5
-#define CPC_NOTIFY_LINESTATE  6
-#define CPC_NOTIFY_MODEMSTATE 7
-#define CPC_FLOWCONTROL_SUSP  8
-#define CPC_FLOWCONTROL_RESUM 9
+#define CPC_SET_BAUDRATE        1
+#define CPC_SET_DATASIZE        2
+#define CPC_SET_PARITY          3
+#define CPC_SET_STOPSIZE        4
+#define CPC_SET_CONTROL         5
+#define CPC_NOTIFY_LINESTATE    6
+#define CPC_NOTIFY_MODEMSTATE   7
+#define CPC_FLOWCONTROL_SUSP    8
+#define CPC_FLOWCONTROL_RESUM   9
 #define CPC_SET_LINESTATE_MASK  10
 #define CPC_SET_MODEMSTATE_MASK 11
-#define CPC_PURGE_DATA        12
+#define CPC_PURGE_DATA          12
 
 /* Values for CPC_SET_CONTROL (RTS/DTR/flow control) */
-#define CPC_CTRL_REQ_FLOW         0
-#define CPC_CTRL_NO_FLOW          1
-#define CPC_CTRL_XON_XOFF         2
-#define CPC_CTRL_HW_FLOW          3
+#define CPC_CTRL_REQ_FLOW   0
+#define CPC_CTRL_NO_FLOW    1
+#define CPC_CTRL_XON_XOFF   2
+#define CPC_CTRL_HW_FLOW    3
 
-#define CPC_CTRL_REQ_DTR          7
-#define CPC_CTRL_DTR_ON           8
-#define CPC_CTRL_DTR_OFF          9
+#define CPC_CTRL_REQ_DTR    7
+#define CPC_CTRL_DTR_ON     8
+#define CPC_CTRL_DTR_OFF    9
 
-#define CPC_CTRL_REQ_RTS          10
-#define CPC_CTRL_RTS_ON           11
-#define CPC_CTRL_RTS_OFF          12
+#define CPC_CTRL_REQ_RTS    10
+#define CPC_CTRL_RTS_ON     11
+#define CPC_CTRL_RTS_OFF    12
 
 /* Parity values */
 #define CPC_PARITY_NONE    1
@@ -87,11 +87,22 @@
 #define CPC_STOP_2   2
 #define CPC_STOP_15  3   /* 1.5 */
 
-#define PROGRAM_VERSION "1.2.1"
-#define PROGRAM_RELEASE_DATE "2026-05-01"
+#define PROGRAM_VERSION      "1.3.0"
+#define PROGRAM_RELEASE_DATE "2026-05-02"
+
+#define RECONNECT_DELAY_S 5
+
+/* Telnet parser states — declared here so disconnect() can reset them */
+enum tn_state {
+    TS_DATA,
+    TS_IAC,
+    TS_NEGOT,    /* waiting for the option byte after DO/DONT/WILL/WONT */
+    TS_SB,       /* collecting sub-negotiation data */
+    TS_SB_IAC    /* IAC seen inside SB */
+};
 
 /* Global state */
-static int g_sock = -1;
+static int g_fd = -1;
 static struct termios g_old_tio;
 static struct termios g_old_dev_tio;
 static int g_tio_saved = 0;
@@ -99,7 +110,16 @@ static int g_dev_tio_saved = 0;
 static volatile sig_atomic_t g_quit = 0;
 static const char *g_progname = "vectis-cli";
 static int g_serial_mode = 0;
+static int g_reset_ms = 200;
+static int g_reconnect = 0;
 static void set_serial_signal_state(int signal_flag, int active);
+
+/* Telnet parser state */
+static enum tn_state g_tn_state = TS_DATA;
+static uint8_t       g_negot_cmd = 0;
+/* 512 bytes: generous for any RFC 2217 sub-negotiation payload. */
+static uint8_t       g_sb_buf[512];
+static size_t        g_sb_len = 0;
 
 /* ---------- Logging ---------- */
 
@@ -163,25 +183,34 @@ static void restore_terminal(void)
 
 static void restore_serial(void)
 {
-    if (g_dev_tio_saved && g_sock >= 0) {
-        if (tcsetattr(g_sock, TCSANOW, &g_old_dev_tio) != 0)
+    if (g_dev_tio_saved && g_fd >= 0) {
+        if (tcsetattr(g_fd, TCSANOW, &g_old_dev_tio) != 0)
             log_errno(LOG_WARNING, "restore_serial: tcsetattr failed");
         g_dev_tio_saved = 0;
     }
 }
 
-static void cleanup(void)
+static void disconnect(void)
 {
-    restore_terminal();
-    if (g_serial_mode && g_sock >= 0) {
+    if (g_serial_mode && g_fd >= 0) {
         set_serial_signal_state(TIOCM_RTS, 0);
         set_serial_signal_state(TIOCM_DTR, 0);
     }
     restore_serial();
-    if (g_sock >= 0) {
-        close(g_sock);
-        g_sock = -1;
+    if (g_fd >= 0) {
+        close(g_fd);
+        g_fd = -1;
     }
+    /* Reset Telnet parser state for potential reconnect. */
+    g_tn_state  = TS_DATA;
+    g_negot_cmd = 0;
+    g_sb_len    = 0;
+}
+
+static void cleanup(void)
+{
+    restore_terminal();
+    disconnect();
 }
 
 static void on_signal(int sig)
@@ -209,13 +238,19 @@ static void set_raw_terminal(void)
 static int speed_for_baud(int baud, speed_t *out)
 {
     switch (baud) {
+    case 300:    *out = B300;    return 0;
+    case 1200:   *out = B1200;   return 0;
+    case 2400:   *out = B2400;   return 0;
+    case 4800:   *out = B4800;   return 0;
     case 9600:   *out = B9600;   return 0;
     case 19200:  *out = B19200;  return 0;
     case 38400:  *out = B38400;  return 0;
     case 57600:  *out = B57600;  return 0;
     case 115200: *out = B115200; return 0;
     case 230400: *out = B230400; return 0;
-    default:                   return -1;
+    case 460800: *out = B460800; return 0;
+    case 921600: *out = B921600; return 0;
+    default:                     return -1;
     }
 }
 
@@ -299,18 +334,15 @@ static int configure_serial(int fd, int baud, int data_bits, int stop_bits, char
 
 static void set_serial_signal_state(int signal_flag, int active)
 {
-    if (g_sock < 0) {
+    if (g_fd < 0)
         return;
-    }
 
     if (active) {
-        if (ioctl(g_sock, TIOCMBIS, &signal_flag) == -1) {
+        if (ioctl(g_fd, TIOCMBIS, &signal_flag) == -1)
             log_errno(LOG_ERR, "Failed to activate serial signal");
-        }
     } else {
-        if (ioctl(g_sock, TIOCMBIC, &signal_flag) == -1) {
+        if (ioctl(g_fd, TIOCMBIC, &signal_flag) == -1)
             log_errno(LOG_ERR, "Failed to deactivate serial signal");
-        }
     }
 }
 
@@ -339,7 +371,7 @@ static int write_all(int fd, const void *buf, size_t n)
 static int telnet_send_negot(uint8_t cmd, uint8_t opt)
 {
     uint8_t buf[3] = { IAC, cmd, opt };
-    return write_all(g_sock, buf, 3);
+    return write_all(g_fd, buf, 3);
 }
 
 /*
@@ -376,7 +408,7 @@ static int comport_send(uint8_t subcmd, const uint8_t *data, size_t len)
     pkt[pos++] = IAC;
     pkt[pos++] = SE;
 
-    return write_all(g_sock, pkt, pos);
+    return write_all(g_fd, pkt, pos);
 }
 
 /* Set the baud rate (4 bytes, big-endian). */
@@ -463,22 +495,7 @@ static void handle_subneg(const uint8_t *buf, size_t len)
     }
 }
 
-/* ---------- Incoming stream parser ---------- */
-
-enum tn_state {
-    TS_DATA,
-    TS_IAC,
-    TS_NEGOT,         /* Waiting for the option byte after DO/DONT/WILL/WONT. */
-    TS_SB,            /* Collecting sub-negotiation data. */
-    TS_SB_IAC         /* IAC seen inside SB. */
-};
-
-static enum tn_state g_state = TS_DATA;
-static uint8_t       g_negot_cmd = 0;
-/* 512 bytes: generous for any RFC 2217 sub-negotiation payload (e.g. BOOTROM_CATCH uses 8
- * bytes of parameters; baud-rate uses 4). Oversized to be safe with non-standard extensions. */
-static uint8_t       g_sb_buf[512];
-static size_t        g_sb_len = 0;
+/* ---------- Incoming stream parsers ---------- */
 
 /* Flush the local output buffer to stdout. Returns 0 on success, -1 on error. */
 static int flush_stdout_buf(uint8_t *out, size_t *pos)
@@ -490,9 +507,26 @@ static int flush_stdout_buf(uint8_t *out, size_t *pos)
     return rc;
 }
 
-/* Parse a chunk of incoming data. Plain data is written to stdout.
- * LF (0x0A) is translated to CR+LF so the display is correct in raw
- * terminal mode (OPOST/ONLCR is disabled by cfmakeraw).
+/* Serial mode: copy data to stdout with LF→CR+LF translation for raw terminal.
+ * Without this, LF alone does not return the cursor to column 0 (OPOST is off). */
+static int process_serial_incoming(const uint8_t *buf, size_t n)
+{
+    uint8_t out[256];
+    size_t  out_pos = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        uint8_t b = buf[i];
+        /* Reserve space for up to 2 bytes (LF expands to CR+LF). */
+        if (out_pos + 2 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
+            return -1;
+        if (b == '\n')
+            out[out_pos++] = '\r';
+        out[out_pos++] = b;
+    }
+    return flush_stdout_buf(out, &out_pos);
+}
+
+/* Telnet mode: parse and strip Telnet commands; LF→CR+LF for raw terminal.
  * Data bytes are batched into a stack buffer to minimise write(2) calls.
  * Returns 0 on success, -1 if a write to stdout fails. */
 static int process_incoming(const uint8_t *buf, size_t n)
@@ -502,12 +536,12 @@ static int process_incoming(const uint8_t *buf, size_t n)
 
     for (size_t i = 0; i < n; i++) {
         uint8_t b = buf[i];
-        switch (g_state) {
+        switch (g_tn_state) {
         case TS_DATA:
             if (b == IAC) {
                 if (flush_stdout_buf(out, &out_pos) != 0)
                     return -1;
-                g_state = TS_IAC;
+                g_tn_state = TS_IAC;
             } else {
                 /* Reserve space for up to 2 bytes (LF expands to CR+LF). */
                 if (out_pos + 2 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
@@ -525,27 +559,27 @@ static int process_incoming(const uint8_t *buf, size_t n)
                 if (out_pos + 1 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
                     return -1;
                 out[out_pos++] = b;
-                g_state = TS_DATA;
+                g_tn_state = TS_DATA;
             } else if (b == DO || b == DONT || b == WILL || b == WONT) {
                 g_negot_cmd = b;
-                g_state = TS_NEGOT;
+                g_tn_state = TS_NEGOT;
             } else if (b == SB) {
                 g_sb_len = 0;
-                g_state = TS_SB;
+                g_tn_state = TS_SB;
             } else {
                 /* Ignore other commands (NOP, etc.). */
-                g_state = TS_DATA;
+                g_tn_state = TS_DATA;
             }
             break;
 
         case TS_NEGOT:
             handle_negot(g_negot_cmd, b);
-            g_state = TS_DATA;
+            g_tn_state = TS_DATA;
             break;
 
         case TS_SB:
             if (b == IAC) {
-                g_state = TS_SB_IAC;
+                g_tn_state = TS_SB_IAC;
             } else {
                 if (g_sb_len < sizeof(g_sb_buf)) {
                     g_sb_buf[g_sb_len++] = b;
@@ -564,15 +598,15 @@ static int process_incoming(const uint8_t *buf, size_t n)
                 size_t valid_len = g_sb_len < sizeof(g_sb_buf) ? g_sb_len : sizeof(g_sb_buf);
                 handle_subneg(g_sb_buf, valid_len);
                 g_sb_len = 0;
-                g_state = TS_DATA;
+                g_tn_state = TS_DATA;
             } else if (b == IAC) {
                 /* Escaped IAC inside SB. */
                 if (g_sb_len < sizeof(g_sb_buf))
                     g_sb_buf[g_sb_len++] = IAC;
-                g_state = TS_SB;
+                g_tn_state = TS_SB;
             } else {
                 /* Non-standard sequence: leave SB. */
-                g_state = TS_DATA;
+                g_tn_state = TS_DATA;
             }
             break;
         }
@@ -580,18 +614,18 @@ static int process_incoming(const uint8_t *buf, size_t n)
     return flush_stdout_buf(out, &out_pos);
 }
 
-/* ---------- Reset pulse (RTS+DTR are released for 200 ms) ---------- */
+/* ---------- Reset pulse (RTS+DTR released for g_reset_ms) ---------- */
 
 static void send_reset_pulse(void)
 {
-    if (g_sock < 0)
+    if (g_fd < 0)
         return;
     fputs("\r\n", stderr);
     if (g_serial_mode) {
-        log_message(LOG_INFO, "[reset] RTS+DTR off for 200 ms");
+        log_message(LOG_INFO, "[reset] RTS+DTR off for %d ms", g_reset_ms);
         set_serial_signal_state(TIOCM_DTR, 0);
         set_serial_signal_state(TIOCM_RTS, 0);
-        sleep_us(200 * 1000);
+        sleep_us((unsigned int)g_reset_ms * 1000);
         set_serial_signal_state(TIOCM_DTR, 1);
         set_serial_signal_state(TIOCM_RTS, 1);
         fputc('\r', stderr);
@@ -599,10 +633,10 @@ static void send_reset_pulse(void)
         return;
     }
 
-    log_message(LOG_INFO, "[reset] RTS+DTR off for 200 ms");
+    log_message(LOG_INFO, "[reset] RTS+DTR off for %d ms", g_reset_ms);
     comport_set_control(CPC_CTRL_DTR_OFF);
     comport_set_control(CPC_CTRL_RTS_OFF);
-    sleep_us(200 * 1000);
+    sleep_us((unsigned int)g_reset_ms * 1000);
     comport_set_control(CPC_CTRL_DTR_ON);
     comport_set_control(CPC_CTRL_RTS_ON);
     fputc('\r', stderr);
@@ -644,6 +678,14 @@ static int connect_to(const char *host, const char *port)
             /* Enable keep-alive probes so a silent TCP drop is eventually detected. */
             if (setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one) != 0)
                 log_errno(LOG_WARNING, "setsockopt(SO_KEEPALIVE)");
+            /* Tune keepalive: detect dead connections within ~20 s. */
+            int idle = 10, intvl = 5, cnt = 3;
+            if (setsockopt(s, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof idle) != 0)
+                log_errno(LOG_WARNING, "setsockopt(TCP_KEEPIDLE)");
+            if (setsockopt(s, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof intvl) != 0)
+                log_errno(LOG_WARNING, "setsockopt(TCP_KEEPINTVL)");
+            if (setsockopt(s, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof cnt) != 0)
+                log_errno(LOG_WARNING, "setsockopt(TCP_KEEPCNT)");
             break;
         }
         close(s);
@@ -654,6 +696,17 @@ static int connect_to(const char *host, const char *port)
     if (s < 0)
         log_errno(LOG_ERR, "Unable to connect to %s:%s", host, port);
     return s;
+}
+
+/* Interruptible sleep between reconnect attempts (1-second ticks). */
+static void sleep_reconnect(unsigned int seconds)
+{
+    struct pollfd dummy;
+    dummy.fd     = -1;
+    dummy.events = 0;
+    unsigned int i;
+    for (i = 0; i < seconds && !g_quit; i++)
+        poll(&dummy, 1, 1000);
 }
 
 /* ---------- CLI parser ---------- */
@@ -676,18 +729,24 @@ static void usage(const char *prog)
         "  -d 5|6|7|8      data bits (default 8)\n"
         "  -s 1|2          stop bits (default 1)\n"
         "  -y N|E|O        parity: None/Even/Odd (default N)\n"
+        "\n"
+        "Connection options:\n"
+        "  -r              reconnect automatically on disconnect (RFC 2217 mode only)\n"
+        "  -t MS           reset pulse duration in ms (default 200)\n"
         "  -v, --version   print version and release date\n"
         "  --help, -?      this help\n"
         "\n"
         "Examples:\n"
         "  %s -h 192.168.1.10 -p 7000                    # 115200 8N1\n"
         "  %s -h 192.168.1.10 -p 7000 -b 9600 -y E       # 9600 8E1\n"
+        "  %s -h 192.168.1.10 -p 7000 -r                 # auto-reconnect\n"
         "  %s -u /dev/ttyUSB0                             # direct serial mode\n"
+        "  %s -u /dev/ttyUSB0 -b 460800 -t 500           # 460800 baud, 500 ms reset\n"
         "\n"
         "Session controls:\n"
-        "  Ctrl+P   RTS+DTR pulse (200 ms) — reset the target device\n"
+        "  Ctrl+P   RTS+DTR pulse — reset the target device\n"
         "  Ctrl+]   exit\n",
-        prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char **argv)
@@ -702,16 +761,16 @@ int main(int argc, char **argv)
     int want_help = 0;
     int want_version = 0;
     const struct option long_opts[] = {
-        { "help",   no_argument,       &want_help, 1 },
+        { "help",    no_argument,       &want_help,    1 },
         { "version", no_argument,       &want_version, 1 },
-        { "device", required_argument, NULL, 'u' },
+        { "device",  required_argument, NULL,         'u' },
         { 0, 0, 0, 0 }
     };
 
     openlog(g_progname, LOG_PID | LOG_NDELAY, LOG_DAEMON);
     atexit(closelog);
     int opt;
-    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:v?", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:t:rv?", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'h': host = optarg; break;
         case 'p': {
@@ -766,6 +825,18 @@ int main(int argc, char **argv)
             parity = (char)toupper((unsigned char)optarg[0]);
             break;
         case 'u': device = optarg; break;
+        case 'r': g_reconnect = 1; break;
+        case 't': {
+            char *endp;
+            errno = 0;
+            long v = strtol(optarg, &endp, 10);
+            if (errno != 0 || *endp != '\0' || v < 1 || v > 60000) {
+                log_message(LOG_ERR, "Invalid reset pulse duration: %s (1..60000 ms)", optarg);
+                return 1;
+            }
+            g_reset_ms = (int)v;
+            break;
+        }
         case 'v': want_version = 1; break;
         case 0:
             break;
@@ -837,172 +908,204 @@ int main(int argc, char **argv)
     atexit(cleanup);
 
     g_serial_mode = (device != NULL);
-    if (g_serial_mode) {
-        g_sock = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK);
-        if (g_sock < 0) {
-            log_errno(LOG_ERR, "open(serial)");
-            return 1;
-        }
-        /* Clear O_NONBLOCK so subsequent reads/writes block normally. */
-        {
-            int flags = fcntl(g_sock, F_GETFL);
-            if (flags < 0) {
-                log_errno(LOG_ERR, "fcntl(F_GETFL)");
-                return 1;
-            }
-            if (fcntl(g_sock, F_SETFL, flags & ~O_NONBLOCK) < 0) {
-                log_errno(LOG_ERR, "fcntl(F_SETFL)");
-                return 1;
-            }
-        }
-        if (configure_serial(g_sock, (int)baud, data_bits, stop_bits, parity) != 0) {
-            return 1;
-        }
-        set_serial_signal_state(TIOCM_DTR, 1);
-        set_serial_signal_state(TIOCM_RTS, 1);
-        log_message(LOG_INFO, "Opened serial device %s. baud=%u, data=%d, stop=%d, parity=%c",
-            device, baud, data_bits, stop_bits, parity);
-        log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for 200 ms, Ctrl+] exits");
-    } else {
-        g_sock = connect_to(host, port);
-        if (g_sock < 0)
-            return 1;
 
-        log_message(LOG_INFO, "Connected to %s:%s. baud=%u, data=%d, stop=%d, parity=%c",
-            host, port, baud, data_bits, stop_bits, parity);
-        log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for 200 ms, Ctrl+] exits");
-
-        /* Request negotiations with the server. */
-        if (telnet_send_negot(WILL, TELOPT_BINARY) < 0 ||
-            telnet_send_negot(DO,   TELOPT_BINARY) < 0 ||
-            telnet_send_negot(WILL, TELOPT_SGA)    < 0 ||
-            telnet_send_negot(DO,   TELOPT_SGA)    < 0 ||
-            telnet_send_negot(WILL, TELOPT_COMPORT) < 0) {
-            log_errno(LOG_ERR, "Telnet negotiation failed");
-            return 1;
-        }
-
-        /* Configure the port parameters.
-           A small delay after WILL COM-PORT helps some servers reply with DO first. */
-        sleep_us(100 * 1000);
-
-        if (comport_set_baudrate(baud)               < 0 ||
-            comport_set_datasize((uint8_t)data_bits) < 0 ||
-            comport_set_stop((uint8_t)stop_bits)     < 0 ||
-            comport_set_parity(parity_v)             < 0 ||
-            comport_set_control(CPC_CTRL_NO_FLOW)    < 0 ||
-            comport_set_control(CPC_CTRL_DTR_ON)     < 0 ||
-            comport_set_control(CPC_CTRL_RTS_ON)     < 0) {
-            log_errno(LOG_ERR, "Port configuration failed");
-            return 1;
-        }
-    }
-
-    /* Switch the terminal to raw mode. */
+    /* Switch stdin to raw mode once; stays raw across reconnects. */
     set_raw_terminal();
 
-    /* Main loop: poll on the transport and stdin. */
-    static uint8_t buf[4096]; /* static to avoid large stack allocation (N2) */
-    while (!g_quit) {
-        struct pollfd pfds[2];
-        pfds[0].fd     = g_sock;
-        pfds[0].events = POLLIN;
-        pfds[1].fd     = STDIN_FILENO;
-        pfds[1].events = POLLIN;
-
-        int r = poll(pfds, 2, -1);
-        if (r < 0) {
-            if (errno == EINTR)
-                continue;
-            log_errno(LOG_ERR, "poll");
-            break;
-        }
-
-        /* Transport error or hangup — no point continuing. */
-        if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-            log_message(LOG_INFO, g_serial_mode ? "Serial device error/hangup" : "Connection error/hangup");
-            break;
-        }
-
-        /* Data from the transport. */
-        if (pfds[0].revents & POLLIN) {
-            ssize_t n = read(g_sock, buf, sizeof buf);
-            if (n < 0) {
-                /* Retry on signal interruption (N3). */
-                if (errno == EINTR || errno == EAGAIN)
-                    continue;
-                log_errno(LOG_ERR, g_serial_mode ? "read(serial)" : "read(socket)");
-                break;
+    /* Main session loop — iterates only when -r is active and connection drops. */
+    do {
+        if (g_serial_mode) {
+            g_fd = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK);
+            if (g_fd < 0) {
+                log_errno(LOG_ERR, "open(serial)");
+                return 1;
             }
-            if (n == 0) {
-                log_message(LOG_INFO, g_serial_mode ? "Serial device closed" : "Connection closed");
-                break;
-            }
-            if (g_serial_mode) {
-                if (write_all(STDOUT_FILENO, buf, (size_t)n) != 0) {
-                    log_errno(LOG_ERR, "stdout");
-                    break;
+            /* Clear O_NONBLOCK so subsequent reads/writes block normally. */
+            {
+                int flags = fcntl(g_fd, F_GETFL);
+                if (flags < 0) {
+                    log_errno(LOG_ERR, "fcntl(F_GETFL)");
+                    return 1;
                 }
-            } else {
-                if (process_incoming(buf, (size_t)n) != 0) {
-                    log_errno(LOG_ERR, "stdout");
-                    break;
+                if (fcntl(g_fd, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+                    log_errno(LOG_ERR, "fcntl(F_SETFL)");
+                    return 1;
                 }
             }
-        }
-
-        /* Keyboard input. */
-        if (pfds[1].revents & POLLIN) {
-            ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
-            if (n < 0) {
-                if (errno == EINTR || errno == EAGAIN) /* signal or spurious wakeup (N3) */
-                    continue;
-                break;
-            }
-            if (n == 0)
-                break;
-
-            /* Walk the input buffer: handle special keys, batch the rest
-             * (with IAC escaping) into a single write to avoid per-byte syscalls. */
-            static uint8_t outbuf[sizeof(buf) * 2]; /* worst case: every byte is IAC; static = no stack (N2) */
-            size_t  outlen = 0;
-
-            for (ssize_t i = 0; i < n; i++) {
-                uint8_t c = buf[i];
-
-                if (c == 0x10) { /* Ctrl+P -> reset pulse */
-                    /* Flush pending bytes before the blocking pulse. */
-                    if (outlen > 0) {
-                        if (write_all(g_sock, outbuf, outlen) < 0) {
-                            g_quit = 1;
-                            break;
-                        }
-                        outlen = 0;
-                    }
-                    send_reset_pulse();
+            if (configure_serial(g_fd, (int)baud, data_bits, stop_bits, parity) != 0)
+                return 1;
+            set_serial_signal_state(TIOCM_DTR, 1);
+            set_serial_signal_state(TIOCM_RTS, 1);
+            log_message(LOG_INFO, "Opened serial device %s. baud=%u, data=%d, stop=%d, parity=%c",
+                device, baud, data_bits, stop_bits, parity);
+            log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for %d ms, Ctrl+] exits", g_reset_ms);
+        } else {
+            g_fd = connect_to(host, port);
+            if (g_fd < 0) {
+                if (g_reconnect && !g_quit) {
+                    log_message(LOG_INFO, "Retrying in %d seconds...", RECONNECT_DELAY_S);
+                    sleep_reconnect(RECONNECT_DELAY_S);
                     continue;
                 }
-                if (c == 0x1D) { /* Ctrl+] -> exit */
-                    g_quit = 1;
+                return 1;
+            }
+
+            log_message(LOG_INFO, "Connected to %s:%s. baud=%u, data=%d, stop=%d, parity=%c",
+                host, port, baud, data_bits, stop_bits, parity);
+            log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for %d ms, Ctrl+] exits", g_reset_ms);
+
+            /* Request negotiations with the server. */
+            if (telnet_send_negot(WILL, TELOPT_BINARY)  < 0 ||
+                telnet_send_negot(DO,   TELOPT_BINARY)  < 0 ||
+                telnet_send_negot(WILL, TELOPT_SGA)     < 0 ||
+                telnet_send_negot(DO,   TELOPT_SGA)     < 0 ||
+                telnet_send_negot(WILL, TELOPT_COMPORT) < 0) {
+                log_errno(LOG_ERR, "Telnet negotiation failed");
+                disconnect();
+                if (g_reconnect && !g_quit) {
+                    log_message(LOG_INFO, "Retrying in %d seconds...", RECONNECT_DELAY_S);
+                    sleep_reconnect(RECONNECT_DELAY_S);
+                    continue;
+                }
+                return 1;
+            }
+
+            /* Configure the port parameters.
+               A small delay after WILL COM-PORT helps some servers reply with DO first. */
+            sleep_us(100 * 1000);
+
+            if (comport_set_baudrate(baud)               < 0 ||
+                comport_set_datasize((uint8_t)data_bits) < 0 ||
+                comport_set_stop((uint8_t)stop_bits)     < 0 ||
+                comport_set_parity(parity_v)             < 0 ||
+                comport_set_control(CPC_CTRL_NO_FLOW)    < 0 ||
+                comport_set_control(CPC_CTRL_DTR_ON)     < 0 ||
+                comport_set_control(CPC_CTRL_RTS_ON)     < 0) {
+                log_errno(LOG_ERR, "Port configuration failed");
+                disconnect();
+                if (g_reconnect && !g_quit) {
+                    log_message(LOG_INFO, "Retrying in %d seconds...", RECONNECT_DELAY_S);
+                    sleep_reconnect(RECONNECT_DELAY_S);
+                    continue;
+                }
+                return 1;
+            }
+        }
+
+        /* Main I/O loop: poll on the transport and stdin. */
+        static uint8_t buf[4096]; /* static to avoid large stack allocation (N2) */
+        while (!g_quit) {
+            struct pollfd pfds[2];
+            pfds[0].fd     = g_fd;
+            pfds[0].events = POLLIN;
+            pfds[1].fd     = STDIN_FILENO;
+            pfds[1].events = POLLIN;
+
+            int r = poll(pfds, 2, -1);
+            if (r < 0) {
+                if (errno == EINTR)
+                    continue;
+                log_errno(LOG_ERR, "poll");
+                break;
+            }
+
+            /* Transport error or hangup — no point continuing. */
+            if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                log_message(LOG_INFO, g_serial_mode
+                    ? "Serial device error/hangup"
+                    : "Connection error/hangup");
+                break;
+            }
+
+            /* Data from the transport. */
+            if (pfds[0].revents & POLLIN) {
+                ssize_t n = read(g_fd, buf, sizeof buf);
+                if (n < 0) {
+                    /* Retry on signal interruption (N3). */
+                    if (errno == EINTR || errno == EAGAIN)
+                        continue;
+                    log_errno(LOG_ERR, g_serial_mode ? "read(serial)" : "read(socket)");
                     break;
                 }
-
+                if (n == 0) {
+                    log_message(LOG_INFO, g_serial_mode
+                        ? "Serial device closed"
+                        : "Connection closed");
+                    break;
+                }
                 if (g_serial_mode) {
-                    outbuf[outlen++] = c;
-                } else if (c == IAC) {
-                    outbuf[outlen++] = IAC;
-                    outbuf[outlen++] = IAC; /* escape IAC */
+                    if (process_serial_incoming(buf, (size_t)n) != 0) {
+                        log_errno(LOG_ERR, "stdout");
+                        break;
+                    }
                 } else {
-                    outbuf[outlen++] = c;
+                    if (process_incoming(buf, (size_t)n) != 0) {
+                        log_errno(LOG_ERR, "stdout");
+                        break;
+                    }
                 }
             }
 
-            if (!g_quit && outlen > 0) {
-                if (write_all(g_sock, outbuf, outlen) < 0)
-                    g_quit = 1;
+            /* Keyboard input. */
+            if (pfds[1].revents & POLLIN) {
+                ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
+                if (n < 0) {
+                    if (errno == EINTR || errno == EAGAIN) /* signal or spurious wakeup (N3) */
+                        continue;
+                    break;
+                }
+                if (n == 0)
+                    break;
+
+                /* Walk the input buffer: handle special keys, batch the rest
+                 * (with IAC escaping) into a single write to avoid per-byte syscalls. */
+                static uint8_t outbuf[sizeof(buf) * 2]; /* worst case: every byte is IAC; static = no stack (N2) */
+                size_t  outlen = 0;
+
+                for (ssize_t i = 0; i < n; i++) {
+                    uint8_t c = buf[i];
+
+                    if (c == 0x10) { /* Ctrl+P -> reset pulse */
+                        /* Flush pending bytes before the blocking pulse. */
+                        if (outlen > 0) {
+                            if (write_all(g_fd, outbuf, outlen) < 0) {
+                                g_quit = 1;
+                                break;
+                            }
+                            outlen = 0;
+                        }
+                        send_reset_pulse();
+                        continue;
+                    }
+                    if (c == 0x1D) { /* Ctrl+] -> exit */
+                        g_quit = 1;
+                        break;
+                    }
+
+                    if (g_serial_mode) {
+                        outbuf[outlen++] = c;
+                    } else if (c == IAC) {
+                        outbuf[outlen++] = IAC;
+                        outbuf[outlen++] = IAC; /* escape IAC */
+                    } else {
+                        outbuf[outlen++] = c;
+                    }
+                }
+
+                if (!g_quit && outlen > 0) {
+                    if (write_all(g_fd, outbuf, outlen) < 0)
+                        g_quit = 1;
+                }
             }
         }
-    }
+
+        disconnect();
+
+        if (g_reconnect && !g_quit && !g_serial_mode) {
+            log_message(LOG_INFO, "Reconnecting in %d seconds...", RECONNECT_DELAY_S);
+            sleep_reconnect(RECONNECT_DELAY_S);
+        }
+    } while (g_reconnect && !g_quit && !g_serial_mode);
 
     log_message(LOG_INFO, "Exiting");
     return 0;

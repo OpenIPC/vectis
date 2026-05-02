@@ -32,10 +32,31 @@ This builds both `vectis` and `vectis-cli`.
 
 ## vectis-cli
 
-`vectis-cli` is a simple RFC 2217 terminal client for Linux. It also supports
-direct access to local serial devices such as `/dev/ttyUSB0`. In both modes it
-configures baud rate, data bits, stop bits, and parity, and supports a reset
-pulse with **Ctrl+P**.
+`vectis-cli` is an RFC 2217/Telnet terminal client for Linux. It connects to a
+TCP server that exposes a serial port (such as `vectis` itself or `ser2net`),
+switches the local terminal to raw mode, and provides a full interactive serial
+console over the network. It also supports **direct access to local serial
+devices** — any `/dev/tty*` path (e.g. `/dev/ttyUSB0`, `/dev/ttyS0`,
+`/dev/ttyACM0`) — without going through TCP at all.
+
+### How it works
+
+`vectis-cli` connects to a TCP server, puts the local terminal into raw mode,
+and negotiates the following Telnet options with the server: `BINARY`, `SGA`,
+and `COM-PORT-OPTION` (RFC 2217). Once negotiation is complete, it configures
+the remote serial port by sending `SET_BAUDRATE`, `SET_DATASIZE`,
+`SET_STOPSIZE`, `SET_PARITY`, and `SET_CONTROL` sub-options for DTR and RTS.
+
+The incoming byte stream is parsed as Telnet/RFC 2217: plain data bytes are
+written to stdout, `IAC` sequences (`0xFF`) are intercepted and processed
+separately, and escaped `0xFF 0xFF` pairs are unescaped to a single `0xFF`
+before being forwarded to the terminal. Outgoing keyboard input is sent in
+binary mode, with any `0xFF` bytes escaped as `IAC IAC` per RFC 854.
+
+**Ctrl+P** sends a reset pulse to the target device: it issues `SET_CONTROL`
+commands to drop DTR and RTS for a configurable duration (default 200 ms), then
+reasserts them. In direct serial mode the same pulse is applied to the local
+port via `ioctl(TIOCMBIC/TIOCMBIS)`.
 
 ### Usage
 
@@ -53,12 +74,17 @@ Direct serial mode:
 
 - `-u DEVICE` — local tty device path, for example `/dev/ttyUSB0`
 
-Optional parameters (default **115200 8N1**):
+Port settings (default **115200 8N1**):
 
 - `-b BAUD` — baud rate (default 115200)
 - `-d 5|6|7|8` — data bits (default 8)
 - `-s 1|2` — stop bits (default 1)
 - `-y N|E|O` — parity None/Even/Odd (default N)
+
+Connection options:
+
+- `-r` — reconnect automatically on disconnect (RFC 2217 mode only)
+- `-t MS` — reset pulse duration in milliseconds (default 200)
 - `-v`, `--version` — print version and release date
 - `--help`, `-?` — help
 
@@ -71,8 +97,14 @@ Optional parameters (default **115200 8N1**):
 # 9600 8E1
 ./vectis-cli -h 192.168.1.10 -p 7000 -b 9600 -y E
 
-# Direct serial device
-./vectis-cli -u /dev/ttyUSB0 -b 115200
+# Auto-reconnect on disconnect
+./vectis-cli -h 192.168.1.10 -p 7000 -r
+
+# Direct serial device at 115200
+./vectis-cli -u /dev/ttyUSB0
+
+# Direct serial device at 460800 baud, 500 ms reset pulse
+./vectis-cli -u /dev/ttyUSB0 -b 460800 -t 500
 ```
 
 ## Usage
