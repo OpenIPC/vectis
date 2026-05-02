@@ -93,6 +93,11 @@
 
 #define RECONNECT_DELAY_S 5
 
+/* Interactive session control keys — used in the main I/O loop */
+#define KEY_RESET  0x10  /* Ctrl+P — RTS+DTR reset pulse */
+#define KEY_BREAK  0x02  /* Ctrl+B — send break signal */
+#define KEY_EXIT   0x1D  /* Ctrl+] — exit the program */
+
 /* Telnet parser states — declared here so disconnect() can reset them */
 enum tn_state {
     TS_DATA,
@@ -279,8 +284,10 @@ static int configure_serial(int fd, int baud, int data_bits, int stop_bits, char
     }
 
     tio = g_old_dev_tio;
-    cfsetispeed(&tio, speed);
-    cfsetospeed(&tio, speed);
+    if (cfsetispeed(&tio, speed) != 0 || cfsetospeed(&tio, speed) != 0) {
+        log_errno(LOG_ERR, "cfsetispeed/cfsetospeed");
+        return -1;
+    }
     tio.c_cflag |= (CREAD | CLOCAL);
     tio.c_cflag &= ~CSIZE;
 
@@ -363,7 +370,7 @@ static int write_all(int fd, const void *buf, size_t n)
     while (n > 0) {
         ssize_t k = write(fd, p, n);
         if (k < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR || errno == EAGAIN)
                 continue;
             return -1;
         }
@@ -1124,7 +1131,7 @@ int main(int argc, char **argv)
                     uint8_t c = buf[i];
 
                     if (g_interactive) {
-                        if (c == 0x10) { /* Ctrl+P -> reset pulse */
+                        if (c == KEY_RESET) {
                             if (outlen > 0) {
                                 if (write_all(g_fd, outbuf, outlen) < 0) {
                                     g_quit = 1;
@@ -1135,7 +1142,7 @@ int main(int argc, char **argv)
                             send_reset_pulse();
                             continue;
                         }
-                        if (c == 0x02) { /* Ctrl+B -> break signal */
+                        if (c == KEY_BREAK) {
                             if (outlen > 0) {
                                 if (write_all(g_fd, outbuf, outlen) < 0) {
                                     g_quit = 1;
@@ -1146,7 +1153,7 @@ int main(int argc, char **argv)
                             send_break();
                             continue;
                         }
-                        if (c == 0x1D) { /* Ctrl+] -> exit */
+                        if (c == KEY_EXIT) {
                             g_quit = 1;
                             break;
                         }
