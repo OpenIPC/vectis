@@ -86,12 +86,16 @@
 /* Stop-bit values */
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
-#define CPC_STOP_15  3   /* 1.5 */
 
 #define PROGRAM_VERSION      "1.4.0"
 #define PROGRAM_RELEASE_DATE "2026-05-02"
 
 #define RECONNECT_DELAY_S 5
+
+/* Buffer sizes */
+#define SB_BUF_SIZE      512   /* Sub-negotiation buffer size */
+#define OUTPUT_BUF_SIZE  256   /* Stdout batching buffer size */
+#define READ_BUF_SIZE    4096  /* Transport read buffer size */
 
 /* Interactive session control keys — used in the main I/O loop */
 #define KEY_RESET  0x10  /* Ctrl+P — RTS+DTR reset pulse */
@@ -126,7 +130,7 @@ static void set_serial_signal_state(int signal_flag, int active);
 static enum tn_state g_tn_state = TS_DATA;
 static uint8_t       g_negot_cmd = 0;
 /* 512 bytes: generous for any RFC 2217 sub-negotiation payload. */
-static uint8_t       g_sb_buf[512];
+static uint8_t       g_sb_buf[SB_BUF_SIZE];
 static size_t        g_sb_len = 0;
 
 /* ---------- Logging ---------- */
@@ -145,6 +149,13 @@ static void log_message(int priority, const char *fmt, ...)
         syslog(priority, "log_message: encoding error");
         fprintf(stderr, "%s: log_message: encoding error\r\n", g_progname);
         return;
+    }
+
+    if ((size_t)n >= sizeof(buf)) {
+        /* Message was truncated; issue a separate warning so the
+           caller knows the output is incomplete. */
+        syslog(LOG_WARNING, "log_message: truncating %d byte message to %zu",
+               n, sizeof(buf) - 1);
     }
 
     syslog(priority, "%s", buf);
@@ -370,8 +381,14 @@ static int write_all(int fd, const void *buf, size_t n)
     while (n > 0) {
         ssize_t k = write(fd, p, n);
         if (k < 0) {
-            if (errno == EINTR || errno == EAGAIN)
+            if (errno == EINTR)
                 continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /* Wait for the FD to become writable before retrying. */
+                struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+                poll(&pfd, 1, -1);
+                continue;
+            }
             return -1;
         }
         if (k == 0)
@@ -811,9 +828,18 @@ int main(int argc, char **argv)
     int want_help = 0;
     int want_version = 0;
     const struct option long_opts[] = {
-        { "help",    no_argument,       &want_help,    1 },
-        { "version", no_argument,       &want_version, 1 },
-        { "device",  required_argument, NULL,         'u' },
+        { "help",      no_argument,       &want_help,   1 },
+        { "version",   no_argument,       &want_version, 1 },
+        { "device",    required_argument, NULL,        'u' },
+        { "host",      required_argument, NULL,        'h' },
+        { "port",      required_argument, NULL,        'p' },
+        { "baud",      required_argument, NULL,        'b' },
+        { "data-bits", required_argument, NULL,        'd' },
+        { "stop-bits", required_argument, NULL,        's' },
+        { "parity",    required_argument, NULL,        'y' },
+        { "reset-ms",  required_argument, NULL,        't' },
+        { "reconnect", no_argument,       NULL,        'r' },
+        { "no-crlf",   no_argument,       NULL,        'n' },
         { 0, 0, 0, 0 }
     };
 
@@ -947,7 +973,7 @@ int main(int argc, char **argv)
         struct sigaction sa;
         memset(&sa, 0, sizeof sa);
         sa.sa_handler = on_signal;
-        sa.sa_flags   = SA_RESTART;
+        sa.sa_flags   = 0;
         sigemptyset(&sa.sa_mask);
         sigaction(SIGINT,  &sa, NULL);
         sigaction(SIGTERM, &sa, NULL);
@@ -1056,7 +1082,7 @@ int main(int argc, char **argv)
         }
 
         /* Main I/O loop: poll on the transport and stdin. */
-        static uint8_t buf[4096]; /* static to avoid large stack allocation (N2) */
+        static uint8_t buf[READ_BUF_SIZE]; /* static to avoid large stack allocation (N2) */
         while (!g_quit) {
             struct pollfd pfds[2];
             pfds[0].fd     = g_fd;
@@ -1064,7 +1090,7 @@ int main(int argc, char **argv)
             pfds[1].fd     = STDIN_FILENO;
             pfds[1].events = POLLIN;
 
-            int r = poll(pfds, 2, -1);
+            int r = poll(pfds, 2, 500); /* 500 ms timeout to respond to signals promptly */
             if (r < 0) {
                 if (errno == EINTR)
                     continue;
@@ -1154,6 +1180,13 @@ int main(int argc, char **argv)
                             continue;
                         }
                         if (c == KEY_EXIT) {
+                            if (outlen > 0) {
+                                if (write_all(g_fd, outbuf, outlen) < 0) {
+                                    g_quit = 1;
+                                    break;
+                                }
+                                outlen = 0;
+                            }
                             g_quit = 1;
                             break;
                         }
