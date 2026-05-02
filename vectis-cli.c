@@ -132,8 +132,15 @@ static void log_message(int priority, const char *fmt, ...)
     va_list ap;
 
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
+
+    if (n < 0) {
+        /* Encoding error: use a fallback message. */
+        syslog(priority, "log_message: encoding error");
+        fprintf(stderr, "%s: log_message: encoding error\r\n", g_progname);
+        return;
+    }
 
     syslog(priority, "%s", buf);
     /* Use \r\n: terminal may be in raw mode (OPOST/ONLCR off). */
@@ -510,6 +517,19 @@ static int flush_stdout_buf(uint8_t *out, size_t *pos)
     return rc;
 }
 
+/* Add a byte to output buffer with optional LF→CR+LF translation.
+ * Flushes if buffer is full. Returns 0 on success, -1 on flush error. */
+static int add_to_output_buf(uint8_t *out, size_t *out_pos, size_t out_size, uint8_t b)
+{
+    /* Reserve space for up to 2 bytes (LF expands to CR+LF). */
+    if (*out_pos + 2 > out_size && flush_stdout_buf(out, out_pos) != 0)
+        return -1;
+    if (b == '\n' && !g_no_crlf)
+        out[(*out_pos)++] = '\r';
+    out[(*out_pos)++] = b;
+    return 0;
+}
+
 /* Serial mode: copy data to stdout with optional LF→CR+LF translation.
  * Translation is needed in raw terminal mode (OPOST off) so that LF moves
  * the cursor to column 0. Use -n to disable it for devices that send \r\n. */
@@ -519,13 +539,8 @@ static int process_serial_incoming(const uint8_t *buf, size_t n)
     size_t  out_pos = 0;
 
     for (size_t i = 0; i < n; i++) {
-        uint8_t b = buf[i];
-        /* Reserve space for up to 2 bytes (LF expands to CR+LF). */
-        if (out_pos + 2 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
+        if (add_to_output_buf(out, &out_pos, sizeof(out), buf[i]) != 0)
             return -1;
-        if (b == '\n' && !g_no_crlf)
-            out[out_pos++] = '\r';
-        out[out_pos++] = b;
     }
     return flush_stdout_buf(out, &out_pos);
 }
@@ -547,21 +562,16 @@ static int process_incoming(const uint8_t *buf, size_t n)
                     return -1;
                 g_tn_state = TS_IAC;
             } else {
-                /* Reserve space for up to 2 bytes (LF expands to CR+LF). */
-                if (out_pos + 2 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
+                if (add_to_output_buf(out, &out_pos, sizeof(out), b) != 0)
                     return -1;
-                if (b == '\n' && !g_no_crlf)
-                    out[out_pos++] = '\r';
-                out[out_pos++] = b;
             }
             break;
 
         case TS_IAC:
             if (b == IAC) {
                 /* Escaped 0xFF becomes data. */
-                if (out_pos + 1 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
+                if (add_to_output_buf(out, &out_pos, sizeof(out), b) != 0)
                     return -1;
-                out[out_pos++] = b;
                 g_tn_state = TS_DATA;
             } else if (b == DO || b == DONT || b == WILL || b == WONT) {
                 g_negot_cmd = b;
@@ -592,6 +602,7 @@ static int process_incoming(const uint8_t *buf, size_t n)
                                 sizeof(g_sb_buf));
                     g_sb_len++;
                 }
+                /* After overflow: continue silently discarding bytes (don't increment again). */
             }
             break;
 
@@ -651,7 +662,6 @@ static void send_reset_pulse(void)
         sleep_us((unsigned int)g_reset_ms * 1000);
         set_serial_signal_state(TIOCM_DTR, 1);
         set_serial_signal_state(TIOCM_RTS, 1);
-        fputc('\r', stderr);
         log_message(LOG_INFO, "[reset] done");
         return;
     }
@@ -662,7 +672,6 @@ static void send_reset_pulse(void)
     sleep_us((unsigned int)g_reset_ms * 1000);
     comport_set_control(CPC_CTRL_DTR_ON);
     comport_set_control(CPC_CTRL_RTS_ON);
-    fputc('\r', stderr);
     log_message(LOG_INFO, "[reset] done");
 }
 
@@ -822,7 +831,7 @@ int main(int argc, char **argv)
             char *endp;
             errno = 0;
             unsigned long v = strtoul(optarg, &endp, 10);
-            if (errno != 0 || *endp != '\0' || v == 0 || v > (uint32_t)-1) {
+            if (errno != 0 || *endp != '\0' || v == 0 || v > 460800) {
                 log_message(LOG_ERR, "Invalid baud rate: %s", optarg);
                 return 1;
             }
@@ -971,8 +980,10 @@ int main(int argc, char **argv)
                     return 1;
                 }
             }
-            if (configure_serial(g_fd, (int)baud, data_bits, stop_bits, parity) != 0)
+            if (configure_serial(g_fd, (int)baud, data_bits, stop_bits, parity) != 0) {
+                disconnect();
                 return 1;
+            }
             set_serial_signal_state(TIOCM_DTR, 1);
             set_serial_signal_state(TIOCM_RTS, 1);
             log_message(LOG_INFO, "Opened serial device %s. baud=%u, data=%d, stop=%d, parity=%c",
