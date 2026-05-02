@@ -40,6 +40,7 @@
 #define WILL  251
 #define SB    250
 #define SE    240
+#define BRK   243  /* Telnet break (IAC BRK, RFC 854 §3.3) */
 
 /* Telnet options */
 #define TELOPT_BINARY     0
@@ -87,7 +88,7 @@
 #define CPC_STOP_2   2
 #define CPC_STOP_15  3   /* 1.5 */
 
-#define PROGRAM_VERSION      "1.3.0"
+#define PROGRAM_VERSION      "1.4.0"
 #define PROGRAM_RELEASE_DATE "2026-05-02"
 
 #define RECONNECT_DELAY_S 5
@@ -105,13 +106,15 @@ enum tn_state {
 static int g_fd = -1;
 static struct termios g_old_tio;
 static struct termios g_old_dev_tio;
-static int g_tio_saved = 0;
+static int g_tio_saved    = 0;
 static int g_dev_tio_saved = 0;
 static volatile sig_atomic_t g_quit = 0;
 static const char *g_progname = "vectis-cli";
-static int g_serial_mode = 0;
-static int g_reset_ms = 200;
-static int g_reconnect = 0;
+static int g_serial_mode  = 0;
+static int g_reset_ms     = 200;
+static int g_reconnect    = 0;
+static int g_no_crlf      = 0;  /* -n: disable LF->CR+LF translation */
+static int g_interactive  = 0;  /* stdin is a tty */
 static void set_serial_signal_state(int signal_flag, int active);
 
 /* Telnet parser state */
@@ -507,8 +510,9 @@ static int flush_stdout_buf(uint8_t *out, size_t *pos)
     return rc;
 }
 
-/* Serial mode: copy data to stdout with LF→CR+LF translation for raw terminal.
- * Without this, LF alone does not return the cursor to column 0 (OPOST is off). */
+/* Serial mode: copy data to stdout with optional LF→CR+LF translation.
+ * Translation is needed in raw terminal mode (OPOST off) so that LF moves
+ * the cursor to column 0. Use -n to disable it for devices that send \r\n. */
 static int process_serial_incoming(const uint8_t *buf, size_t n)
 {
     uint8_t out[256];
@@ -519,14 +523,14 @@ static int process_serial_incoming(const uint8_t *buf, size_t n)
         /* Reserve space for up to 2 bytes (LF expands to CR+LF). */
         if (out_pos + 2 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
             return -1;
-        if (b == '\n')
+        if (b == '\n' && !g_no_crlf)
             out[out_pos++] = '\r';
         out[out_pos++] = b;
     }
     return flush_stdout_buf(out, &out_pos);
 }
 
-/* Telnet mode: parse and strip Telnet commands; LF→CR+LF for raw terminal.
+/* Telnet mode: parse and strip Telnet commands; optional LF→CR+LF translation.
  * Data bytes are batched into a stack buffer to minimise write(2) calls.
  * Returns 0 on success, -1 if a write to stdout fails. */
 static int process_incoming(const uint8_t *buf, size_t n)
@@ -546,8 +550,7 @@ static int process_incoming(const uint8_t *buf, size_t n)
                 /* Reserve space for up to 2 bytes (LF expands to CR+LF). */
                 if (out_pos + 2 > sizeof(out) && flush_stdout_buf(out, &out_pos) != 0)
                     return -1;
-                /* Prepend CR before LF for correct display in raw mode. */
-                if (b == '\n')
+                if (b == '\n' && !g_no_crlf)
                     out[out_pos++] = '\r';
                 out[out_pos++] = b;
             }
@@ -567,7 +570,7 @@ static int process_incoming(const uint8_t *buf, size_t n)
                 g_sb_len = 0;
                 g_tn_state = TS_SB;
             } else {
-                /* Ignore other commands (NOP, etc.). */
+                /* Ignore other commands (NOP, BRK echo, etc.). */
                 g_tn_state = TS_DATA;
             }
             break;
@@ -612,6 +615,26 @@ static int process_incoming(const uint8_t *buf, size_t n)
         }
     }
     return flush_stdout_buf(out, &out_pos);
+}
+
+/* ---------- Break signal ---------- */
+
+/* Send a serial break: tcsendbreak in serial mode, IAC BRK in Telnet mode.
+ * Useful for stopping U-Boot autoboot and other bootloader interactions. */
+static void send_break(void)
+{
+    if (g_fd < 0)
+        return;
+    if (g_serial_mode) {
+        log_message(LOG_INFO, "[break] sending serial break");
+        if (tcsendbreak(g_fd, 0) != 0)
+            log_errno(LOG_WARNING, "tcsendbreak");
+    } else {
+        log_message(LOG_INFO, "[break] sending IAC BRK");
+        uint8_t brk[2] = { IAC, BRK };
+        if (write_all(g_fd, brk, 2) < 0)
+            log_errno(LOG_WARNING, "send break: write failed");
+    }
 }
 
 /* ---------- Reset pulse (RTS+DTR released for g_reset_ms) ---------- */
@@ -668,6 +691,14 @@ static int connect_to(const char *host, const char *port)
         if (setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0)
             log_errno(LOG_WARNING, "setsockopt(SO_SNDTIMEO)");
         if (connect(s, ai->ai_addr, ai->ai_addrlen) == 0) {
+            /* Log the resolved IP so multi-address hostnames are traceable. */
+            char ipbuf[INET6_ADDRSTRLEN] = "";
+            void *sin_addr = (ai->ai_family == AF_INET)
+                ? (void *)&((struct sockaddr_in  *)ai->ai_addr)->sin_addr
+                : (void *)&((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr;
+            inet_ntop(ai->ai_family, sin_addr, ipbuf, sizeof ipbuf);
+            log_message(LOG_INFO, "Resolved %s -> %s", host, ipbuf);
+
             /* Clear connect timeout: SO_SNDTIMEO affects all writes, not just connect(). */
             struct timeval zero = { 0, 0 };
             (void)setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &zero, sizeof zero);
@@ -733,6 +764,7 @@ static void usage(const char *prog)
         "Connection options:\n"
         "  -r              reconnect automatically on disconnect (RFC 2217 mode only)\n"
         "  -t MS           reset pulse duration in ms (default 200)\n"
+        "  -n              disable LF->CR+LF translation (for devices sending \\r\\n)\n"
         "  -v, --version   print version and release date\n"
         "  --help, -?      this help\n"
         "\n"
@@ -742,11 +774,13 @@ static void usage(const char *prog)
         "  %s -h 192.168.1.10 -p 7000 -r                 # auto-reconnect\n"
         "  %s -u /dev/ttyUSB0                             # direct serial mode\n"
         "  %s -u /dev/ttyUSB0 -b 460800 -t 500           # 460800 baud, 500 ms reset\n"
+        "  %s -h 192.168.1.10 -p 7000 -n                 # no LF->CRLF (scripted capture)\n"
         "\n"
-        "Session controls:\n"
+        "Session controls (interactive mode only):\n"
         "  Ctrl+P   RTS+DTR pulse — reset the target device\n"
+        "  Ctrl+B   send break signal (stops U-Boot autoboot)\n"
         "  Ctrl+]   exit\n",
-        prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char **argv)
@@ -770,7 +804,7 @@ int main(int argc, char **argv)
     openlog(g_progname, LOG_PID | LOG_NDELAY, LOG_DAEMON);
     atexit(closelog);
     int opt;
-    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:t:rv?", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:t:nrv?", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'h': host = optarg; break;
         case 'p': {
@@ -826,6 +860,7 @@ int main(int argc, char **argv)
             break;
         case 'u': device = optarg; break;
         case 'r': g_reconnect = 1; break;
+        case 'n': g_no_crlf   = 1; break;
         case 't': {
             char *endp;
             errno = 0;
@@ -909,8 +944,12 @@ int main(int argc, char **argv)
 
     g_serial_mode = (device != NULL);
 
-    /* Switch stdin to raw mode once; stays raw across reconnects. */
-    set_raw_terminal();
+    /* Switch stdin to raw mode only when running interactively.
+     * When stdin is a pipe or file, skip raw mode so the tool can
+     * be driven by scripts: echo "cmd" | vectis-cli -h host -p port */
+    g_interactive = isatty(STDIN_FILENO);
+    if (g_interactive)
+        set_raw_terminal();
 
     /* Main session loop — iterates only when -r is active and connection drops. */
     do {
@@ -938,7 +977,10 @@ int main(int argc, char **argv)
             set_serial_signal_state(TIOCM_RTS, 1);
             log_message(LOG_INFO, "Opened serial device %s. baud=%u, data=%d, stop=%d, parity=%c",
                 device, baud, data_bits, stop_bits, parity);
-            log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for %d ms, Ctrl+] exits", g_reset_ms);
+            if (g_interactive)
+                log_message(LOG_INFO,
+                    "Ctrl+P resets RTS+DTR for %d ms, Ctrl+B break, Ctrl+] exits",
+                    g_reset_ms);
         } else {
             g_fd = connect_to(host, port);
             if (g_fd < 0) {
@@ -952,7 +994,10 @@ int main(int argc, char **argv)
 
             log_message(LOG_INFO, "Connected to %s:%s. baud=%u, data=%d, stop=%d, parity=%c",
                 host, port, baud, data_bits, stop_bits, parity);
-            log_message(LOG_INFO, "Ctrl+P resets RTS+DTR for %d ms, Ctrl+] exits", g_reset_ms);
+            if (g_interactive)
+                log_message(LOG_INFO,
+                    "Ctrl+P resets RTS+DTR for %d ms, Ctrl+B break, Ctrl+] exits",
+                    g_reset_ms);
 
             /* Request negotiations with the server. */
             if (telnet_send_negot(WILL, TELOPT_BINARY)  < 0 ||
@@ -1046,7 +1091,7 @@ int main(int argc, char **argv)
                 }
             }
 
-            /* Keyboard input. */
+            /* Keyboard / pipe input. */
             if (pfds[1].revents & POLLIN) {
                 ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
                 if (n < 0) {
@@ -1057,29 +1102,43 @@ int main(int argc, char **argv)
                 if (n == 0)
                     break;
 
-                /* Walk the input buffer: handle special keys, batch the rest
-                 * (with IAC escaping) into a single write to avoid per-byte syscalls. */
+                /* Walk the input buffer: in interactive mode handle special keys;
+                 * in non-interactive mode forward every byte directly so that
+                 * control characters (0x02, 0x10, 0x1D) in piped data are not
+                 * misinterpreted as commands. Batch the rest into one write. */
                 static uint8_t outbuf[sizeof(buf) * 2]; /* worst case: every byte is IAC; static = no stack (N2) */
                 size_t  outlen = 0;
 
                 for (ssize_t i = 0; i < n; i++) {
                     uint8_t c = buf[i];
 
-                    if (c == 0x10) { /* Ctrl+P -> reset pulse */
-                        /* Flush pending bytes before the blocking pulse. */
-                        if (outlen > 0) {
-                            if (write_all(g_fd, outbuf, outlen) < 0) {
-                                g_quit = 1;
-                                break;
+                    if (g_interactive) {
+                        if (c == 0x10) { /* Ctrl+P -> reset pulse */
+                            if (outlen > 0) {
+                                if (write_all(g_fd, outbuf, outlen) < 0) {
+                                    g_quit = 1;
+                                    break;
+                                }
+                                outlen = 0;
                             }
-                            outlen = 0;
+                            send_reset_pulse();
+                            continue;
                         }
-                        send_reset_pulse();
-                        continue;
-                    }
-                    if (c == 0x1D) { /* Ctrl+] -> exit */
-                        g_quit = 1;
-                        break;
+                        if (c == 0x02) { /* Ctrl+B -> break signal */
+                            if (outlen > 0) {
+                                if (write_all(g_fd, outbuf, outlen) < 0) {
+                                    g_quit = 1;
+                                    break;
+                                }
+                                outlen = 0;
+                            }
+                            send_break();
+                            continue;
+                        }
+                        if (c == 0x1D) { /* Ctrl+] -> exit */
+                            g_quit = 1;
+                            break;
+                        }
                     }
 
                     if (g_serial_mode) {

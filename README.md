@@ -85,6 +85,7 @@ Connection options:
 
 - `-r` — reconnect automatically on disconnect (RFC 2217 mode only)
 - `-t MS` — reset pulse duration in milliseconds (default 200)
+- `-n` — disable LF→CR+LF translation (for devices that already send `\r\n`, or for binary capture)
 - `-v`, `--version` — print version and release date
 - `--help`, `-?` — help
 
@@ -105,6 +106,36 @@ Connection options:
 
 # Direct serial device at 460800 baud, 500 ms reset pulse
 ./vectis-cli -u /dev/ttyUSB0 -b 460800 -t 500
+
+# Capture device output to a file (non-interactive, no CRLF translation)
+./vectis-cli -h 192.168.1.10 -p 7000 -n > boot.log
+```
+
+### Session controls
+
+These key bindings are active only in interactive mode (when stdin is a
+terminal). In non-interactive mode (piped or redirected stdin), all bytes
+are forwarded to the device verbatim, so control characters in the data
+stream are never misinterpreted as commands.
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+P` | RTS+DTR pulse — reset the target device |
+| `Ctrl+B` | Send break signal — stops U-Boot autoboot, triggers bootloader prompts |
+| `Ctrl+]` | Exit |
+
+### Non-interactive use
+
+When stdin is not a terminal, `vectis-cli` skips raw-terminal setup and
+forwards all input directly to the device. This is useful for scripted
+automation:
+
+```sh
+# Send a U-Boot command and capture the response
+echo "printenv" | ./vectis-cli -h 192.168.1.10 -p 7000 -n > env.txt
+
+# Feed a sequence of commands from a file
+./vectis-cli -u /dev/ttyUSB0 < commands.txt > output.txt
 ```
 
 ## Usage
