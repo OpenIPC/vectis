@@ -31,8 +31,8 @@
 #define BUFFER_SIZE 4096
 #define RESET_PULSE_MS 200
 #define DEFAULT_TCP_PORT 35240
-#define PROGRAM_VERSION "1.2.0"
-#define PROGRAM_RELEASE_DATE "2026-05-01"
+#define PROGRAM_VERSION "1.3.0"
+#define PROGRAM_RELEASE_DATE "2026-06-03"
 
 /* --- RFC 854 / RFC 2217 protocol constants --- */
 #define TN_IAC_BYTE   255
@@ -346,6 +346,8 @@ int configure_uart(int fd, int baudrate) {
         case 57600: speed = B57600; break;
         case 115200: speed = B115200; break;
         case 230400: speed = B230400; break;
+        case 460800: speed = B460800; break;
+        case 921600: speed = B921600; break;
         default:
             log_message(LOG_ERR, stderr, "Unsupported baud rate: %d", baudrate);
             return -1;
@@ -752,6 +754,8 @@ static int current_uart_baud(void)
     case B57600:  return 57600;
     case B115200: return 115200;
     case B230400: return 230400;
+    case B460800: return 460800;
+    case B921600: return 921600;
     default:      return 0;
     }
 }
@@ -1219,6 +1223,8 @@ static int speed_for_baud(int baud, speed_t *out)
     case 57600:  *out = B57600;  return 0;
     case 115200: *out = B115200; return 0;
     case 230400: *out = B230400; return 0;
+    case 460800: *out = B460800; return 0;
+    case 921600: *out = B921600; return 0;
     default:                     return -1;
     }
 }
