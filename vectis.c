@@ -31,8 +31,8 @@
 #define BUFFER_SIZE 4096
 #define RESET_PULSE_MS 200
 #define DEFAULT_TCP_PORT 35240
-#define PROGRAM_VERSION "1.3.0"
-#define PROGRAM_RELEASE_DATE "2026-06-03"
+#define PROGRAM_VERSION "1.3.1"
+#define PROGRAM_RELEASE_DATE "2026-06-04"
 
 /* --- RFC 854 / RFC 2217 protocol constants --- */
 #define TN_IAC_BYTE   255
@@ -1658,6 +1658,13 @@ int main(int argc, char *argv[]) {
      * The stdin handler below will apply RFC 2217 detection. */
     inetd_mode = (!tcp_enabled && !isatty(STDIN_FILENO));
 
+    /* Only poll stdin when it is meaningful: an interactive TTY (so
+     * humans can use Ctrl+C/P/X) or the inetd socket (the remote
+     * peer). When backgrounded with `-t` and stdin redirected from
+     * /dev/null, polling stdin would spin at 100% CPU because select()
+     * returns immediately and read() returns 0 (EOF) on every iteration. */
+    int watch_stdin = isatty(STDIN_FILENO) || inetd_mode;
+
     // Initialize signals (inactive HIGH state).
     init_signals();
     
@@ -1696,15 +1703,20 @@ int main(int argc, char *argv[]) {
     while (running) {
         FD_ZERO(&readfds);
         FD_SET(fd, &readfds);
-        FD_SET(STDIN_FILENO, &readfds);
+        if (watch_stdin) {
+            FD_SET(STDIN_FILENO, &readfds);
+        }
         if (tcp_listen_fd != -1) {
             FD_SET(tcp_listen_fd, &readfds);
         }
         if (tcp_client_fd != -1) {
             FD_SET(tcp_client_fd, &readfds);
         }
-        
-        int max_fd = (fd > STDIN_FILENO) ? fd : STDIN_FILENO;
+
+        int max_fd = fd;
+        if (watch_stdin && STDIN_FILENO > max_fd) {
+            max_fd = STDIN_FILENO;
+        }
         if (tcp_listen_fd > max_fd) {
             max_fd = tcp_listen_fd;
         }
@@ -1745,7 +1757,7 @@ int main(int argc, char *argv[]) {
         }
         
         // Read from the keyboard / inetd socket.
-        if (FD_ISSET(STDIN_FILENO, &readfds)) {
+        if (watch_stdin && FD_ISSET(STDIN_FILENO, &readfds)) {
             n = read(STDIN_FILENO, buffer, sizeof(buffer));
             if (n > 0) {
                 /* When stdin IS the TCP socket (inetd nowait mode),
