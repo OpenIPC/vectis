@@ -31,8 +31,8 @@
 #define BUFFER_SIZE 4096
 #define RESET_PULSE_MS 200
 #define DEFAULT_TCP_PORT 35240
-#define PROGRAM_VERSION "1.3.1"
-#define PROGRAM_RELEASE_DATE "2026-06-04"
+#define PROGRAM_VERSION "1.3.2"
+#define PROGRAM_RELEASE_DATE "2026-06-10"
 
 /* --- RFC 854 / RFC 2217 protocol constants --- */
 #define TN_IAC_BYTE   255
@@ -1449,6 +1449,15 @@ static void bootrom_catch_local(int pulse_ms, int max_wait_ms, int mode,
             out->status = BOOTROM_STATUS_IO_ERR;
             return;
         }
+        if (n == 0) {
+            /* EOF: the serial device disappeared mid-catch.  select()
+             * would keep reporting it ready, so bail with an honest
+             * I/O-error status instead of spinning to the deadline. */
+            log_message(LOG_ERR, stderr, "bootrom_catch: UART closed (device removed?)");
+            out->elapsed_ms = (uint32_t)elapsed_ms;
+            out->status = BOOTROM_STATUS_IO_ERR;
+            return;
+        }
         if (n > 0) {
             out->bytes_rx += (uint32_t)n;
         }
@@ -1750,9 +1759,19 @@ int main(int argc, char *argv[]) {
                 if (!running) {
                     break;
                 }
+            } else if (n == 0) {
+                /* EOF on the serial fd means the device is gone (an
+                 * unplugged USB-serial adapter returns 0, not EIO).
+                 * The fd stays select()-ready forever, so continuing to
+                 * poll it spins at 100% CPU.  Treat as terminal. */
+                log_message(LOG_ERR, stderr,
+                            "UART closed (serial device removed?) — exiting");
+                exit_code = 1;
+                goto cleanup;
             } else if (n == -1 && errno != EAGAIN) {
                 log_errno_message("Failed to read from UART");
-                break;
+                exit_code = 1;
+                goto cleanup;
             }
         }
         
