@@ -1,13 +1,18 @@
 #
 # Copyright (c) OpenIPC  https://openipc.org  MIT License
 #
-# Makefile — build rules for the Vectis utilities
+# Makefile — build rules for Vectis
+#
+# `make` builds `vectis` from vectis.c: the serial console, RFC 2217
+# client/server and web power console.  vectis-bootrom.c is the original
+# UART bridge with the HiSilicon BOOTROM-CATCH extension; it is kept for
+# reference and is not part of the default build (`make vectis-bootrom`
+# builds it on demand).
 #
 
-TARGET     := vectis
-CLI_TARGET := vectis-cli
-CC         ?= cc
-STRIP      ?= strip
+TARGET  := vectis
+CC      ?= cc
+STRIP   ?= strip
 
 # Set DEBUG=1 on the command line to build with debug symbols and no strip:
 #   make DEBUG=1
@@ -21,17 +26,18 @@ CFLAGS  ?= -std=gnu99 -Wall -Wextra -Wpedantic -Os -ffunction-sections -fdata-se
 LDFLAGS ?= -Wl,--gc-sections
 endif
 
-all: $(TARGET) $(CLI_TARGET)
+all: $(TARGET)
 
 $(TARGET): vectis.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
 	@if [ "$(DEBUG)" = "0" ]; then $(STRIP) $@; fi
 
-$(CLI_TARGET): vectis-cli.c
+# Optional, not built by `make all`.
+vectis-bootrom: vectis-bootrom.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
 	@if [ "$(DEBUG)" = "0" ]; then $(STRIP) $@; fi
 
 clean:
-	rm -f $(TARGET) $(CLI_TARGET)
+	rm -f $(TARGET) vectis-bootrom
 
 .PHONY: all clean
