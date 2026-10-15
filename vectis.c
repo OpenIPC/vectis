@@ -1596,6 +1596,15 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
 
 enum srv_state { SS_DATA, SS_IAC, SS_NEG, SS_SB_OPT, SS_SB_DATA, SS_SB_IAC };
 
+/* One Telnet option, both sides (RFC 1143, without the queue bits):
+ * local/remote = enabled on our / the client's side; want_* = we sent
+ * WILL / DO and wait for the answer, which is then taken as the answer
+ * (agreement or refusal) and not replied to. */
+struct srv_opt {
+    int local, remote;
+    int want_local, want_remote;
+};
+
 static int  g_srv_listen_fd = -1;
 static int  g_srv_fd        = -1;   /* the connected client, or -1 */
 static char g_srv_peer[INET_ADDRSTRLEN] = "";   /* tentative definitions above */
@@ -1606,9 +1615,7 @@ static struct {
     uint8_t sb_opt;
     uint8_t sb_buf[SRV_SB_MAX];
     size_t  sb_len;
-    int binary_local, binary_remote;   /* WILL state on our / the client's side */
-    int sga_local, sga_remote;
-    int comport_local, comport_remote;
+    struct srv_opt binary, sga, comport;
 } g_srv;
 
 static void srv_close_client(const char *why)
@@ -1678,15 +1685,15 @@ static void srv_send_subneg_u32(uint8_t sub, uint32_t v)
 }
 
 /* Offer and request BINARY, SGA and COM-PORT-OPTION.  The options are
- * marked as enabled on both sides right away, so the client's DO/WILL
- * that answers this offer is taken as the acknowledgement it is and not
- * as a fresh request that needs another WILL/DO round. */
+ * marked as pending, so the client's DO/WILL (or DONT/WONT) that
+ * answers this offer is taken as the answer it is and not as a fresh
+ * request that needs another round. */
 static void srv_enter_telnet(void)
 {
     g_srv.telnet = 1;
-    g_srv.binary_local  = g_srv.binary_remote  = 1;
-    g_srv.sga_local     = g_srv.sga_remote     = 1;
-    g_srv.comport_local = g_srv.comport_remote = 1;
+    g_srv.binary.want_local  = g_srv.binary.want_remote  = 1;
+    g_srv.sga.want_local     = g_srv.sga.want_remote     = 1;
+    g_srv.comport.want_local = g_srv.comport.want_remote = 1;
     srv_send_neg(WILL, TELOPT_BINARY);
     srv_send_neg(DO,   TELOPT_BINARY);
     srv_send_neg(WILL, TELOPT_SGA);
@@ -1698,12 +1705,12 @@ static void srv_enter_telnet(void)
 
 static void srv_handle_neg(uint8_t cmd, uint8_t opt)
 {
-    int *local, *remote;
+    struct srv_opt *o;
 
     switch (opt) {
-    case TELOPT_BINARY:  local = &g_srv.binary_local;  remote = &g_srv.binary_remote;  break;
-    case TELOPT_SGA:     local = &g_srv.sga_local;     remote = &g_srv.sga_remote;     break;
-    case TELOPT_COMPORT: local = &g_srv.comport_local; remote = &g_srv.comport_remote; break;
+    case TELOPT_BINARY:  o = &g_srv.binary;  break;
+    case TELOPT_SGA:     o = &g_srv.sga;     break;
+    case TELOPT_COMPORT: o = &g_srv.comport; break;
     default:
         /* Refuse anything else, once, so nothing loops. */
         if (cmd == WILL)
@@ -1712,11 +1719,26 @@ static void srv_handle_neg(uint8_t cmd, uint8_t opt)
             srv_send_neg(WONT, opt);
         return;
     }
+    /* An answer to our own WILL/DO only updates the state; a request
+     * that changes the state is acknowledged; one that does not is
+     * ignored (RFC 854), so nothing loops. */
     switch (cmd) {
-    case WILL: if (!*remote) { *remote = 1; srv_send_neg(DO,   opt); } break;
-    case WONT: if (*remote)  { *remote = 0; srv_send_neg(DONT, opt); } break;
-    case DO:   if (!*local)  { *local  = 1; srv_send_neg(WILL, opt); } break;
-    case DONT: if (*local)   { *local  = 0; srv_send_neg(WONT, opt); } break;
+    case WILL:
+        if (o->want_remote)  { o->want_remote = 0; o->remote = 1; }
+        else if (!o->remote) { o->remote = 1; srv_send_neg(DO, opt); }
+        break;
+    case WONT:
+        if (o->want_remote)  { o->want_remote = 0; o->remote = 0; }
+        else if (o->remote)  { o->remote = 0; srv_send_neg(DONT, opt); }
+        break;
+    case DO:
+        if (o->want_local)   { o->want_local = 0; o->local = 1; }
+        else if (!o->local)  { o->local = 1; srv_send_neg(WILL, opt); }
+        break;
+    case DONT:
+        if (o->want_local)   { o->want_local = 0; o->local = 0; }
+        else if (o->local)   { o->local = 0; srv_send_neg(WONT, opt); }
+        break;
     default: break;
     }
 }
