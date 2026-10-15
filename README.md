@@ -304,7 +304,10 @@ script or a browser bookmark can drive the device the same way:
 
 The reset pulse runs in the background: while it lasts, `/status`, the
 other pages, the terminal and the `-l` client are served as usual, and
-a second `/power/reset` joins the pulse already running. An
+a second `/power/reset` joins the pulse already running. Up to six
+`/power/reset` requests wait for the end of the pulse; further ones are
+answered at once with the current state, so the page and `/status`
+always find a free connection slot. An
 `/power/enable`, `/power/disable` or an RFC 2217 `SET-CONTROL` during
 the pulse ends it: the lines stay as that command set them, and a
 waiting `/power/reset` is answered with that state at once. If the
