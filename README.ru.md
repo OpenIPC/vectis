@@ -79,9 +79,18 @@ make
 Для кросс-компиляции укажите тулчейн:
 
 ```sh
+# ARM, 32 бита
+make clean
 make CC=arm-linux-gnueabi-gcc STRIP=arm-linux-gnueabi-strip
+
+# AArch64
+make clean
 make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
 ```
+
+При смене тулчейна выполняйте `make clean`: Make сравнивает только
+время изменения исходника и бинарника, поэтому другой `CC` сам по себе
+не пересоберёт уже существующий бинарный файл.
 
 CI собирает обе программы для x86_64, arm, aarch64 и mipsel при каждом push
 и pull request; бинарные файлы прикладываются к каждому запуску как

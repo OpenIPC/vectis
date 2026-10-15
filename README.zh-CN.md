@@ -75,9 +75,17 @@ make
 交叉编译时指定工具链：
 
 ```sh
+# ARM，32 位
+make clean
 make CC=arm-linux-gnueabi-gcc STRIP=arm-linux-gnueabi-strip
+
+# AArch64
+make clean
 make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
 ```
+
+切换工具链时请先执行 `make clean`：Make 只比较源文件和二进制文件的
+时间戳，仅更换 `CC` 不会重新构建已存在的二进制文件。
 
 每次 push 和 pull request 时，CI 都会为 x86_64、arm、aarch64 和 mipsel
 构建这两个程序；生成的二进制文件作为构建产物附加在每次运行上。

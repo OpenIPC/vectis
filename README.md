@@ -77,9 +77,18 @@ builds the original bridge on demand; `make all` does not.
 Cross-compile by naming the toolchain:
 
 ```sh
+# ARM, 32-bit
+make clean
 make CC=arm-linux-gnueabi-gcc STRIP=arm-linux-gnueabi-strip
+
+# AArch64
+make clean
 make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
 ```
+
+Run `make clean` when switching toolchains: Make compares only the
+source and binary timestamps, so a different `CC` alone does not
+rebuild a binary that is already there.
 
 CI builds both programs for x86_64, arm, aarch64 and mipsel on every
 push and pull request; the binaries are attached to each run as
