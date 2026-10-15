@@ -97,8 +97,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.6.0"
-#define PROGRAM_RELEASE_DATE "2026-09-06"
+#define PROGRAM_VERSION      "1.6.1"
+#define PROGRAM_RELEASE_DATE "2026-10-15"
 
 #define RECONNECT_DELAY_S 5
 
@@ -147,9 +147,18 @@ static const char *g_ev_kind   = "";   /* "on", "off", "reset" */
 static const char *g_ev_source = "";   /* "web", "keyboard", "tcp", "rfc2217", "link" */
 static long long   g_ev_ms     = 0;
 static int g_link_quiet   = 0;  /* -w: log only the first link failure of an outage */
-static void set_serial_signal_state(int signal_flag, int active);
+
+/* A reset pulse in progress: RTS+DTR were dropped and come back once
+ * g_pulse_end_ms is reached (pulse_tick() in the poll loop), so the
+ * terminal, the -l client and the web page stay served meanwhile. */
+static int         g_pulse_active = 0;
+static long long   g_pulse_end_ms = 0;
+static const char *g_pulse_source = "";
+
+static int set_serial_signal_state(int signal_flag, int active);
 static void web_shutdown(void);
 static void srv_shutdown(void);
+static void pulse_finish(int restore);
 
 /* Telnet parser state */
 static enum tn_state g_tn_state = TS_DATA;
@@ -251,8 +260,18 @@ static void restore_serial(void)
 static void disconnect(void)
 {
     if (g_serial_mode && g_fd >= 0) {
-        set_serial_signal_state(TIOCM_RTS, 0);
-        set_serial_signal_state(TIOCM_DTR, 0);
+        (void)set_serial_signal_state(TIOCM_RTS, 0);
+        (void)set_serial_signal_state(TIOCM_DTR, 0);
+    }
+    /* Leaving in the middle of a pulse in RFC 2217 mode: the server
+     * keeps the lines as we leave them, so finish the pulse and raise
+     * them, as the blocking pulse used to.  (In -u mode the lines go
+     * down on exit anyway; on a link loss nothing can be sent.) */
+    if (g_quit && !g_serial_mode && g_fd >= 0 && g_pulse_active) {
+        long long left = g_pulse_end_ms - now_ms();
+        if (left > 0)
+            sleep_us((unsigned int)left * 1000);
+        pulse_finish(1);
     }
     restore_serial();
     if (g_fd >= 0) {
@@ -266,6 +285,8 @@ static void disconnect(void)
     g_power_on  = 0;
     g_dtr_on    = 0;
     g_rts_on    = 0;
+    /* A pulse cut short by the link loss: answer whoever waits for it. */
+    pulse_finish(0);
 }
 
 static void cleanup(void)
@@ -403,18 +424,24 @@ static int configure_serial(int fd, int baud, int data_bits, int stop_bits, char
     return 0;
 }
 
-static void set_serial_signal_state(int signal_flag, int active)
+/* Returns 0 when the line was set, -1 (logged) otherwise. */
+static int set_serial_signal_state(int signal_flag, int active)
 {
     if (g_fd < 0)
-        return;
+        return -1;
 
     if (active) {
-        if (ioctl(g_fd, TIOCMBIS, &signal_flag) == -1)
+        if (ioctl(g_fd, TIOCMBIS, &signal_flag) == -1) {
             log_errno(LOG_ERR, "Failed to activate serial signal");
+            return -1;
+        }
     } else {
-        if (ioctl(g_fd, TIOCMBIC, &signal_flag) == -1)
+        if (ioctl(g_fd, TIOCMBIC, &signal_flag) == -1) {
             log_errno(LOG_ERR, "Failed to deactivate serial signal");
+            return -1;
+        }
     }
+    return 0;
 }
 
 /* Guaranteed write of N bytes to a file descriptor. Returns -1 on error. */
@@ -726,8 +753,8 @@ static int power_set(int on, const char *source)
     if (g_fd < 0)
         return -1;
     if (g_serial_mode) {
-        set_serial_signal_state(TIOCM_DTR, on);
-        set_serial_signal_state(TIOCM_RTS, on);
+        (void)set_serial_signal_state(TIOCM_DTR, on);
+        (void)set_serial_signal_state(TIOCM_RTS, on);
     } else {
         if (comport_set_control(on ? CPC_CTRL_DTR_ON : CPC_CTRL_DTR_OFF) < 0 ||
             comport_set_control(on ? CPC_CTRL_RTS_ON : CPC_CTRL_RTS_OFF) < 0)
@@ -761,16 +788,71 @@ static void send_break(void)
 
 /* ---------- Reset pulse (RTS+DTR released for g_reset_ms) ---------- */
 
-static void send_reset_pulse(const char *source)
+static void web_answer_pending(void);
+
+/* Start a reset pulse: drop RTS+DTR now; pulse_tick() raises them again
+ * after g_reset_ms.  The poll loop keeps running in between, so a long
+ * -t does not freeze the console, the -l client or the web page.  A
+ * request while a pulse is already running joins that pulse.  Returns 0
+ * when a pulse is running, -1 when the link is down or the lines could
+ * not be driven. */
+static int send_reset_pulse(const char *source)
 {
     if (g_fd < 0)
-        return;
+        return -1;
+    if (g_pulse_active) {
+        log_message(LOG_INFO, "[reset] already in progress");
+        return 0;
+    }
     fputs("\r\n", stderr);
     log_message(LOG_INFO, "[reset] RTS+DTR off for %d ms", g_reset_ms);
-    (void)power_set(0, source);
-    sleep_us((unsigned int)g_reset_ms * 1000);
-    (void)power_set(1, source);
-    log_message(LOG_INFO, "[reset] done");
+    if (power_set(0, source) != 0) {
+        /* RFC 2217: DTR may be off already if only RTS failed. */
+        (void)power_set(1, source);
+        return -1;
+    }
+    g_pulse_active = 1;
+    g_pulse_source = source;
+    g_pulse_end_ms = now_ms() + g_reset_ms;
+    return 0;
+}
+
+/* End the running pulse.  restore = 1: it ran its course, raise RTS+DTR
+ * again; 0: something else took the lines over (an explicit power
+ * command, the link went down), leave them as they are.  Either way the
+ * web clients waiting on /power/reset get their answer now. */
+static void pulse_finish(int restore)
+{
+    if (!g_pulse_active)
+        return;
+    g_pulse_active = 0;
+    if (restore) {
+        (void)power_set(1, g_pulse_source);
+        log_message(LOG_INFO, "[reset] done");
+    } else {
+        log_message(LOG_INFO, "[reset] interrupted");
+    }
+    web_answer_pending();
+}
+
+/* Called on every pass of the poll loop. */
+static void pulse_tick(void)
+{
+    if (g_pulse_active && now_ms() >= g_pulse_end_ms)
+        pulse_finish(1);
+}
+
+/* Shorten a poll() timeout so the pulse ends on time. */
+static int pulse_poll_timeout(int timeout_ms)
+{
+    long long left;
+
+    if (!g_pulse_active)
+        return timeout_ms;
+    left = g_pulse_end_ms - now_ms();
+    if (left < 0)
+        left = 0;
+    return left < timeout_ms ? (int)left : timeout_ms;
 }
 
 /* ---------- stdin EOF ---------- */
@@ -831,6 +913,8 @@ static int on_stdin_eof(void)
 
 struct web_client {
     int       fd;
+    int       pending;      /* waits for the running reset pulse to end */
+    int       rd_closed;    /* pending, and the client shut its write side */
     size_t    len;
     long long started_ms;
     char      peer[INET_ADDRSTRLEN];
@@ -993,6 +1077,8 @@ static void web_client_close(struct web_client *c)
         c->fd = -1;
     }
     c->len = 0;
+    c->pending = 0;
+    c->rd_closed = 0;
 }
 
 static void web_shutdown(void)
@@ -1074,8 +1160,10 @@ static int web_listen(const char *addr, int port)
     if (fd < 0)
         return -1;
     for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
-        g_web_clients[i].fd  = -1;
-        g_web_clients[i].len = 0;
+        g_web_clients[i].fd      = -1;
+        g_web_clients[i].len     = 0;
+        g_web_clients[i].pending = 0;
+        g_web_clients[i].rd_closed = 0;
     }
     g_web_listen_fd = fd;
     log_message(LOG_INFO, "Web server ready on http://%s:%d/", addr[0] ? addr : "0.0.0.0", port);
@@ -1197,6 +1285,20 @@ static size_t web_status_json(char *out, size_t cap)
     return (size_t)n < cap ? (size_t)n : cap - 1;
 }
 
+/* Clients held until the pulse ends.  Capped below WEB_MAX_CLIENTS so
+ * waiting resets can never take every slot. */
+#define WEB_MAX_PENDING  (WEB_MAX_CLIENTS - 2)
+
+static int web_pending_count(void)
+{
+    int n = 0;
+
+    for (int i = 0; i < WEB_MAX_CLIENTS; i++)
+        if (g_web_clients[i].fd >= 0 && g_web_clients[i].pending)
+            n++;
+    return n;
+}
+
 /* Perform the /power/<what> command: enable, disable or reset, and reply
  * with the full status JSON. */
 static void web_power_action(struct web_client *c, const char *what)
@@ -1223,17 +1325,50 @@ static void web_power_action(struct web_client *c, const char *what)
         return;
     }
     log_message(LOG_INFO, "[web] %s: power %s", c->peer, action);
-    if (action[0] == 'r')
-        send_reset_pulse("web");
-    else
+    if (action[0] == 'r') {
+        rc = send_reset_pulse("web");
+    } else {
         rc = power_set(action[1] == 'n', "web");
+        if (rc == 0)
+            pulse_finish(0);   /* an explicit state overrides a running pulse */
+    }
     if (rc != 0) {
         web_reply(c, 500, "Internal Server Error", "application/json",
                   WEB_TEXT("{\"error\":\"control command failed\"}"), 0);
         return;
     }
+    if (action[0] == 'r' && web_pending_count() < WEB_MAX_PENDING) {
+        /* Answered by web_answer_pending() once the pulse is over. */
+        c->pending = 1;
+        return;
+    }
+    /* Not a reset, or too many clients wait already: answer now, so
+     * slots stay free for /status and the page. */
     n = web_status_json(json, sizeof json);
     web_reply(c, 200, "OK", "application/json", json, n, 0);
+}
+
+/* Answer every client waiting on /power/reset: the state after the
+ * pulse, or 503 when it ended because the link went down. */
+static void web_answer_pending(void)
+{
+    char json[2304];
+    size_t n = 0;
+
+    for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
+        struct web_client *c = &g_web_clients[i];
+        if (c->fd < 0 || !c->pending)
+            continue;
+        if (g_fd < 0) {
+            web_reply(c, 503, "Service Unavailable", "application/json",
+                      WEB_TEXT("{\"error\":\"link offline\"}"), 0);
+        } else {
+            if (n == 0)
+                n = web_status_json(json, sizeof json);
+            web_reply(c, 200, "OK", "application/json", json, n, 0);
+        }
+        web_client_close(c);
+    }
 }
 
 static void web_process_request(struct web_client *c)
@@ -1342,7 +1477,8 @@ static void web_client_read(struct web_client *c)
         return;  /* wait for the body */
 
     web_process_request(c);
-    web_client_close(c);
+    if (!c->pending)
+        web_client_close(c);
 }
 
 static void web_accept(void)
@@ -1374,9 +1510,29 @@ static void web_accept(void)
     }
     c->fd         = cfd;
     c->len        = 0;
+    c->pending    = 0;
+    c->rd_closed  = 0;
     c->started_ms = now_ms();
     if (inet_ntop(AF_INET, &peer.sin_addr, c->peer, sizeof c->peer) == NULL)
         snprintf(c->peer, sizeof c->peer, "?");
+}
+
+/* A client waiting for its reset reply became readable.  Extra bytes
+ * are drained and ignored.  EOF is only the client's write side closing:
+ * a script (nc -N, shutdown(SHUT_WR)) still reads the reply, and a FIN
+ * from a peer that is gone altogether looks the same, so the client is
+ * kept, no longer polled for input, and answered when the pulse ends
+ * (the WEB_MAX_PENDING cap keeps slots free meanwhile).  A hard error
+ * means the peer is gone. */
+static void web_pending_check(struct web_client *c)
+{
+    char junk[256];
+    ssize_t n = recv(c->fd, junk, sizeof junk, MSG_DONTWAIT);
+
+    if (n == 0)
+        c->rd_closed = 1;
+    else if (n < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)
+        web_client_close(c);
 }
 
 /* Fill poll slots for the listener and every client slot (fd = -1 where
@@ -1391,7 +1547,13 @@ static int web_fill_pollfds(struct pollfd *p)
     p[0].revents = 0;
     for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
         p[1 + i].fd      = g_web_clients[i].fd;
-        p[1 + i].events  = POLLIN;
+        /* A client waiting for its reset reply has said all it had to
+         * say: watch only for its half-close, then for errors alone
+         * (POLLHUP/POLLERR are always reported). */
+        if (!g_web_clients[i].pending)
+            p[1 + i].events = POLLIN;
+        else
+            p[1 + i].events = g_web_clients[i].rd_closed ? 0 : (POLLIN | POLLRDHUP);
         p[1 + i].revents = 0;
     }
     return WEB_NPOLL;
@@ -1414,9 +1576,15 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
             continue;  /* empty slot, or accepted only just now */
         if (p[1 + i].revents & POLLNVAL)
             web_client_close(c);
+        else if (c->pending && (p[1 + i].revents & (POLLHUP | POLLERR)))
+            web_client_close(c);   /* the peer is gone */
+        else if (c->pending && (p[1 + i].revents & (POLLIN | POLLRDHUP)))
+            web_pending_check(c);
         else if (p[1 + i].revents & (POLLIN | POLLHUP | POLLERR))
             web_client_read(c);
-        if (c->fd >= 0 && now - c->started_ms > WEB_CLIENT_TIMEOUT_MS)
+        /* The idle timeout guards the request; a client waiting for a
+         * pulse (up to -t, 60 s) is answered when the pulse ends. */
+        if (c->fd >= 0 && !c->pending && now - c->started_ms > WEB_CLIENT_TIMEOUT_MS)
             web_client_close(c);
     }
 }
@@ -1444,6 +1612,15 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
 
 enum srv_state { SS_DATA, SS_IAC, SS_NEG, SS_SB_OPT, SS_SB_DATA, SS_SB_IAC };
 
+/* One Telnet option, both sides (RFC 1143, without the queue bits):
+ * local/remote = enabled on our / the client's side; want_* = we sent
+ * WILL / DO and wait for the answer, which is then taken as the answer
+ * (agreement or refusal) and not replied to. */
+struct srv_opt {
+    int local, remote;
+    int want_local, want_remote;
+};
+
 static int  g_srv_listen_fd = -1;
 static int  g_srv_fd        = -1;   /* the connected client, or -1 */
 static char g_srv_peer[INET_ADDRSTRLEN] = "";   /* tentative definitions above */
@@ -1454,9 +1631,7 @@ static struct {
     uint8_t sb_opt;
     uint8_t sb_buf[SRV_SB_MAX];
     size_t  sb_len;
-    int binary_local, binary_remote;   /* WILL state on our / the client's side */
-    int sga_local, sga_remote;
-    int comport_local, comport_remote;
+    struct srv_opt binary, sga, comport;
 } g_srv;
 
 static void srv_close_client(const char *why)
@@ -1525,9 +1700,16 @@ static void srv_send_subneg_u32(uint8_t sub, uint32_t v)
     srv_send_subneg(sub, d, 4);
 }
 
+/* Offer and request BINARY, SGA and COM-PORT-OPTION.  The options are
+ * marked as pending, so the client's DO/WILL (or DONT/WONT) that
+ * answers this offer is taken as the answer it is and not as a fresh
+ * request that needs another round. */
 static void srv_enter_telnet(void)
 {
     g_srv.telnet = 1;
+    g_srv.binary.want_local  = g_srv.binary.want_remote  = 1;
+    g_srv.sga.want_local     = g_srv.sga.want_remote     = 1;
+    g_srv.comport.want_local = g_srv.comport.want_remote = 1;
     srv_send_neg(WILL, TELOPT_BINARY);
     srv_send_neg(DO,   TELOPT_BINARY);
     srv_send_neg(WILL, TELOPT_SGA);
@@ -1539,12 +1721,12 @@ static void srv_enter_telnet(void)
 
 static void srv_handle_neg(uint8_t cmd, uint8_t opt)
 {
-    int *local, *remote;
+    struct srv_opt *o;
 
     switch (opt) {
-    case TELOPT_BINARY:  local = &g_srv.binary_local;  remote = &g_srv.binary_remote;  break;
-    case TELOPT_SGA:     local = &g_srv.sga_local;     remote = &g_srv.sga_remote;     break;
-    case TELOPT_COMPORT: local = &g_srv.comport_local; remote = &g_srv.comport_remote; break;
+    case TELOPT_BINARY:  o = &g_srv.binary;  break;
+    case TELOPT_SGA:     o = &g_srv.sga;     break;
+    case TELOPT_COMPORT: o = &g_srv.comport; break;
     default:
         /* Refuse anything else, once, so nothing loops. */
         if (cmd == WILL)
@@ -1553,11 +1735,26 @@ static void srv_handle_neg(uint8_t cmd, uint8_t opt)
             srv_send_neg(WONT, opt);
         return;
     }
+    /* An answer to our own WILL/DO only updates the state; a request
+     * that changes the state is acknowledged; one that does not is
+     * ignored (RFC 854), so nothing loops. */
     switch (cmd) {
-    case WILL: if (!*remote) { *remote = 1; srv_send_neg(DO,   opt); } break;
-    case WONT: if (*remote)  { *remote = 0; srv_send_neg(DONT, opt); } break;
-    case DO:   if (!*local)  { *local  = 1; srv_send_neg(WILL, opt); } break;
-    case DONT: if (*local)   { *local  = 0; srv_send_neg(WONT, opt); } break;
+    case WILL:
+        if (o->want_remote)  { o->want_remote = 0; o->remote = 1; }
+        else if (!o->remote) { o->remote = 1; srv_send_neg(DO, opt); }
+        break;
+    case WONT:
+        if (o->want_remote)  { o->want_remote = 0; o->remote = 0; }
+        else if (o->remote)  { o->remote = 0; srv_send_neg(DONT, opt); }
+        break;
+    case DO:
+        if (o->want_local)   { o->want_local = 0; o->local = 1; }
+        else if (!o->local)  { o->local = 1; srv_send_neg(WILL, opt); }
+        break;
+    case DONT:
+        if (o->want_local)   { o->want_local = 0; o->local = 0; }
+        else if (o->local)   { o->local = 0; srv_send_neg(WONT, opt); }
+        break;
     default: break;
     }
 }
@@ -1676,7 +1873,8 @@ static void srv_set_line(int flag, int on)
 {
     int was = g_power_on;
 
-    set_serial_signal_state(flag, on);
+    if (set_serial_signal_state(flag, on) != 0)
+        return;   /* nothing changed: the state and a running pulse stay */
     if (flag == TIOCM_DTR)
         g_dtr_on = on;
     else
@@ -1684,6 +1882,7 @@ static void srv_set_line(int flag, int on)
     g_power_on = g_dtr_on && g_rts_on;
     if (was != g_power_on)
         power_event(g_power_on, "rfc2217");
+    pulse_finish(0);   /* the client drives the lines itself now */
 }
 
 static void srv_handle_subneg(void)
@@ -1697,8 +1896,19 @@ static void srv_handle_subneg(void)
     sub = d[0];
     switch (sub) {
     case CPC_SIGNATURE: {
+        /* An empty SIGNATURE asks for ours; one with text is the
+         * client's own signature, which RFC 2217 does not answer. */
         static const char sig[] = "vectis " PROGRAM_VERSION;
-        srv_send_subneg(sub, (const uint8_t *)sig, sizeof sig - 1);
+        if (len == 1) {
+            srv_send_subneg(sub, (const uint8_t *)sig, sizeof sig - 1);
+        } else {
+            char text[SRV_SB_MAX];
+            size_t tl = 0;
+            for (size_t i = 1; i < len && tl + 1 < sizeof text; i++)
+                text[tl++] = isprint(d[i]) ? (char)d[i] : '.';
+            text[tl] = '\0';
+            log_message(LOG_INFO, "[tcp] %s: client signature \"%s\"", g_srv_peer, text);
+        }
         break;
     }
     case CPC_SET_BAUDRATE: {
@@ -1880,7 +2090,7 @@ static void srv_legacy_process(const uint8_t *in, size_t n)
             srv_to_uart(out, o);
             o = 0;
             log_message(LOG_INFO, "[tcp] %s: reset request", g_srv_peer);
-            send_reset_pulse("tcp");
+            (void)send_reset_pulse("tcp");
             continue;
         }
         if (b == '\r') {
@@ -2080,33 +2290,63 @@ static int daemon_mode(void)
     return g_web_listen_fd >= 0 || g_srv_listen_fd >= 0;
 }
 
+/* Keyboard input while the link is down.  Nothing can reach the device,
+ * so the keys are dropped, but Ctrl+] still exits: in raw mode Ctrl+C is
+ * an ordinary byte, and without this the session could only be ended
+ * with a signal from elsewhere until the device came back, when every
+ * key typed meanwhile would have been sent to it at once. */
+static void offline_stdin(void)
+{
+    uint8_t b[256];
+    ssize_t n = read(STDIN_FILENO, b, sizeof b);
+
+    if (n < 0) {
+        if (errno == EINTR || errno == EAGAIN)
+            return;
+        log_errno(LOG_WARNING, "read(stdin)");
+        n = 0;
+    }
+    if (n == 0) {
+        (void)on_stdin_eof();
+        return;
+    }
+    if (memchr(b, KEY_EXIT, (size_t)n) != NULL)
+        g_quit = 1;
+}
+
 /* Interruptible pause between link attempts (1-second ticks).  Keeps
  * servicing the -w web server and the -l listener meanwhile, so the page
  * stays reachable (reporting the link as offline) and TCP clients can
- * connect and negotiate while the device is away. */
+ * connect and negotiate while the device is away.  An interactive
+ * terminal is watched too, so Ctrl+] works while the link is down;
+ * piped stdin is left alone and reaches the device once it is back. */
 static void sleep_reconnect(unsigned int seconds)
 {
     long long until = now_ms() + (long long)seconds * 1000;
 
     while (!g_quit) {
         long long left = until - now_ms();
-        struct pollfd pfds[SRV_NPOLL + WEB_NPOLL];
+        struct pollfd pfds[1 + SRV_NPOLL + WEB_NPOLL];
         int slice, nsrv, nweb;
 
         if (left <= 0)
             break;
         slice = left > 1000 ? 1000 : (int)left;
-        nsrv = srv_fill_pollfds(pfds);
-        nweb = web_fill_pollfds(pfds + nsrv);
-        if (nsrv + nweb == 0) {
-            struct pollfd dummy = { .fd = -1, .events = 0, .revents = 0 };
-            poll(&dummy, 1, slice);
-            continue;
-        }
-        if (poll(pfds, nsrv + nweb, slice) < 0 && errno != EINTR)
+        /* A negative fd makes poll() skip the slot (revents = 0). */
+        pfds[0].fd      = (g_interactive && g_watch_stdin) ? STDIN_FILENO : -1;
+        pfds[0].events  = POLLIN;
+        pfds[0].revents = 0;
+        nsrv = srv_fill_pollfds(pfds + 1);
+        nweb = web_fill_pollfds(pfds + 1 + nsrv);
+        if (poll(pfds, 1 + nsrv + nweb, slice) < 0) {
+            if (errno == EINTR)
+                continue;
             break;
-        srv_handle_pollfds(pfds, nsrv);
-        web_handle_pollfds(pfds + nsrv, nweb);
+        }
+        if (pfds[0].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))
+            offline_stdin();
+        srv_handle_pollfds(pfds + 1, nsrv);
+        web_handle_pollfds(pfds + 1 + nsrv, nweb);
     }
 }
 
@@ -2496,6 +2736,8 @@ int main(int argc, char **argv)
         static uint8_t buf[READ_BUF_SIZE]; /* static to avoid large stack allocation (N2) */
         while (!g_quit) {
             struct pollfd pfds[2 + SRV_NPOLL + WEB_NPOLL];
+
+            pulse_tick();
             pfds[0].fd     = g_fd;
             pfds[0].events = POLLIN;
             /* A negative fd makes poll() skip the slot (revents = 0). */
@@ -2504,7 +2746,9 @@ int main(int argc, char **argv)
             int nsrv = srv_fill_pollfds(&pfds[2]);
             int nweb = web_fill_pollfds(&pfds[2 + nsrv]);
 
-            int r = poll(pfds, 2 + nsrv + nweb, 500); /* 500 ms timeout to respond to signals promptly */
+            /* 500 ms timeout to respond to signals promptly, shorter
+             * when a reset pulse is due to end sooner. */
+            int r = poll(pfds, 2 + nsrv + nweb, pulse_poll_timeout(500));
             if (r < 0) {
                 if (errno == EINTR)
                     continue;
@@ -2597,7 +2841,7 @@ int main(int argc, char **argv)
                                 }
                                 outlen = 0;
                             }
-                            send_reset_pulse("keyboard");
+                            (void)send_reset_pulse("keyboard");
                             continue;
                         }
                         if (c == KEY_BREAK) {

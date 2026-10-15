@@ -179,6 +179,15 @@ quit. Sending `SIGINT` or `SIGTERM` from elsewhere also ends the session
 cleanly. If the controlling terminal disappears, `vectis` exits on its
 own.
 
+`Ctrl+]` also works while the device link is down and `vectis` is
+waiting to reconnect (`-r`, `-l`, `-w`). Other keys typed meanwhile are
+discarded rather than sent to the device in one burst when the link
+comes back.
+
+The reset pulse does not stop the program: while RTS and DTR are low,
+device output keeps flowing, and the keyboard, the `-l` client and the
+web page stay responsive. A second `Ctrl+P` during a pulse is ignored.
+
 ## Non-interactive use
 
 When stdin is not a terminal, `vectis` skips raw-terminal setup and
@@ -234,8 +243,9 @@ The behaviour mirrors the original `vectis-bootrom` server:
   (standard rates up to 921600), `SET-DATASIZE` (5..8), `SET-PARITY`
   (none/odd/even), `SET-STOPSIZE` (1 or 2), `PURGE-DATA`, and drive DTR
   and RTS with `SET-CONTROL`; each reply reports the value actually in
-  effect. `SIGNATURE` answers `vectis <version>`, and a Telnet `BRK`
-  sends a serial break. The HiSilicon `BOOTROM-CATCH` extension of
+  effect. An empty `SIGNATURE` request is answered with
+  `vectis <version>`; a client's own signature is logged, not
+  answered. A Telnet `BRK` sends a serial break. The HiSilicon `BOOTROM-CATCH` extension of
   `vectis-bootrom` is not implemented here.
 - Everything the client does is logged with its address, and the web
   page and `/status` show the connected client.
@@ -292,6 +302,18 @@ script or a browser bookmark can drive the device the same way:
 | `/power/disable` | GET or POST | deassert RTS+DTR | JSON, full state |
 | `/power/reset` | GET or POST | RTS+DTR pulse; answers when it is over | JSON, full state |
 
+The reset pulse runs in the background: while it lasts, `/status`, the
+other pages, the terminal and the `-l` client are served as usual, and
+a second `/power/reset` joins the pulse already running. Up to six
+`/power/reset` requests wait for the end of the pulse; further ones are
+answered at once with the current state, so the page and `/status`
+always find a free connection slot. A client that shuts down its
+sending side after the request (`nc -N`) still gets the reply. An
+`/power/enable`, `/power/disable` or an RFC 2217 `SET-CONTROL` during
+the pulse ends it: the lines stay as that command set them, and a
+waiting `/power/reset` is answered with that state at once. If the
+link drops during the pulse, `/power/reset` answers `503`.
+
 ```sh
 curl -s http://192.168.1.20:8080/status
 curl -s http://192.168.1.20:8080/power/reset
@@ -301,7 +323,7 @@ curl -s http://192.168.1.20:8080/power/reset
 {"link":"online","mode":"serial","target":"/dev/ttyUSB0","power":"on",
  "rts":1,"dtr":1,"reset_ms":200,"tcp_client":"192.168.1.5",
  "event":{"seq":7,"kind":"reset","source":"rfc2217","ago_ms":1830},
- "version":"1.6.0"}
+ "version":"1.6.1"}
 ```
 
 `link` is `online` or `offline`, `power` is the state last commanded by

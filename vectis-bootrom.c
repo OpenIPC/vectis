@@ -31,7 +31,7 @@
 #define BUFFER_SIZE 4096
 #define RESET_PULSE_MS 200
 #define DEFAULT_TCP_PORT 35240
-#define PROGRAM_VERSION "1.3.2"
+#define PROGRAM_VERSION "1.3.3"
 #define PROGRAM_RELEASE_DATE "2026-06-10"
 
 /* --- RFC 854 / RFC 2217 protocol constants --- */
@@ -719,7 +719,7 @@ static void tn_send_set_control_reply(unsigned char value)
 
 static void tn_send_set_baudrate_reply(uint32_t baud)
 {
-    unsigned char buf[11] = {
+    unsigned char buf[10] = {
         TN_IAC_BYTE, TN_SB, TN_OPT_COMPORT,
         COMPORT_SET_BAUDRATE + COMPORT_SERVER_OFFSET,
         (unsigned char)(baud >> 24), (unsigned char)(baud >> 16),
