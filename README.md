@@ -307,7 +307,8 @@ other pages, the terminal and the `-l` client are served as usual, and
 a second `/power/reset` joins the pulse already running. Up to six
 `/power/reset` requests wait for the end of the pulse; further ones are
 answered at once with the current state, so the page and `/status`
-always find a free connection slot. An
+always find a free connection slot. A client that shuts down its
+sending side after the request (`nc -N`) still gets the reply. An
 `/power/enable`, `/power/disable` or an RFC 2217 `SET-CONTROL` during
 the pulse ends it: the lines stay as that command set them, and a
 waiting `/power/reset` is answered with that state at once. If the

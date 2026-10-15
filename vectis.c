@@ -914,6 +914,7 @@ static int on_stdin_eof(void)
 struct web_client {
     int       fd;
     int       pending;      /* waits for the running reset pulse to end */
+    int       rd_closed;    /* pending, and the client shut its write side */
     size_t    len;
     long long started_ms;
     char      peer[INET_ADDRSTRLEN];
@@ -1077,6 +1078,7 @@ static void web_client_close(struct web_client *c)
     }
     c->len = 0;
     c->pending = 0;
+    c->rd_closed = 0;
 }
 
 static void web_shutdown(void)
@@ -1161,6 +1163,7 @@ static int web_listen(const char *addr, int port)
         g_web_clients[i].fd      = -1;
         g_web_clients[i].len     = 0;
         g_web_clients[i].pending = 0;
+        g_web_clients[i].rd_closed = 0;
     }
     g_web_listen_fd = fd;
     log_message(LOG_INFO, "Web server ready on http://%s:%d/", addr[0] ? addr : "0.0.0.0", port);
@@ -1508,21 +1511,28 @@ static void web_accept(void)
     c->fd         = cfd;
     c->len        = 0;
     c->pending    = 0;
+    c->rd_closed  = 0;
     c->started_ms = now_ms();
     if (inet_ntop(AF_INET, &peer.sin_addr, c->peer, sizeof c->peer) == NULL)
         snprintf(c->peer, sizeof c->peer, "?");
 }
 
-/* A client waiting for its reset reply became readable: it went away
- * (EOF, error) or sent more, which is drained and ignored so the slot
- * does not report readable again on every pass. */
+/* A client waiting for its reset reply became readable.  Extra bytes
+ * are drained and ignored.  EOF is only the client's write side closing:
+ * a script (nc -N, shutdown(SHUT_WR)) still reads the reply, and a FIN
+ * from a peer that is gone altogether looks the same, so the client is
+ * kept, no longer polled for input, and answered when the pulse ends
+ * (the WEB_MAX_PENDING cap keeps slots free meanwhile).  A hard error
+ * means the peer is gone. */
 static void web_pending_check(struct web_client *c)
 {
     char junk[256];
     ssize_t n = recv(c->fd, junk, sizeof junk, MSG_DONTWAIT);
 
-    if (n == 0 || (n < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK))
-        web_client_close(c);   /* gave up waiting for the pulse */
+    if (n == 0)
+        c->rd_closed = 1;
+    else if (n < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)
+        web_client_close(c);
 }
 
 /* Fill poll slots for the listener and every client slot (fd = -1 where
@@ -1538,8 +1548,12 @@ static int web_fill_pollfds(struct pollfd *p)
     for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
         p[1 + i].fd      = g_web_clients[i].fd;
         /* A client waiting for its reset reply has said all it had to
-         * say; only its going away (FIN: POLLRDHUP) matters then. */
-        p[1 + i].events  = g_web_clients[i].pending ? (POLLIN | POLLRDHUP) : POLLIN;
+         * say: watch only for its half-close, then for errors alone
+         * (POLLHUP/POLLERR are always reported). */
+        if (!g_web_clients[i].pending)
+            p[1 + i].events = POLLIN;
+        else
+            p[1 + i].events = g_web_clients[i].rd_closed ? 0 : (POLLIN | POLLRDHUP);
         p[1 + i].revents = 0;
     }
     return WEB_NPOLL;
@@ -1562,7 +1576,9 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
             continue;  /* empty slot, or accepted only just now */
         if (p[1 + i].revents & POLLNVAL)
             web_client_close(c);
-        else if (c->pending && (p[1 + i].revents & (POLLIN | POLLRDHUP | POLLHUP | POLLERR)))
+        else if (c->pending && (p[1 + i].revents & (POLLHUP | POLLERR)))
+            web_client_close(c);   /* the peer is gone */
+        else if (c->pending && (p[1 + i].revents & (POLLIN | POLLRDHUP)))
             web_pending_check(c);
         else if (p[1 + i].revents & (POLLIN | POLLHUP | POLLERR))
             web_client_read(c);
