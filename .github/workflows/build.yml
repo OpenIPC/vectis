@@ -1,0 +1,77 @@
+#
+# Copyright (c) OpenIPC  https://openipc.org  MIT License
+#
+# build.yml — CI for vectis: build vectis and vectis-bootrom for Linux
+# targets through the Makefile; any compiler warning fails the job.
+#
+
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch or PR cancels the run still in progress.
+concurrency:
+  group: build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.platform.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: x86_64
+            cross: ""
+            pkgs: ""
+          - name: arm
+            cross: arm-linux-gnueabi-
+            pkgs: gcc-arm-linux-gnueabi
+          - name: aarch64
+            cross: aarch64-linux-gnu-
+            pkgs: gcc-aarch64-linux-gnu
+          - name: mipsel
+            cross: mipsel-linux-gnu-
+            pkgs: gcc-mipsel-linux-gnu
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install cross-compiler
+        if: matrix.platform.pkgs != ''
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ${{ matrix.platform.pkgs }}
+
+      - name: Build
+        shell: bash
+        run: |
+          make clean
+          make CC=${{ matrix.platform.cross }}gcc STRIP=${{ matrix.platform.cross }}strip \
+               vectis vectis-bootrom 2>&1 | tee build.log
+          if grep -q 'warning:' build.log; then
+            echo "::error::compiler warnings, see the build log"
+            exit 1
+          fi
+          file vectis vectis-bootrom
+          ls -l vectis vectis-bootrom
+
+      - name: Smoke test
+        if: matrix.platform.name == 'x86_64'
+        run: |
+          ./vectis --version
+          ./vectis-bootrom --version
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v5
+        with:
+          name: vectis-${{ matrix.platform.name }}
+          path: |
+            vectis
+            vectis-bootrom
+          if-no-files-found: error

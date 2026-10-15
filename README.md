@@ -1,4 +1,13 @@
-# Vectis
+![OpenIPC logo][logo]
+
+# OpenIPC Vectis
+
+**English** | [Русский](README.ru.md) | [简体中文](README.zh-CN.md)
+
+[![Build](https://github.com/OpenIPC/vectis/actions/workflows/build.yml/badge.svg)](https://github.com/OpenIPC/vectis/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Code size](https://img.shields.io/github/languages/code-size/OpenIPC/vectis)](https://github.com/OpenIPC/vectis)
+[![Platform](https://img.shields.io/badge/platform-Linux-brightgreen)](#requirements)
 
 Vectis is a serial console for fast debugging and device control during
 development and integration of embedded systems with the OpenIPC UART
@@ -19,7 +28,9 @@ It runs interactively in a terminal or as a daemon (`systemd`, no
 terminal), reopens the device link on its own when an adapter is
 unplugged, and needs nothing but libc.
 
-![image](device.jpg)
+<p align="center">
+  <img src="device.jpg" alt="OpenIPC UART 38x38 board" width="640">
+</p>
 
 `vectis-bootrom.c`, the original UART bridge this program grew out of, is
 kept in the repository for its HiSilicon boot-ROM catching extension; it
@@ -46,6 +57,13 @@ build.
   device link and stay up while it is away, one syslog line per outage
 - Syslog logging of connections, power actions and errors
 
+## Requirements
+
+- Linux (glibc or musl); nothing but libc at run time
+- A C99 compiler (GCC or Clang) and `make` to build
+- Read/write access to the serial device, usually membership in the
+  `dialout` group
+
 ## Build
 
 ```sh
@@ -55,6 +73,17 @@ make
 This builds `vectis` (size-optimised and stripped). `make DEBUG=1` builds
 with debug symbols and no optimisation instead. `make vectis-bootrom`
 builds the original bridge on demand; `make all` does not.
+
+Cross-compile by naming the toolchain:
+
+```sh
+make CC=arm-linux-gnueabi-gcc STRIP=arm-linux-gnueabi-strip
+make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
+```
+
+CI builds both programs for x86_64, arm, aarch64 and mipsel on every
+push and pull request; the binaries are attached to each run as
+artifacts.
 
 ## How it works
 
@@ -823,3 +852,17 @@ Vectis can also be started from `inittab` on systems with BusyBox init:
 #
 ttyS0::respawn:/usr/local/sbin/vectis-bootrom -s -p /dev/ttyUSB0 -b 115200
 ```
+
+## License
+
+[MIT](LICENSE). See [LICENSE](LICENSE) for the full terms.
+
+## Support
+
+- Questions and bug reports: [GitHub Issues](https://github.com/OpenIPC/vectis/issues)
+- Documentation: [openipc.org](https://openipc.org)
+
+[![Telegram](https://openipc.org/images/telegram_button.svg)](https://openipc.org/our-channels)
+
+[logo]: https://raw.githubusercontent.com/OpenIPC/.github/refs/heads/main/assets/openipc-logo-black.svg
+[rfc2217]: https://www.rfc-editor.org/rfc/rfc2217

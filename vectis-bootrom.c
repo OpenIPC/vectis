@@ -32,7 +32,7 @@
 #define RESET_PULSE_MS 200
 #define DEFAULT_TCP_PORT 35240
 #define PROGRAM_VERSION "1.3.3"
-#define PROGRAM_RELEASE_DATE "2026-06-10"
+#define PROGRAM_RELEASE_DATE "2026-10-15"
 
 /* --- RFC 854 / RFC 2217 protocol constants --- */
 #define TN_IAC_BYTE   255
