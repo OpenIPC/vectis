@@ -306,7 +306,7 @@ makes the process reopen the link automatically; it requires `-u`.
   <img src="screenshots/web-power-console.jpg" alt="Vectis web power console: link and RTS+DTR lamps, power gauge, Enable / Disable / Reset buttons" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.6.1 running on an OpenIPC SigmaStar SSC377D camera, serving its <code>/dev/ttyS1</code> with <code>-w 8080 -l 2021 -t 300</code>; a second <code>vectis</code> is connected to the <code>-l</code> port.</sub></p>
+<p align="center"><sub>vectis 1.6.1 running on an OpenIPC Dev Board, serving its <code>/dev/ttyS1</code> with <code>-w 8080 -l 2021 -t 300</code>; a second <code>vectis</code> is connected to the <code>-l</code> port.</sub></p>
 
 `-w PORT` (or `-w ADDR:PORT` to listen on one IPv4 address only) starts a
 built-in web server alongside the terminal session. It serves a single

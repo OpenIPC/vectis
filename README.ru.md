@@ -312,7 +312,7 @@ nc 192.168.1.20 2021                        # режим raw, построчно
   <img src="screenshots/web-power-console.jpg" alt="Веб-консоль vectis: лампы link и RTS+DTR, прибор питания, кнопки Enable / Disable / Reset" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.6.1 на камере OpenIPC SigmaStar SSC377D обслуживает её <code>/dev/ttyS1</code> с параметрами <code>-w 8080 -l 2021 -t 300</code>; к порту <code>-l</code> подключён второй <code>vectis</code>.</sub></p>
+<p align="center"><sub>vectis 1.6.1 на плате OpenIPC Dev Board обслуживает её <code>/dev/ttyS1</code> с параметрами <code>-w 8080 -l 2021 -t 300</code>; к порту <code>-l</code> подключён второй <code>vectis</code>.</sub></p>
 
 `-w PORT` (или `-w ADDR:PORT`, чтобы слушать только один IPv4-адрес)
 запускает встроенный веб-сервер параллельно с сеансом терминала. Он
