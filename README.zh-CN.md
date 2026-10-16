@@ -301,7 +301,7 @@ nc 192.168.1.20 2021                        # 原始模式，逐行发送
   <img src="screenshots/web-power-console.jpg" alt="vectis Web 电源控制台：link 与 RTS+DTR 指示灯、电源仪表、Enable / Disable / Reset 按钮" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.6.1 运行在 OpenIPC SigmaStar SSC377D 摄像机上，以 <code>-w 8080 -l 2021 -t 300</code> 提供其 <code>/dev/ttyS1</code>；另一个 <code>vectis</code> 已连接到 <code>-l</code> 端口。</sub></p>
+<p align="center"><sub>vectis 1.6.1 运行在 OpenIPC Dev Board 上，以 <code>-w 8080 -l 2021 -t 300</code> 提供其 <code>/dev/ttyS1</code>；另一个 <code>vectis</code> 已连接到 <code>-l</code> 端口。</sub></p>
 
 `-w PORT`（或 `-w ADDR:PORT`，仅在一个 IPv4 地址上监听）会在终端会话
 之外启动一个内置 Web 服务器。它只提供一个页面，
