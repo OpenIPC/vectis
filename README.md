@@ -206,11 +206,11 @@ terminal). In non-interactive mode (piped or redirected stdin), all bytes
 are forwarded to the device verbatim, so control characters in the data
 stream are never misinterpreted as commands.
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+P` | RTS+DTR pulse — reset the target device |
+| Key      | Action                                                                 |
+|----------|------------------------------------------------------------------------|
+| `Ctrl+P` | RTS+DTR pulse — reset the target device                                |
 | `Ctrl+B` | Send break signal — stops U-Boot autoboot, triggers bootloader prompts |
-| `Ctrl+]` | Exit |
+| `Ctrl+]` | Exit                                                                   |
 
 `Ctrl+C` is passed to the device like any other byte; use `Ctrl+]` to
 quit. Sending `SIGINT` or `SIGTERM` from elsewhere also ends the session
@@ -313,10 +313,10 @@ built-in web server alongside the terminal session. It serves a single
 page, styled as a brass-and-rivets control panel with the heading
 **Vectis Web Server**, carrying three latching buttons:
 
-| Button | Action | Indicator |
-|--------|--------|-----------|
-| `Enable`  | assert RTS+DTR (device powered) | lit while power is on |
-| `Disable` | deassert RTS+DTR (device unpowered) | lit while power is off |
+| Button    | Action                                                         | Indicator                                       |
+|-----------|----------------------------------------------------------------|-------------------------------------------------|
+| `Enable`  | assert RTS+DTR (device powered)                                | lit while power is on                           |
+| `Disable` | deassert RTS+DTR (device unpowered)                            | lit while power is off                          |
 | `Reset`   | RTS+DTR pulse of `-t` milliseconds, exactly what `Ctrl+P` does | lit, with a spinning gear, while the pulse runs |
 
 A press animates the button, the lamps (link, RTS+DTR) and a gauge
@@ -338,13 +338,13 @@ an outage is logged.
 Everything the page does is available as plain URLs, so `curl`, a shell
 script or a browser bookmark can drive the device the same way:
 
-| URL | Method | Action | Reply |
-|-----|--------|--------|-------|
-| `/` | GET | the page | HTML |
-| `/status` | GET | current state | JSON |
-| `/power/enable` | GET or POST | assert RTS+DTR | JSON, full state |
-| `/power/disable` | GET or POST | deassert RTS+DTR | JSON, full state |
-| `/power/reset` | GET or POST | RTS+DTR pulse; answers when it is over | JSON, full state |
+| URL              | Method      | Action                                 | Reply            |
+|------------------|-------------|----------------------------------------|------------------|
+| `/`              | GET         | the page                               | HTML             |
+| `/status`        | GET         | current state                          | JSON             |
+| `/power/enable`  | GET or POST | assert RTS+DTR                         | JSON, full state |
+| `/power/disable` | GET or POST | deassert RTS+DTR                       | JSON, full state |
+| `/power/reset`   | GET or POST | RTS+DTR pulse; answers when it is over | JSON, full state |
 
 The reset pulse runs in the background: while it lasts, `/status`, the
 other pages, the terminal and the `-l` client are served as usual, and
