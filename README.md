@@ -123,6 +123,14 @@ docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
 
 The change history of every version is in [CHANGELOG.md](CHANGELOG.md).
 
+Versions are `MAJOR.MINOR.PATCH` (`PROGRAM_VERSION` in `vectis.c`): PATCH for fixes and
+small changes, MINOR for a new feature, MAJOR for an incompatible change or a large update,
+only when the maintainer decides. A pull request that changes the code or the build (the
+sources, the `Makefile`, `ci/`) raises the version as its last commit before the merge,
+together with its `CHANGELOG.md` section. Changes to the docs, tests, screenshots or the
+workflows in `.github/` do not. CI checks this on every pull request
+(`.github/check-version.sh`).
+
 ## How it works
 
 In RFC 2217 client mode `vectis` connects to a TCP server, puts the local terminal into raw mode,

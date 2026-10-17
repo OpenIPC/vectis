@@ -117,6 +117,12 @@ docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
 
 各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
+版本号格式为 `MAJOR.MINOR.PATCH`（`vectis.c` 中的 `PROGRAM_VERSION`）：PATCH 表示修复和小改动，
+MINOR 表示新功能，MAJOR 表示不兼容的变更或大规模更新，仅由维护者决定。修改代码或构建
+（源代码、`Makefile`、`ci/`）的 PR 需要在合并前的最后一个提交中提升版本号，并在
+`CHANGELOG.md` 中添加对应章节。仅修改文档、测试、截图或 `.github/` 中工作流的 PR 不提升
+版本号。CI 会在每个 PR 中检查这一点（`.github/check-version.sh`）。
+
 ## 工作原理
 
 在 RFC 2217 客户端模式下，`vectis` 连接到 TCP 服务器，将本地终端切换为原始模式，
