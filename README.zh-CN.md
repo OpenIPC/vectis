@@ -176,7 +176,7 @@ curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUM
 sha256sum -c --ignore-missing SHA256SUMS && chmod 755 vectis-linux-x86_64
 ```
 
-每个新版本都会在 OpenIPC 的 Telegram 频道中发布（[我们的频道](https://openipc.org/our-channels)）。
+每个新版本的二进制文件也会发布到 OpenIPC 的 Telegram 频道（[我们的频道](https://openipc.org/our-channels)），用于存档和测试下载。
 
 发布用的二进制文件由 `ci/build-static.sh`（x86_64）和 `ci/build-mipsel.sh`
 （OpenWrt 23.05.5 工具链，只下载一次并校验 SHA256；需要 curl、xz、make 和
