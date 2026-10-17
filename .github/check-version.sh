@@ -46,8 +46,10 @@ if [ "$top" != "$new" ]; then
 	exit 1
 fi
 
-if ! grep -q "^## $new — " CHANGELOG.md; then
-	echo "::error::CHANGELOG.md has no section \"## $new — <date>\""
+# $new is digits and dots only (checked above): escape the dots, require a date.
+re=$(printf '%s' "$new" | sed 's/\./\\./g')
+if ! grep -Eq "^## $re — [0-9]{4}-[0-9]{2}-[0-9]{2}\$" CHANGELOG.md; then
+	echo "::error::CHANGELOG.md has no section \"## $new — YYYY-MM-DD\""
 	exit 1
 fi
 
