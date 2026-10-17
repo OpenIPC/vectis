@@ -5,8 +5,9 @@
  * vectis.c — Vectis: serial console for the OpenIPC UART 38x38 board.
  *
  * One binary, three roles that run side by side:
- *   - console: a local tty (-u) or an RFC 2217 server (-h/-p), with the
- *     RTS+DTR reset pulse on Ctrl+P and a break on Ctrl+B;
+ *   - console: a local tty (-u), a USB-UART driven through usbfs (-U, in
+ *     builds with USB_CHIPS, see usbserial.h) or an RFC 2217 server
+ *     (-h/-p), with the RTS+DTR reset pulse on Ctrl+P and a break on Ctrl+B;
  *   - server:  -l serves the local port over TCP (Telnet/RFC 2217, raw);
  *   - web:     -w serves a power-control page and a small JSON API.
  *
@@ -41,6 +42,10 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <syslog.h>
+
+#ifdef VECTIS_USB
+#include "usbserial.h"
+#endif
 
 /* ----- Telnet codes ----- */
 #define IAC   255
@@ -97,8 +102,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.6.1"
-#define PROGRAM_RELEASE_DATE "2026-10-15"
+#define PROGRAM_VERSION      "1.7.0"
+#define PROGRAM_RELEASE_DATE "2026-10-17"
 
 #define RECONNECT_DELAY_S 5
 
@@ -129,7 +134,12 @@ static int g_tio_saved    = 0;
 static int g_dev_tio_saved = 0;
 static volatile sig_atomic_t g_quit = 0;
 static const char *g_progname = "vectis";
-static int g_serial_mode  = 0;
+static int g_serial_mode  = 0;  /* a local port: -u tty or -U USB */
+static int g_usb          = 0;  /* -U: the local port is a USB-UART on usbfs */
+#ifdef VECTIS_USB
+static struct termios g_usb_tio;  /* -U line settings, kept as termios so the
+                                   * -l server reads and sets them as for a tty */
+#endif
 static int g_reset_ms     = 200;
 static int g_reconnect    = 0;
 static int g_no_crlf      = 0;  /* -n: disable LF->CR+LF translation */
@@ -218,6 +228,20 @@ static void die_errno(const char *msg)
     exit(EXIT_FAILURE);
 }
 
+#ifdef VECTIS_USB
+/* usbserial.c reports through here: syslog + stderr like everything else. */
+void usbs_log(int priority, const char *fmt, ...)
+{
+    char buf[512];
+    va_list ap;
+
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    log_message(priority, "%s", buf);
+}
+#endif
+
 static void sleep_us(unsigned int usec)
 {
     while (usleep(usec) != 0 && errno == EINTR)
@@ -235,6 +259,9 @@ static void print_version(const char *prog)
 {
     printf("%s %s\n", prog, PROGRAM_VERSION);
     printf("Release date: %s\n", PROGRAM_RELEASE_DATE);
+#ifdef VECTIS_USB
+    printf("USB chips (-U): %s\n", usbs_chip_names());
+#endif
 }
 
 /* ---------- Utilities ---------- */
@@ -259,15 +286,18 @@ static void restore_serial(void)
 
 static void disconnect(void)
 {
-    if (g_serial_mode && g_fd >= 0) {
+    /* -u: the lines go down with the tty anyway (the kernel drops them on
+     * close), so drop them first.  -U keeps them: the target's power
+     * survives a restart of vectis. */
+    if (g_serial_mode && !g_usb && g_fd >= 0) {
         (void)set_serial_signal_state(TIOCM_RTS, 0);
         (void)set_serial_signal_state(TIOCM_DTR, 0);
     }
-    /* Leaving in the middle of a pulse in RFC 2217 mode: the server
-     * keeps the lines as we leave them, so finish the pulse and raise
-     * them, as the blocking pulse used to.  (In -u mode the lines go
-     * down on exit anyway; on a link loss nothing can be sent.) */
-    if (g_quit && !g_serial_mode && g_fd >= 0 && g_pulse_active) {
+    /* Leaving in the middle of a pulse in RFC 2217 or -U mode: the lines
+     * stay as we leave them, so finish the pulse and raise them, as the
+     * blocking pulse used to.  (In -u mode the lines go down on exit
+     * anyway; on a link loss nothing can be sent.) */
+    if (g_quit && (!g_serial_mode || g_usb) && g_fd >= 0 && g_pulse_active) {
         long long left = g_pulse_end_ms - now_ms();
         if (left > 0)
             sleep_us((unsigned int)left * 1000);
@@ -275,7 +305,12 @@ static void disconnect(void)
     }
     restore_serial();
     if (g_fd >= 0) {
-        close(g_fd);
+#ifdef VECTIS_USB
+        if (g_usb)
+            usbs_close();
+        else
+#endif
+            close(g_fd);
         g_fd = -1;
     }
     /* Reset Telnet parser state for potential reconnect. */
@@ -344,6 +379,91 @@ static int baud_from_speed(speed_t speed)
     return 0;
 }
 
+/* ---------- Local port: tty (-u) or USB (-U) ---------- */
+
+/* termios get/set, flush, break and writes on the local port.  In -U
+ * mode the settings live in g_usb_tio and go to the chip through
+ * usbserial.c; everything above this layer sees a tty either way. */
+
+#ifdef VECTIS_USB
+static int usb_line_from_termios(const struct termios *t, struct usbs_line *l)
+{
+    l->baud = (uint32_t)baud_from_speed(cfgetospeed(t));
+    if (l->baud == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    switch (t->c_cflag & CSIZE) {
+    case CS5: l->data_bits = 5; break;
+    case CS6: l->data_bits = 6; break;
+    case CS7: l->data_bits = 7; break;
+    default:  l->data_bits = 8; break;
+    }
+    l->parity    = !(t->c_cflag & PARENB) ? 'N' : (t->c_cflag & PARODD) ? 'O' : 'E';
+    l->stop_bits = (t->c_cflag & CSTOPB) ? 2 : 1;
+    return 0;
+}
+#endif
+
+static int port_getattr(int fd, struct termios *t)
+{
+#ifdef VECTIS_USB
+    if (g_usb) {
+        *t = g_usb_tio;
+        return 0;
+    }
+#endif
+    return tcgetattr(fd, t);
+}
+
+static int port_setattr(int fd, const struct termios *t)
+{
+#ifdef VECTIS_USB
+    if (g_usb) {
+        struct usbs_line l;
+        if (usb_line_from_termios(t, &l) != 0 || usbs_set_line(&l) != 0)
+            return -1;
+        g_usb_tio = *t;
+        return 0;
+    }
+#endif
+    return tcsetattr(fd, TCSANOW, t);
+}
+
+static int port_flush(int fd, int how)
+{
+#ifdef VECTIS_USB
+    if (g_usb) {
+        if (how == TCIFLUSH || how == TCIOFLUSH)
+            usbs_purge_rx();
+        return 0;   /* nothing is queued on the way out */
+    }
+#endif
+    return tcflush(fd, how);
+}
+
+/* Serial break, 250 ms as tcsendbreak(fd, 0) gives on Linux. */
+static int port_break(int fd)
+{
+#ifdef VECTIS_USB
+    if (g_usb)
+        return usbs_send_break(250);
+#endif
+    return tcsendbreak(fd, 0);
+}
+
+static int write_all(int fd, const void *buf, size_t n);
+
+/* Bytes for the device: the local port or the RFC 2217 socket. */
+static int link_write(const void *buf, size_t n)
+{
+#ifdef VECTIS_USB
+    if (g_usb)
+        return usbs_write((const uint8_t *)buf, n);
+#endif
+    return write_all(g_fd, buf, n);
+}
+
 static int configure_serial(int fd, int baud, int data_bits, int stop_bits, char parity)
 {
     struct termios tio;
@@ -353,7 +473,7 @@ static int configure_serial(int fd, int baud, int data_bits, int stop_bits, char
         log_message(LOG_ERR, "Unsupported baud rate: %d", baud);
         return -1;
     }
-    if (tcgetattr(fd, &g_old_dev_tio) != 0) {
+    if (port_getattr(fd, &g_old_dev_tio) != 0) {
         log_errno(LOG_ERR, "tcgetattr(serial)");
         return -1;
     }
@@ -411,16 +531,16 @@ static int configure_serial(int fd, int baud, int data_bits, int stop_bits, char
     tio.c_cc[VMIN] = 1;
     tio.c_cc[VTIME] = 0;
 
-    if (tcflush(fd, TCIFLUSH) != 0) {
+    if (port_flush(fd, TCIFLUSH) != 0) {
         log_errno(LOG_ERR, "tcflush(serial)");
         return -1;
     }
-    if (tcsetattr(fd, TCSANOW, &tio) != 0) {
+    if (port_setattr(fd, &tio) != 0) {
         log_errno(LOG_ERR, "tcsetattr(serial)");
         return -1;
     }
 
-    g_dev_tio_saved = 1;
+    g_dev_tio_saved = !g_usb;   /* -U: nothing to restore on close */
     return 0;
 }
 
@@ -430,6 +550,17 @@ static int set_serial_signal_state(int signal_flag, int active)
     if (g_fd < 0)
         return -1;
 
+#ifdef VECTIS_USB
+    if (g_usb) {
+        int on = active ? 1 : 0;
+        if (usbs_set_modem(signal_flag == TIOCM_DTR ? on : -1,
+                           signal_flag == TIOCM_RTS ? on : -1) != 0) {
+            log_errno(LOG_ERR, "Failed to set serial signal");
+            return -1;
+        }
+        return 0;
+    }
+#endif
     if (active) {
         if (ioctl(g_fd, TIOCMBIS, &signal_flag) == -1) {
             log_errno(LOG_ERR, "Failed to activate serial signal");
@@ -752,6 +883,15 @@ static int power_set(int on, const char *source)
 
     if (g_fd < 0)
         return -1;
+#ifdef VECTIS_USB
+    if (g_usb) {
+        /* Both lines in one request. */
+        if (usbs_set_modem(on, on) != 0) {
+            log_errno(LOG_ERR, "Failed to set RTS/DTR");
+            return -1;
+        }
+    } else
+#endif
     if (g_serial_mode) {
         (void)set_serial_signal_state(TIOCM_DTR, on);
         (void)set_serial_signal_state(TIOCM_RTS, on);
@@ -776,7 +916,7 @@ static void send_break(void)
         return;
     if (g_serial_mode) {
         log_message(LOG_INFO, "[break] sending serial break");
-        if (tcsendbreak(g_fd, 0) != 0)
+        if (port_break(g_fd) != 0)
             log_errno(LOG_WARNING, "tcsendbreak");
     } else {
         log_message(LOG_INFO, "[break] sending IAC BRK");
@@ -1245,7 +1385,8 @@ static void json_escape(const char *in, char *out, size_t cap)
 }
 
 /* Render the state the page shows.  rts/dtr are the real modem bits in
- * -u mode (-1 when the ioctl is unavailable or in RFC 2217 mode);
+ * -u mode, the last state set in -U mode (-1 when the ioctl is
+ * unavailable or in RFC 2217 mode);
  * "power" is the last state this process commanded. */
 static size_t web_status_json(char *out, size_t cap)
 {
@@ -1254,7 +1395,11 @@ static size_t web_status_json(char *out, size_t cap)
     int n;
 
     json_escape(g_web_target, target, sizeof target);
-    if (g_serial_mode && g_fd >= 0) {
+    if (g_usb && g_fd >= 0) {
+        /* The chip cannot report its outputs: the state last set. */
+        rts = g_rts_on;
+        dtr = g_dtr_on;
+    } else if (g_serial_mode && g_fd >= 0) {
         int st = 0;
         if (ioctl(g_fd, TIOCMGET, &st) == 0) {
             rts = (st & TIOCM_RTS) ? 1 : 0;
@@ -1274,7 +1419,7 @@ static size_t web_status_json(char *out, size_t cap)
                  "\"power\":\"%s\",\"rts\":%d,\"dtr\":%d,"
                  "\"reset_ms\":%d,\"tcp_client\":%s%s%s,\"event\":%s,\"version\":\"%s\"}",
                  g_fd >= 0 ? "online" : "offline",
-                 g_serial_mode ? "serial" : "rfc2217",
+                 g_usb ? "usb" : g_serial_mode ? "serial" : "rfc2217",
                  target, g_power_on ? "on" : "off", rts, dtr,
                  g_reset_ms,
                  g_srv_fd >= 0 ? "\"" : "null", g_srv_fd >= 0 ? g_srv_peer : "",
@@ -1763,7 +1908,7 @@ static void srv_handle_neg(uint8_t cmd, uint8_t opt)
 
 static int srv_port_get(struct termios *t)
 {
-    return g_fd >= 0 && tcgetattr(g_fd, t) == 0;
+    return g_fd >= 0 && port_getattr(g_fd, t) == 0;
 }
 
 static uint32_t srv_current_baud(void)
@@ -1781,7 +1926,7 @@ static int srv_set_baud(uint32_t baud)
         return -1;
     cfsetispeed(&t, s);
     cfsetospeed(&t, s);
-    return tcsetattr(g_fd, TCSANOW, &t);
+    return port_setattr(g_fd, &t);
 }
 
 static uint8_t srv_current_datasize(void)
@@ -1813,7 +1958,7 @@ static int srv_set_datasize(uint8_t bits)
     if (!srv_port_get(&t))
         return -1;
     t.c_cflag = (t.c_cflag & ~(tcflag_t)CSIZE) | cs;
-    return tcsetattr(g_fd, TCSANOW, &t);
+    return port_setattr(g_fd, &t);
 }
 
 static uint8_t srv_current_parity(void)
@@ -1839,7 +1984,7 @@ static int srv_set_parity(uint8_t p)
     case CPC_PARITY_EVEN: t.c_cflag |= PARENB; t.c_cflag &= ~(tcflag_t)PARODD; break;
     default: return -1;   /* mark/space: not supported */
     }
-    return tcsetattr(g_fd, TCSANOW, &t);
+    return port_setattr(g_fd, &t);
 }
 
 static uint8_t srv_current_stopsize(void)
@@ -1863,7 +2008,7 @@ static int srv_set_stopsize(uint8_t s)
         t.c_cflag |= CSTOPB;
     else
         return -1;    /* 1.5 stop bits: not supported */
-    return tcsetattr(g_fd, TCSANOW, &t);
+    return port_setattr(g_fd, &t);
 }
 
 /* One modem line on the client's request.  DTR and RTS are driven as a
@@ -1978,7 +2123,7 @@ static void srv_handle_subneg(void)
             return;
         how = d[1] == 1 ? TCIFLUSH : d[1] == 2 ? TCOFLUSH : d[1] == 3 ? TCIOFLUSH : -1;
         if (how != -1 && g_fd >= 0)
-            tcflush(g_fd, how);
+            port_flush(g_fd, how);
         srv_send_subneg_byte(sub, d[1]);
         break;
     }
@@ -2002,7 +2147,7 @@ static void srv_to_uart(const uint8_t *data, size_t len)
 {
     if (len == 0 || g_fd < 0)
         return;
-    if (write_all(g_fd, data, len) < 0)
+    if (link_write(data, len) < 0)
         log_errno(LOG_WARNING, "[tcp] write(serial)");
 }
 
@@ -2038,7 +2183,7 @@ static void srv_telnet_process(const uint8_t *in, size_t n)
                     srv_to_uart(out, o);
                     o = 0;
                     log_message(LOG_INFO, "[tcp] %s: break", g_srv_peer);
-                    if (g_fd >= 0 && tcsendbreak(g_fd, 0) != 0)
+                    if (g_fd >= 0 && port_break(g_fd) != 0)
                         log_errno(LOG_WARNING, "tcsendbreak");
                 }
                 g_srv.state = SS_DATA;   /* NOP, AYT, ...: ignored */
@@ -2376,7 +2521,11 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
         "Usage: %s -h <host> -p <port> [options]\n"
-        "   or: %s -u <device> [options]\n"
+        "   or: %s -u <device> [options]\n", prog, prog);
+#ifdef VECTIS_USB
+    fprintf(stderr, "   or: %s -U <usb-path> [options]\n", prog);
+#endif
+    fprintf(stderr,
         "\n"
         "RFC 2217/Telnet mode:\n"
         "  -h HOST         RFC 2217 server address\n"
@@ -2384,7 +2533,17 @@ static void usage(const char *prog)
         "\n"
         "Direct serial mode:\n"
         "  -u DEVICE       local tty device path, for example /dev/ttyUSB0\n"
-        "\n"
+        "\n");
+#ifdef VECTIS_USB
+    fprintf(stderr,
+        "USB mode, for hosts without a kernel driver for the adapter (%s):\n"
+        "  -U SPEC         USB-UART driven through usbfs; SPEC is a USB path\n"
+        "                  (1-1.3.4, see /sys/bus/usb/devices), usb:VID:PID or\n"
+        "                  usb:VID:PID@PATH.  RTS/DTR stay as they are on exit.\n"
+        "\n",
+        usbs_chip_names());
+#endif
+    fprintf(stderr,
         "Port settings (default 115200 8N1):\n"
         "  -b BAUD         baud rate (default 115200, max 921600)\n"
         "  -d 5|6|7|8      data bits (default 8)\n"
@@ -2395,7 +2554,7 @@ static void usage(const char *prog)
         "  -r              reconnect automatically on disconnect (RFC 2217 mode only)\n"
         "  -t MS           reset pulse duration in ms (default 200)\n"
         "  -n              disable LF->CR+LF translation (for devices sending \\r\\n)\n"
-        "  -l [ADDR:]PORT  serve the local port (-u) to one TCP client at a time:\n"
+        "  -l [ADDR:]PORT  serve the local port (-u, -U) to one TCP client at a time:\n"
         "                  telnet, another vectis -h HOST -p PORT, pyserial\n"
         "                  rfc2217://, or raw nc/socat (Ctrl+P = reset pulse)\n"
         "  -w [ADDR:]PORT  built-in web page with Power Enable/Disable/Reset buttons;\n"
@@ -2412,13 +2571,19 @@ static void usage(const char *prog)
         "  %s -u /dev/ttyUSB0 -b 460800 -t 500           # 460800 baud, 500 ms reset\n"
         "  %s -h 192.168.1.10 -p 7000 -n                 # no LF->CRLF (scripted capture)\n"
         "  %s -u /dev/ttyUSB0 -w 8080                    # web power console on :8080\n"
-        "  %s -u /dev/ttyUSB0 -l 2021 -w 2081            # UART on TCP :2021 + web on :2081\n"
+        "  %s -u /dev/ttyUSB0 -l 2021 -w 2081            # UART on TCP :2021 + web on :2081\n",
+        prog, prog, prog, prog, prog, prog, prog, prog);
+#ifdef VECTIS_USB
+    fprintf(stderr,
+        "  %s -U 1-1.3.4 -l 2021 -w 2081                 # the same on a USB-UART (usbfs)\n",
+        prog);
+#endif
+    fprintf(stderr,
         "\n"
         "Session controls (interactive mode only):\n"
         "  Ctrl+P   RTS+DTR pulse — reset the target device\n"
         "  Ctrl+B   send break signal (stops U-Boot autoboot)\n"
-        "  Ctrl+]   exit\n",
-        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        "  Ctrl+]   exit\n");
 }
 
 int main(int argc, char **argv)
@@ -2426,6 +2591,11 @@ int main(int argc, char **argv)
     const char *host = NULL;
     const char *port = NULL;
     const char *device = NULL;
+    const char *usb_spec = NULL;
+#ifdef VECTIS_USB
+    uint16_t usb_vid = 0, usb_pid = 0;
+    char usb_path[32] = "";
+#endif
     uint32_t baud = 115200;
     int data_bits = 8;
     int stop_bits = 1;
@@ -2440,6 +2610,7 @@ int main(int argc, char **argv)
         { "help",      no_argument,       &want_help,   1 },
         { "version",   no_argument,       &want_version, 1 },
         { "device",    required_argument, NULL,        'u' },
+        { "usb",       required_argument, NULL,        'U' },
         { "host",      required_argument, NULL,        'h' },
         { "port",      required_argument, NULL,        'p' },
         { "baud",      required_argument, NULL,        'b' },
@@ -2457,7 +2628,7 @@ int main(int argc, char **argv)
     openlog(g_progname, LOG_PID | LOG_NDELAY, LOG_DAEMON);
     atexit(closelog);
     int opt;
-    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:t:w:l:nrv?", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:U:t:w:l:nrv?", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'h': host = optarg; break;
         case 'p': {
@@ -2513,6 +2684,7 @@ int main(int argc, char **argv)
             parity = (char)toupper((unsigned char)optarg[0]);
             break;
         case 'u': device = optarg; break;
+        case 'U': usb_spec = optarg; break;
         case 'r': g_reconnect = 1; break;
         case 'n': g_no_crlf   = 1; break;
         case 't': {
@@ -2563,14 +2735,36 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    if ((device != NULL) && (host != NULL || port != NULL)) {
+    if ((device != NULL || usb_spec != NULL) && (host != NULL || port != NULL)) {
         log_message(LOG_ERR, "Choose either RFC 2217 mode or direct serial mode");
         usage(argv[0]);
         return 1;
     }
+    if (device != NULL && usb_spec != NULL) {
+        log_message(LOG_ERR, "Choose either -u DEVICE or -U USB-PATH");
+        return 1;
+    }
+    if (usb_spec != NULL) {
+#ifdef VECTIS_USB
+        const char *why = "";
+        if (usbs_chips[0] == NULL) {
+            log_message(LOG_ERR, "-U: this build has no USB chip support");
+            return 1;
+        }
+        if (usbs_parse_spec(usb_spec, &usb_vid, &usb_pid, usb_path, sizeof usb_path,
+                            &why) != 0) {
+            log_message(LOG_ERR, "Invalid -U spec: %s (%s)", usb_spec, why);
+            return 1;
+        }
+        g_usb = 1;
+#else
+        log_message(LOG_ERR, "-U: this build has no USB support (use vectis-ch34x)");
+        return 1;
+#endif
+    }
 
-    if (device == NULL && (!host || !port)) {
-        log_message(LOG_ERR, "Missing -h <host> and/or -p <port> or -u <device>");
+    if (device == NULL && usb_spec == NULL && (!host || !port)) {
+        log_message(LOG_ERR, "Missing -h <host> and/or -p <port>, -u <device> or -U <usb-path>");
         usage(argv[0]);
         return 1;
     }
@@ -2608,14 +2802,16 @@ int main(int argc, char **argv)
 
     atexit(cleanup);
 
-    g_serial_mode = (device != NULL);
-    if (g_serial_mode)
+    g_serial_mode = (device != NULL || usb_spec != NULL);
+    if (g_usb)
+        snprintf(g_web_target, sizeof g_web_target, "usb:%s", usb_spec);
+    else if (g_serial_mode)
         snprintf(g_web_target, sizeof g_web_target, "%s", device);
     else
         snprintf(g_web_target, sizeof g_web_target, "%s:%s", host, port);
 
     if (lsn_port > 0 && !g_serial_mode) {
-        log_message(LOG_ERR, "-l serves a local port: combine it with -u DEVICE, not -h/-p");
+        log_message(LOG_ERR, "-l serves a local port: combine it with -u DEVICE or -U, not -h/-p");
         return 1;
     }
 
@@ -2635,6 +2831,35 @@ int main(int argc, char **argv)
 
     /* Main session loop — iterates only when -r is active and connection drops. */
     do {
+#ifdef VECTIS_USB
+        if (g_usb) {
+            g_fd = usbs_open(usb_vid, usb_pid, usb_path);
+            if (g_fd < 0) {
+                if (!g_link_quiet)
+                    log_message(LOG_ERR, "usb: %s", usbs_error());
+                if (session_retry()) {
+                    retry_pause();
+                    continue;
+                }
+                return 1;
+            }
+            if (configure_serial(g_fd, (int)baud, data_bits, stop_bits, parity) != 0) {
+                disconnect();
+                if (session_retry()) {
+                    retry_pause();
+                    continue;
+                }
+                return 1;
+            }
+            (void)power_set(1, "link");
+            log_message(LOG_INFO, "Opened USB device %s. baud=%u, data=%d, stop=%d, parity=%c",
+                usbs_name(), baud, data_bits, stop_bits, parity);
+            if (g_interactive)
+                log_message(LOG_INFO,
+                    "Ctrl+P resets RTS+DTR for %d ms, Ctrl+B break, Ctrl+] exits",
+                    g_reset_ms);
+        } else
+#endif
         if (g_serial_mode) {
             g_fd = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK);
             if (g_fd < 0) {
@@ -2739,7 +2964,8 @@ int main(int argc, char **argv)
 
             pulse_tick();
             pfds[0].fd     = g_fd;
-            pfds[0].events = POLLIN;
+            /* usbfs signals completed URBs as writable. */
+            pfds[0].events = g_usb ? POLLOUT : POLLIN;
             /* A negative fd makes poll() skip the slot (revents = 0). */
             pfds[1].fd     = g_watch_stdin ? STDIN_FILENO : -1;
             pfds[1].events = POLLIN;
@@ -2748,7 +2974,12 @@ int main(int argc, char **argv)
 
             /* 500 ms timeout to respond to signals promptly, shorter
              * when a reset pulse is due to end sooner. */
-            int r = poll(pfds, 2 + nsrv + nweb, pulse_poll_timeout(500));
+            int timeout = pulse_poll_timeout(500);
+#ifdef VECTIS_USB
+            if (g_usb && usbs_pending() > 0)
+                timeout = 0;   /* received during a write: deliver it now */
+#endif
+            int r = poll(pfds, 2 + nsrv + nweb, timeout);
             if (r < 0) {
                 if (errno == EINTR)
                     continue;
@@ -2762,6 +2993,25 @@ int main(int argc, char **argv)
             srv_handle_pollfds(&pfds[2], nsrv);
             web_handle_pollfds(&pfds[2 + nsrv], nweb);
 
+#ifdef VECTIS_USB
+            if (g_usb) {
+                size_t n;
+
+                if ((pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) ||
+                    ((pfds[0].revents & POLLOUT) && usbs_service() != 0)) {
+                    log_message(LOG_INFO, "USB device error/unplugged");
+                    break;
+                }
+                n = usbs_read(buf, sizeof buf);
+                if (n > 0) {
+                    srv_send_uart(buf, n);   /* -l client, if any */
+                    if (process_serial_incoming(buf, n) != 0) {
+                        log_errno(LOG_ERR, "stdout");
+                        break;
+                    }
+                }
+            } else
+#endif
             /* Transport error or hangup — no point continuing. */
             if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
                 log_message(LOG_INFO, g_serial_mode
@@ -2835,7 +3085,7 @@ int main(int argc, char **argv)
                     if (g_interactive) {
                         if (c == KEY_RESET) {
                             if (outlen > 0) {
-                                if (write_all(g_fd, outbuf, outlen) < 0) {
+                                if (link_write(outbuf, outlen) < 0) {
                                     g_quit = 1;
                                     break;
                                 }
@@ -2846,7 +3096,7 @@ int main(int argc, char **argv)
                         }
                         if (c == KEY_BREAK) {
                             if (outlen > 0) {
-                                if (write_all(g_fd, outbuf, outlen) < 0) {
+                                if (link_write(outbuf, outlen) < 0) {
                                     g_quit = 1;
                                     break;
                                 }
@@ -2857,7 +3107,7 @@ int main(int argc, char **argv)
                         }
                         if (c == KEY_EXIT) {
                             if (outlen > 0) {
-                                if (write_all(g_fd, outbuf, outlen) < 0) {
+                                if (link_write(outbuf, outlen) < 0) {
                                     g_quit = 1;
                                     break;
                                 }
@@ -2879,7 +3129,7 @@ int main(int argc, char **argv)
                 }
 
                 if (!g_quit && outlen > 0) {
-                    if (write_all(g_fd, outbuf, outlen) < 0)
+                    if (link_write(outbuf, outlen) < 0)
                         g_quit = 1;
                 }
             }
