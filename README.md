@@ -74,6 +74,7 @@ and several boards on one host are described below.
 - [Requirements](#requirements)
 - [Build](#build)
 - [Releases and permanent links](#releases-and-permanent-links)
+- [Hardware](#hardware)
 - [How it fits together](#how-it-fits-together)
 - [How it works](#how-it-works)
 - [Usage](#usage)
@@ -203,6 +204,27 @@ sources, the `Makefile`, `ci/`) raises the version as its last commit before the
 together with its `CHANGELOG.md` section. Changes to the docs, tests, screenshots or the
 workflows in `.github/` do not. CI checks this on every pull request
 (`.github/check-version.sh`).
+
+## Hardware
+
+The OpenIPC UART 38x38 board sits between the debug host and the device
+under test: a USB-UART bridge for the device's console, and a power switch
+in the device's supply line, driven by the bridge's RTS and DTR.
+
+| Part             | Value                                                |
+|------------------|------------------------------------------------------|
+| Power switch     | up to 12 V, up to 300 mA                             |
+| Switch control   | RTS and DTR together: both asserted = device powered |
+| ALWAYS ON jumper | device powered all the time, the switch bypassed     |
+
+- **Power switch.** The device under test is powered through it: up to
+  12 V and 300 mA. A device that needs more must not be powered through the
+  board.
+- **ALWAYS ON jumper.** With the jumper set the board powers the device
+  under test all the time, so power does not depend on software control.
+  `Ctrl+P`, the web page and `/power/*` then do not switch the device off;
+  vectis does not see the jumper, and `/status` keeps reporting the RTS+DTR
+  state.
 
 ## How it fits together
 
