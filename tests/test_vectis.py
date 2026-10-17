@@ -306,6 +306,7 @@ def test_client(tmp):
     dev = FakeDevice(os.path.join(tmp, "dev2"))
     lport = free_port()
     srv = start([VECTIS, "-u", dev.link, "-l", "127.0.0.1:%d" % lport, "-n"])
+    cli = None
     try:
         check(wait_listen(lport), "server up")
         cli = start([VECTIS, "-h", "127.0.0.1", "-p", str(lport), "-n"], stdin=subprocess.PIPE)
@@ -320,8 +321,11 @@ def test_client(tmp):
         share = cpu_share(cli.pid, 1.5)
         check(share < 0.05, "client after stdin EOF: idle CPU (%.1f%%)" % (share * 100))
         out = stop(cli)
+        cli = None
         check("ok" in out, "device output reaches the client")
     finally:
+        if cli is not None:
+            stop(cli)
         stop(srv)
 
 
