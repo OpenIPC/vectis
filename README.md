@@ -117,7 +117,7 @@ python3 tests/test_vectis.py .
 
 There is one release, [`latest`](https://github.com/OpenIPC/vectis/releases/latest).
 CI rebuilds it from every push to `master` once all builds pass; its title carries
-the version (`Vectis 1.8.0`), and no versioned releases are kept. It holds static
+the version (`Vectis X.Y.Z`), and no versioned releases are kept. It holds static
 musl binaries that run on any Linux of their architecture, with `SHA256SUMS`:
 `vectis-linux-x86_64` for PCs and servers, `vectis-linux-mipsel` for MIPS
 little-endian routers (MediaTek MT7620/MT7621/MT7628 and the like, OpenWrt),

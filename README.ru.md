@@ -119,7 +119,7 @@ python3 tests/test_vectis.py .
 
 Релиз один — [`latest`](https://github.com/OpenIPC/vectis/releases/latest).
 CI пересобирает его при каждом push в `master`, когда проходят все сборки; в
-заголовке — версия (`Vectis 1.8.0`), релизы по версиям не хранятся. В нём
+заголовке — версия (`Vectis X.Y.Z`), релизы по версиям не хранятся. В нём
 статические бинарные файлы на musl, которые работают на любом Linux своей
 архитектуры, и `SHA256SUMS`: `vectis-linux-x86_64` для ПК и серверов,
 `vectis-linux-mipsel` для роутеров MIPS little-endian (MediaTek MT7620/MT7621/MT7628

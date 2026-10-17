@@ -111,7 +111,7 @@ python3 tests/test_vectis.py .
 
 只有一个发布版本：[`latest`](https://github.com/OpenIPC/vectis/releases/latest)。
 每次 push 到 `master` 且所有构建通过后，CI 都会重新构建它；标题中带有版本号
-（`Vectis 1.8.0`），不保留按版本的发布。其中包含基于 musl 的静态二进制文件，
+（`Vectis X.Y.Z`），不保留按版本的发布。其中包含基于 musl 的静态二进制文件，
 可在同一架构的任何 Linux 上运行，并附带 `SHA256SUMS`：`vectis-linux-x86_64`
 用于 PC 和服务器，`vectis-linux-mipsel` 用于 MIPS 小端路由器（MediaTek
 MT7620/MT7621/MT7628 等，OpenWrt），软浮点，有无 FPU 均可运行。文件名不含版本号，

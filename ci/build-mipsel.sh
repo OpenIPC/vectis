@@ -21,6 +21,9 @@ set -eu
 OUT=${1:-}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CACHE=${TOOLCHAIN_CACHE:-$HOME/.cache/vectis-toolchains}
+# Relative paths are the caller's: the build below runs in $ROOT.
+case "$OUT" in ""|/*) ;; *) OUT=$PWD/$OUT ;; esac
+case "$CACHE" in /*) ;; *) CACHE=$PWD/$CACHE ;; esac
 
 OPENWRT=https://downloads.openwrt.org/releases/23.05.5/targets/ramips/mt7621
 NAME=openwrt-toolchain-23.05.5-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64
