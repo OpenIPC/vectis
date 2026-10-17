@@ -357,6 +357,9 @@ def test_usb_cli():
         check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "%s: bad VID:PID" % name)
         r = subprocess.run([b, "-U", "usb:0000:7523@1-1"], capture_output=True, text=True)
         check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "%s: VID 0000 refused" % name)
+        r = subprocess.run([b, "-U", "9-9.9", "-b", "10000"], capture_output=True, text=True)
+        check(r.returncode == 1 and "Unsupported baud rate" in r.stderr,
+              "%s: unsupported baud refused before opening" % name)
         r = subprocess.run([b, "-U", "1-1", "-u", "/dev/null"], capture_output=True, text=True)
         check(r.returncode == 1, "%s: -U with -u refused" % name)
         r = subprocess.run([b, "-U", "9-9.9"], capture_output=True, text=True,

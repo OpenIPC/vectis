@@ -2756,6 +2756,13 @@ int main(int argc, char **argv)
     if (usb_spec != NULL) {
 #ifdef VECTIS_USB
         const char *why = "";
+        speed_t sp;
+        /* Check it before the adapter is touched: opening it may detach
+         * the kernel driver, which drops RTS/DTR. */
+        if (speed_for_baud((int)baud, &sp) != 0) {
+            log_message(LOG_ERR, "Unsupported baud rate: %u", baud);
+            return 1;
+        }
         if (usbs_chips[0] == NULL) {
             log_message(LOG_ERR, "-U: this build has no USB chip support");
             return 1;
@@ -3127,13 +3134,10 @@ int main(int argc, char **argv)
                             continue;
                         }
                         if (c == KEY_EXIT) {
-                            if (outlen > 0) {
-                                if (link_write(outbuf, outlen) < 0) {
-                                    link_failed = 1;
-                                    break;
-                                }
-                                outlen = 0;
-                            }
+                            /* Exit even if the link is already broken. */
+                            if (outlen > 0)
+                                (void)link_write(outbuf, outlen);
+                            outlen = 0;
                             g_quit = 1;
                             break;
                         }
