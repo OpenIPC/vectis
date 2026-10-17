@@ -190,9 +190,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Telegram gets only a new version: compare with the title of the
-          # release being replaced
-          prev=$(gh release view latest --json name -q .name 2>/dev/null || true)
+          # The release being replaced: its title tells Telegram whether this
+          # is a new version. "Not found" means there is none yet; any other
+          # failure stops here, before anything is deleted or announced.
+          if prev=$(gh release view latest --json name -q .name 2>err.txt); then
+            exists=1
+          elif grep -qi 'not found' err.txt; then
+            exists=0 prev=""
+          else
+            cat err.txt; echo "::error::cannot read the current \"latest\" release"; exit 1
+          fi
           echo "previous release: ${prev:-none}"
           [ "$prev" = "Vectis ${VER}" ] || echo "new=true" >> "$GITHUB_OUTPUT"
 
@@ -204,7 +211,7 @@ jobs:
           Check: \`sha256sum -c SHA256SUMS\`. Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
           NOTES
           # "latest" is missing only before the first publication
-          if gh release view latest >/dev/null 2>&1; then
+          if [ "$exists" = 1 ]; then
             gh release delete latest --cleanup-tag --yes
           fi
           gh release create latest dist/* \
