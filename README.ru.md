@@ -49,10 +49,9 @@ OpenIPC UART 38x38. Один небольшой бинарный файл, `vect
 На ПК с Linux с подключённой платой, от пользователя из группы `dialout`:
 
 ```sh
-# 1. Скачать статический бинарный файл и проверить его
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS && install -m 755 vectis-linux-x86_64 vectis
+# 1. Скачать статический бинарный файл
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  install -m 755 vectis-linux-x86_64 vectis
 
 # 2. Консоль платы: Ctrl+P — сброс (перезапуск питания), Ctrl+B — break, Ctrl+] — выход
 ./vectis -u /dev/ttyUSB0
@@ -169,7 +168,7 @@ python3 tests/test_vectis.py .
 CI пересобирает его при каждом push в `master`, когда проходят все сборки; в
 заголовке — версия (`Vectis X.Y.Z`), релизы по версиям не хранятся. В нём
 статические бинарные файлы на musl, которые работают на любом Linux своей
-архитектуры, и `SHA256SUMS`: `vectis-linux-x86_64` для ПК и серверов,
+архитектуры: `vectis-linux-x86_64` для ПК и серверов,
 `vectis-linux-mipsel` для роутеров MIPS little-endian (MediaTek MT7620/MT7621/MT7628
 и подобные, OpenWrt) — soft-float, работает с FPU и без него. В именах файлов нет
 версии, поэтому эти ссылки не меняются:
@@ -179,12 +178,10 @@ CI пересобирает его при каждом push в `master`, ког�
 | страница релиза       | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
-| `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
 
 ```sh
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS && chmod 755 vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  chmod 755 vectis-linux-x86_64
 ```
 
 Бинарники каждой новой версии также выкладываются в Telegram-канал OpenIPC ([наши каналы](https://openipc.org/our-channels)) — для архива и тестовых скачиваний.

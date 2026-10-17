@@ -208,14 +208,13 @@ jobs:
         run: |
           ver=$(sed -n 's/^#define PROGRAM_VERSION *"\(.*\)"/\1/p' vectis.c)
           [ -n "$ver" ] || { echo "::error::no PROGRAM_VERSION in vectis.c"; exit 1; }
-          # each build's own checksums, then one SHA256SUMS for the release
+          # each build's own checksums (between the CI jobs; not published)
           mkdir dist
           for a in vectis-x86_64-static vectis-mipsel-static; do
             (cd "artifacts/$a" && sha256sum -c SHA256SUMS)
             cp artifacts/$a/vectis-linux-* dist/
-            cat "artifacts/$a/SHA256SUMS" >> dist/SHA256SUMS
           done
-          (cd dist && sha256sum -c SHA256SUMS && ls -l)
+          ls -l dist
           file dist/vectis-linux-mipsel | grep -q 'MIPS.*statically linked' ||
             { echo "::error::vectis-linux-mipsel is not a static MIPS binary"; exit 1; }
           chmod 755 dist/vectis-linux-x86_64
@@ -249,7 +248,7 @@ jobs:
           - \`vectis-linux-x86_64\` — serial console, RFC 2217 client/server, web power console (\`-u\`, \`-h/-p\`, \`-l\`, \`-w\`) and \`-U\`: CH340/CH341 adapters driven through usbfs on hosts without a kernel driver
           - \`vectis-linux-mipsel\` — the same for MIPS little-endian routers (MediaTek MT7620/MT7621/MT7628, OpenWrt): soft-float, runs with or without an FPU
 
-          Check: \`sha256sum -c SHA256SUMS\`. Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
+          Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
           NOTES
           # "latest" is missing only before the first publication
           if [ "$exists" = 1 ]; then

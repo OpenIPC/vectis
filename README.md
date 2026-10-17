@@ -48,10 +48,9 @@ the default build.
 On a Linux PC with the board plugged in, as a user in the `dialout` group:
 
 ```sh
-# 1. Download the static binary and check it
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS && install -m 755 vectis-linux-x86_64 vectis
+# 1. Download the static binary
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  install -m 755 vectis-linux-x86_64 vectis
 
 # 2. The board's console: Ctrl+P = reset (power cycle), Ctrl+B = break, Ctrl+] = exit
 ./vectis -u /dev/ttyUSB0
@@ -165,7 +164,7 @@ python3 tests/test_vectis.py .
 There is one release, [`latest`](https://github.com/OpenIPC/vectis/releases/latest).
 CI rebuilds it from every push to `master` once all builds pass; its title carries
 the version (`Vectis X.Y.Z`), and no versioned releases are kept. It holds static
-musl binaries that run on any Linux of their architecture, with `SHA256SUMS`:
+musl binaries that run on any Linux of their architecture:
 `vectis-linux-x86_64` for PCs and servers, `vectis-linux-mipsel` for MIPS
 little-endian routers (MediaTek MT7620/MT7621/MT7628 and the like, OpenWrt),
 soft-float, so it runs with or without an FPU. The file names carry no version, so
@@ -176,12 +175,10 @@ these links never change:
 | release page          | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
-| `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
 
 ```sh
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS && chmod 755 vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  chmod 755 vectis-linux-x86_64
 ```
 
 The binaries of every new version are also posted to the OpenIPC Telegram channel ([our channels](https://openipc.org/our-channels)), for the archive and test downloads.

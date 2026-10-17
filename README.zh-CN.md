@@ -45,10 +45,9 @@ HiSilicon boot ROM 捕获扩展而保留在仓库中；其说明见
 在接好板子的 Linux PC 上，以 `dialout` 组中的用户运行：
 
 ```sh
-# 1. 下载静态二进制文件并校验
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS && install -m 755 vectis-linux-x86_64 vectis
+# 1. 下载静态二进制文件
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  install -m 755 vectis-linux-x86_64 vectis
 
 # 2. 板子的控制台：Ctrl+P = 复位（断电重启），Ctrl+B = break，Ctrl+] = 退出
 ./vectis -u /dev/ttyUSB0
@@ -158,7 +157,7 @@ python3 tests/test_vectis.py .
 只有一个发布版本：[`latest`](https://github.com/OpenIPC/vectis/releases/latest)。
 每次 push 到 `master` 且所有构建通过后，CI 都会重新构建它；标题中带有版本号
 （`Vectis X.Y.Z`），不保留按版本的发布。其中包含基于 musl 的静态二进制文件，
-可在同一架构的任何 Linux 上运行，并附带 `SHA256SUMS`：`vectis-linux-x86_64`
+可在同一架构的任何 Linux 上运行：`vectis-linux-x86_64`
 用于 PC 和服务器，`vectis-linux-mipsel` 用于 MIPS 小端路由器（MediaTek
 MT7620/MT7621/MT7628 等，OpenWrt），软浮点，有无 FPU 均可运行。文件名不含版本号，
 因此以下链接始终不变：
@@ -168,12 +167,10 @@ MT7620/MT7621/MT7628 等，OpenWrt），软浮点，有无 FPU 均可运行。�
 | 发布页面              | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
-| `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
 
 ```sh
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS && chmod 755 vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  chmod 755 vectis-linux-x86_64
 ```
 
 每个新版本的二进制文件也会发布到 OpenIPC 的 Telegram 频道（[我们的频道](https://openipc.org/our-channels)），用于存档和测试下载。
