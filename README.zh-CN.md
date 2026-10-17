@@ -27,6 +27,10 @@ Vectis 是一款串口控制台，用于在配合 OpenIPC UART 38x38 板开发�
 终端）；适配器被拔出后会自行重新打开设备链路；除 libc 外没有任何
 依赖。
 
+第二个构建 `vectis-ch34x` 增加了 `-U`：它在用户空间通过 usbfs 直接驱动
+CH340/CH341 USB-UART 适配器，适用于内核中没有 `ch341` 驱动且无法重新
+编译内核的路由器及其他用作调试主机的板子；参见下文“无内核驱动的 USB 模式”。
+
 <p align="center">
   <img src="device.jpg" alt="OpenIPC UART 38x38 板" width="640">
 </p>
@@ -61,6 +65,8 @@ HiSilicon boot ROM 捕获扩展而保留在仓库中；本文档末尾对其进�
 - 构建需要 C99 编译器（GCC 或 Clang）和 `make`
 - 对串口设备的读写权限，通常需要加入
   `dialout` 用户组
+- 使用 `-U`（`vectis-ch34x`）时：需要 usbfs（`/dev/bus/usb`）以及对其中
+  适配器节点的写权限；不需要 `ch341` 或 `usbserial` 驱动
 
 ## 构建
 
@@ -68,7 +74,10 @@ HiSilicon boot ROM 捕获扩展而保留在仓库中；本文档末尾对其进�
 make
 ```
 
-这会构建 `vectis`（体积优化并已 strip）。`make DEBUG=1` 则构建
+这会构建 `vectis` 和 `vectis-ch34x`（体积优化并已 strip）。
+`make vectis` 或 `make vectis-ch34x` 只构建其中一个，`make USB=0` 只构建
+`vectis`。`USB_CHIPS` 列出 `-U` 支持的 USB 芯片系列，每个系列一个二进制
+文件 `vectis-<芯片>`；目前只有 `ch34x`。`make DEBUG=1` 则构建
 带调试符号、不做优化的版本。`make vectis-bootrom`
 按需构建原始的桥接程序；`make all` 不会构建它。
 
@@ -88,7 +97,14 @@ make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
 时间戳，仅更换 `CC` 不会重新构建已存在的二进制文件。
 
 每次 push 和 pull request 时，CI 都会为 x86_64、arm、aarch64 和 mipsel
-构建这两个程序；生成的二进制文件作为构建产物附加在每次运行上。
+构建 `vectis`、`vectis-ch34x` 和 `vectis-bootrom`；生成的二进制文件作为
+构建产物附加在每次运行上。在 x86_64 上 CI 还会运行回归测试：测试只需要
+Python 3，并用 pty 代替串口设备：
+
+```sh
+make
+python3 tests/test_vectis.py .
+```
 
 ## 工作原理
 
@@ -136,7 +152,14 @@ RFC 2217/Telnet 模式：
 
 - `-u DEVICE`、`--device DEVICE` —— 本地 tty 设备路径，例如 `/dev/ttyUSB0`
 
-两种模式互斥。
+USB 模式（仅 `vectis-ch34x`）：
+
+- `-U SPEC`、`--usb SPEC` —— 通过 usbfs 驱动的 USB-UART；`SPEC` 是适配器的
+  USB 路径（`1-1.3.4`，与 `/sys/bus/usb/devices` 中一致）、`usb:VID:PID`
+  （找到的第一个此类设备）或 `usb:VID:PID@PATH`；参见下文“无内核驱动的
+  USB 模式”
+
+这些模式互斥。
 
 串口参数（默认 **115200 8N1**）：
 
@@ -156,7 +179,7 @@ RFC 2217/Telnet 模式：
 - `-t MS`、`--reset-ms MS` —— 复位脉冲时长，单位毫秒，
   `1..60000`（默认 200）
 - `-n`、`--no-crlf` —— 禁用 LF→CR+LF 转换（适用于本身已发送 `\r\n` 的设备，或用于二进制采集）
-- `-l [ADDR:]PORT`、`--listen [ADDR:]PORT` —— 将本地串口（`-u`）
+- `-l [ADDR:]PORT`、`--listen [ADDR:]PORT` —— 将本地串口（`-u`、`-U`）
   同一时间提供给一个 TCP 客户端：telnet、另一个 `vectis -h HOST -p PORT`、
   pyserial `rfc2217://`，或原始模式的 nc/socat；参见下文
   “通过 TCP 提供串口”
@@ -362,12 +385,12 @@ curl -s http://192.168.1.20:8080/power/reset
 {"link":"online","mode":"serial","target":"/dev/ttyUSB0","power":"on",
  "rts":1,"dtr":1,"reset_ms":200,"tcp_client":"192.168.1.5",
  "event":{"seq":7,"kind":"reset","source":"rfc2217","ago_ms":1830},
- "version":"1.6.1"}
+ "version":"1.7.0"}
 ```
 
 `link` 为 `online` 或 `offline`；`power` 是本进程最后一次
-下达的状态；`rts`/`dtr` 在 `-u` 模式下是真实的 modem 位（不可用时
-或在 RFC 2217 模式下为 `-1`）；`tcp_client` 是 `-l` 客户端的地址
+下达的状态；`rts`/`dtr` 在 `-u` 模式下是真实的 modem 位，在 `-U` 模式下是
+最后一次设置的状态（不可用时或在 RFC 2217 模式下为 `-1`）；`tcp_client` 是 `-l` 客户端的地址
 或 `null`；`event` 是来自任意一方的最近一次电源线路
 变化：`kind` 为 `on`、`off` 或 `reset`（同一来源在 5 秒内
 先 off 后 on），`source` 为 `web`、
@@ -396,6 +419,55 @@ Reset 按钮点亮、指针摆动，日志行中会注明
 # 无界面运行：不需要终端，设备输出写入日志，控制台仅监听 localhost
 ./vectis -h 192.168.1.10 -p 35240 -w 127.0.0.1:8080 -n < /dev/null > uart.log 2>&1 &
 ```
+
+## 无内核驱动的 USB 模式（`-U`）
+
+`vectis-ch34x` 可以通过内核的 usbfs 接口自行驱动 CH340/CH341 适配器，
+无需 `ch341` 或 `usbserial` 驱动。只有在内核缺少该驱动且无法重新编译的
+主机上才使用此模式：路由器以及其他用作调试主机的板子。在其他所有系统上，
+包括桌面 Linux、macOS 和 Windows，请使用标准驱动和 `-u /dev/ttyUSB0`。
+
+```sh
+./vectis-ch34x -U 1-1.3.4 -l 2021 -w 2081      # 按 USB 路径
+./vectis-ch34x -U usb:1a86:7523                # 找到的第一个 CH340
+```
+
+一切都与 `-u` 相同：控制台、`-l`、`-w`、`Ctrl+P`、`Ctrl+B`，通过 RFC 2217
+控制波特率、线路参数和 RTS/DTR，以及适配器丢失后重新打开链路。区别如下：
+
+- **RTS/DTR 在重启后保持不变。** 使用 `-u` 时，内核在关闭 tty 时会撤销
+  这两条线路，因此重启 vectis 会让目标设备断电重启。使用 `-U` 时，vectis
+  退出时保持线路原样，启动时直接设置线路而不先撤销，因此更新或重启 vectis
+  不会让设备复位。需要复位时请使用 `/power/reset` 或 `Ctrl+P`。
+- **从内核驱动接管适配器会复位一次。** 如果 `ch341` 已绑定到该适配器，
+  vectis 会将其分离，内核此时会撤销线路。在适配器重新插拔或主机重启之前，
+  驱动保持分离状态；在此期间该适配器的 `/dev/ttyUSB*` 不存在。
+- **其他程序没有 tty 可用。** vectis 占用适配器时，minicom、picocom 或
+  pyserial 无法打开它：请改为连接 `-l` 端口（pyserial 中使用
+  `rfc2217://HOST:PORT`）。
+- `/status` 中的 `rts`/`dtr` 显示最后一次设置的状态：芯片无法报告其输出。
+- 仅支持 CH340/CH341（`1a86:7523`、`1a86:7522`、`1a86:5523` 以及 Linux
+  `ch341` 驱动认识的其他 ID）；仅支持 Linux。已在芯片版本 0x31 上验证；
+  版本低于 0x30 的芯片只支持 8N1，并且每次启动都会初始化，因此重启时
+  线路可能被撤销（vectis 会记录警告）。
+
+主机需要支持 USB 主机和 usbfs 的内核（`/dev/bus/usb`，由 devtmpfs 创建）；
+不需要 `ch341` 和 `usbserial`。运行 vectis 的用户需要对适配器节点
+`/dev/bus/usb/BBB/DDD` 有读写权限。root 拥有该权限；其他用户需要添加 udev
+规则。每次重新插拔后节点编号都会变化，因此规则按 USB 路径匹配：
+
+```sh
+sudo tee /etc/udev/rules.d/71-vectis-usb.rules >/dev/null <<'EOF'
+# vectis -U: raw USB access to the CH340 at USB path 1-1.3.4 for the dialout group
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1a86", KERNEL=="1-1.3.4", GROUP="dialout", MODE="0660"
+EOF
+sudo udevadm control --reload
+sudo udevadm trigger --action=change /sys/bus/usb/devices/1-1.3.4
+```
+
+并将该用户加入 `dialout`（`sudo usermod -aG dialout USER`，下次登录后生效）。
+分离内核驱动只需要对该节点有写权限。在 OpenWrt 等没有 udev 的系统上，
+守护进程通常以 root 运行，无需其他设置。
 
 ## 一台主机上的多个适配器：固定设备名（udev）
 
