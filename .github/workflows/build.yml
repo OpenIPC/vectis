@@ -5,6 +5,9 @@
 # for Linux targets through the Makefile (any compiler warning fails the
 # job) and run the regression tests on x86_64; plus the static musl build
 # the releases ship (ci/build-static.sh, the same as release.yml).
+# On pull requests, .github/check-version.sh checks that a change to the
+# code or the build comes with a new PROGRAM_VERSION and its CHANGELOG.md
+# section.
 #
 
 name: Build
@@ -24,6 +27,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version:
+    name: Version bump
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Code changes come with a new version
+        run: .github/check-version.sh "origin/${{ github.base_ref }}"
+
   linux:
     name: Linux ${{ matrix.platform.name }}
     runs-on: ubuntu-latest

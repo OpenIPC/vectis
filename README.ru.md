@@ -126,6 +126,11 @@ docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
 
 История изменений по версиям — в [CHANGELOG.md](CHANGELOG.md).
 
+Версия — `MAJOR.MINOR.PATCH` (`PROGRAM_VERSION` в `vectis.c`): PATCH — исправления,
+MINOR — новая возможность, MAJOR — несовместимое изменение. PR, который меняет код или
+сборку, поднимает версию и добавляет её раздел в `CHANGELOG.md`; правки документации,
+тестов и CI версию не поднимают. CI проверяет это в каждом PR (`.github/check-version.sh`).
+
 ## Как это работает
 
 В режиме клиента RFC 2217 `vectis` подключается к TCP-серверу, переводит локальный терминал в режим raw
