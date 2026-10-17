@@ -4,8 +4,9 @@
 # build.yml — CI for vectis: build vectis (with -U) and vectis-bootrom
 # for Linux targets through the Makefile (any compiler warning fails the
 # job), check that `make USB=0` still builds, and run the regression tests
-# on x86_64; plus the static musl build the release ships
-# (ci/build-static.sh).
+# on x86_64; plus the static musl builds the release ships: x86_64
+# (ci/build-static.sh) and soft-float mipsel for OpenWrt routers
+# (ci/build-mipsel.sh).
 # On pull requests, .github/check-version.sh checks that a change to the
 # code or the build comes with a new PROGRAM_VERSION and its CHANGELOG.md
 # section.
@@ -154,11 +155,41 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  mipsel:
+    name: Linux mipsel static (musl, soft-float)
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN_CACHE: ${{ github.workspace }}/.toolchains
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install qemu-user
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user
+
+      - name: Cache toolchain
+        uses: actions/cache@v6
+        with:
+          path: .toolchains
+          key: toolchain-mipsel-${{ hashFiles('ci/build-mipsel.sh') }}
+
+      - name: Build
+        run: ci/build-mipsel.sh dist
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v5
+        with:
+          name: vectis-mipsel-static
+          path: dist/*
+          if-no-files-found: error
+
   # The one release, "latest": rebuilt from every push to master after all
-  # builds pass, from the static binary built and tested above.
+  # builds pass, from the static binaries built and tested above.
   release:
     name: Publish "latest"
-    needs: [linux, static]
+    needs: [linux, static, mipsel]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
@@ -170,14 +201,23 @@ jobs:
       - name: Download
         uses: actions/download-artifact@v5
         with:
-          name: vectis-x86_64-static
-          path: dist
+          pattern: vectis-*-static
+          path: artifacts
 
       - name: Check the files
         run: |
           ver=$(sed -n 's/^#define PROGRAM_VERSION *"\(.*\)"/\1/p' vectis.c)
           [ -n "$ver" ] || { echo "::error::no PROGRAM_VERSION in vectis.c"; exit 1; }
-          (cd dist && sha256sum -c SHA256SUMS)
+          # each build's own checksums, then one SHA256SUMS for the release
+          mkdir dist
+          for a in vectis-x86_64-static vectis-mipsel-static; do
+            (cd "artifacts/$a" && sha256sum -c SHA256SUMS)
+            cp artifacts/$a/vectis-linux-* dist/
+            cat "artifacts/$a/SHA256SUMS" >> dist/SHA256SUMS
+          done
+          (cd dist && sha256sum -c SHA256SUMS && ls -l)
+          file dist/vectis-linux-mipsel | grep -q 'MIPS.*statically linked' ||
+            { echo "::error::vectis-linux-mipsel is not a static MIPS binary"; exit 1; }
           chmod 755 dist/vectis-linux-x86_64
           # first line: "<argv[0]> <version>"
           got=$(dist/vectis-linux-x86_64 --version | head -1 | awk '{print $NF}')
@@ -204,9 +244,10 @@ jobs:
           [ "$prev" = "Vectis ${VER}" ] || echo "new=true" >> "$GITHUB_OUTPUT"
 
           cat > notes.md <<NOTES
-          Vectis ${VER} (${GITHUB_SHA::7}): static Linux binary (musl), no dependencies.
+          Vectis ${VER} (${GITHUB_SHA::7}): static Linux binaries (musl), no dependencies.
 
           - \`vectis-linux-x86_64\` — serial console, RFC 2217 client/server, web power console (\`-u\`, \`-h/-p\`, \`-l\`, \`-w\`) and \`-U\`: CH340/CH341 adapters driven through usbfs on hosts without a kernel driver
+          - \`vectis-linux-mipsel\` — the same for MIPS little-endian routers (MediaTek MT7620/MT7621/MT7628, OpenWrt): soft-float, runs with or without an FPU
 
           Check: \`sha256sum -c SHA256SUMS\`. Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
           NOTES

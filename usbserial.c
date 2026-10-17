@@ -4,8 +4,8 @@
  *
  * usbserial.c — usbfs side of the USB-UART support (see usbserial.h):
  * device lookup by USB path, taking the interface from the kernel driver,
- * bulk IN URBs queued all the time and reaped from the main poll loop,
- * bulk OUT in short synchronous chunks.
+ * bulk IN URBs of one packet each queued all the time and reaped from
+ * the main poll loop, bulk OUT in short synchronous chunks.
  *
  * Reading: usbfs reports POLLOUT on its fd when an asynchronous URB has
  * completed, and POLLERR | POLLHUP once the device is gone.  The IN URBs
@@ -43,7 +43,7 @@ const struct usbs_chip *const usbs_chips[] = {
 };
 
 #define USBS_N_IN        16     /* IN URBs kept queued */
-#define USBS_IN_SIZE     256    /* bytes per IN URB; a short packet ends it */
+#define USBS_IN_MAX      512    /* largest IN URB: a high-speed bulk packet */
 #define USBS_OUT_CHUNK   256    /* max bytes per synchronous OUT transfer */
 #define USBS_CTRL_TIMEOUT 1000  /* ms per control request */
 #define USBS_RX_SIZE     65536  /* receive backlog */
@@ -60,7 +60,9 @@ static struct usbs_dev g_dev = { .fd = -1 };
 /* Allocated once: struct usbdevfs_urb ends in a flexible array, so it
  * cannot be an array element itself. */
 static struct usbdevfs_urb *g_urb[USBS_N_IN];
-static uint8_t g_urb_buf[USBS_N_IN][USBS_IN_SIZE];
+static uint8_t g_urb_buf[USBS_N_IN][USBS_IN_MAX];
+/* Bytes per IN URB: one packet of the IN endpoint (see in_packet_size()). */
+static size_t g_in_size;
 
 static uint8_t g_rx[USBS_RX_SIZE];
 static size_t  g_rx_head, g_rx_len;
@@ -308,7 +310,7 @@ static int submit_in(int i)
     u->type          = USBDEVFS_URB_TYPE_BULK;
     u->endpoint      = g_dev.chip->ep_in;
     u->buffer        = g_urb_buf[i];
-    u->buffer_length = USBS_IN_SIZE;
+    u->buffer_length = (int)g_in_size;
     u->usercontext   = (void *)(intptr_t)i;
     return USBS_IOCTL(g_dev.fd, USBDEVFS_SUBMITURB, u);
 }
@@ -441,6 +443,36 @@ int usbs_write(const uint8_t *buf, size_t n)
 
 /* ---------- open / close ---------- */
 
+/* wMaxPacketSize of endpoint ep of interface iface (alternate setting 0),
+ * from the descriptors usbfs returns on read(), or 0 if not found.
+ *
+ * A bulk IN URB completes only when its buffer is full or the device
+ * sends a short packet.  Larger than one packet, it keeps the bytes of a
+ * burst that ends on a full packet (32 bytes on a CH340) until more data
+ * arrives (#48); one packet per URB, as the kernel's usb-serial sizes
+ * them, completes every packet. */
+static size_t in_packet_size(int fd, unsigned iface, uint8_t ep)
+{
+    uint8_t d[1024];
+    ssize_t n;
+    int cur_if = -1, cur_alt = -1;
+
+    if (lseek(fd, 0, SEEK_SET) != 0 || (n = read(fd, d, sizeof d)) <= 0)
+        return 0;
+    for (ssize_t p = 0; p + 2 <= n && d[p] >= 2; p += d[p]) {
+        if (p + d[p] > n)
+            break;
+        if (d[p + 1] == 4 && d[p] >= 9) {           /* interface */
+            cur_if  = d[p + 2];
+            cur_alt = d[p + 3];
+        } else if (d[p + 1] == 5 && d[p] >= 7 &&    /* endpoint */
+                   cur_if == (int)iface && cur_alt == 0 && d[p + 2] == ep) {
+            return (size_t)((d[p + 4] | d[p + 5] << 8) & 0x7ff);
+        }
+    }
+    return 0;
+}
+
 int usbs_open(uint16_t vid, uint16_t pid, const char *path)
 {
     char found[32], node[64];
@@ -510,6 +542,20 @@ int usbs_open(uint16_t vid, uint16_t pid, const char *path)
                  strerror(e), e == EBUSY ? " (another program holds it)" : "");
         close(fd);
         errno = e;
+        return -1;
+    }
+
+    /* No guessing: a URB larger than the packet brings the held-back
+     * tail back, a smaller one overflows. */
+    g_in_size = in_packet_size(fd, ifno, chip->ep_in);
+    if (g_in_size == 0 || g_in_size > USBS_IN_MAX) {
+        snprintf(g_err, sizeof g_err, "%s: no usable wMaxPacketSize for IN endpoint 0x%02x (%u)",
+                 found, chip->ep_in, (unsigned)g_in_size);
+        /* As usbs_close(): the kernel driver is not given back, its probe
+         * would drop the modem lines on every retry of the open. */
+        (void)USBS_IOCTL(fd, USBDEVFS_RELEASEINTERFACE, &ifno);
+        close(fd);
+        errno = EPROTO;
         return -1;
     }
 

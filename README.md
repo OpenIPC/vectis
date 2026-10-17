@@ -117,28 +117,35 @@ python3 tests/test_vectis.py .
 
 There is one release, [`latest`](https://github.com/OpenIPC/vectis/releases/latest).
 CI rebuilds it from every push to `master` once all builds pass; its title carries
-the version (`Vectis 1.8.0`), and no versioned releases are kept. It holds a static
-musl binary that runs on any Linux of its architecture, with `SHA256SUMS`. The file
-names carry no version, so these links never change:
+the version (`Vectis X.Y.Z`), and no versioned releases are kept. It holds static
+musl binaries that run on any Linux of their architecture, with `SHA256SUMS`:
+`vectis-linux-x86_64` for PCs and servers, `vectis-linux-mipsel` for MIPS
+little-endian routers (MediaTek MT7620/MT7621/MT7628 and the like, OpenWrt),
+soft-float, so it runs with or without an FPU. The file names carry no version, so
+these links never change:
 
 | What                  | Link                                                                             |
 |-----------------------|----------------------------------------------------------------------------------|
 | release page          | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
+| `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
 | `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
 
 ```sh
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS && chmod 755 vectis-linux-x86_64
+sha256sum -c --ignore-missing SHA256SUMS && chmod 755 vectis-linux-x86_64
 ```
 
 Every new version is announced in the OpenIPC Telegram channels ([our channels](https://openipc.org/our-channels)).
 
-The release binary is built with `ci/build-static.sh`, which also builds it locally:
+The release binaries are built with `ci/build-static.sh` (x86_64) and
+`ci/build-mipsel.sh` (the OpenWrt 23.05.5 toolchain, downloaded once and checked by its
+SHA256; needs curl, xz, make and qemu-mipsel), which also build them locally:
 
 ```sh
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
+ci/build-mipsel.sh
 ```
 
 The change history of every version is in [CHANGELOG.md](CHANGELOG.md).
