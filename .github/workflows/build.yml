@@ -12,7 +12,8 @@
 # Release: one release only, "latest", replaced by every push to master
 # once all builds pass. Its title carries PROGRAM_VERSION ("Vectis 1.8.0"),
 # its notes are short; the history is in CHANGELOG.md. No versioned
-# releases or v* tags are kept.
+# releases or v* tags are kept. A new version (not every rebuild) is
+# announced in the OpenIPC Telegram dev channel.
 #
 
 name: Build
@@ -185,9 +186,23 @@ jobs:
           echo "VER=$ver" >> "$GITHUB_ENV"
 
       - name: Publish
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The release being replaced: its title tells Telegram whether this
+          # is a new version. "Not found" means there is none yet; any other
+          # failure stops here, before anything is deleted or announced.
+          if prev=$(gh release view latest --json name -q .name 2>err.txt); then
+            exists=1
+          elif grep -qi 'not found' err.txt; then
+            exists=0 prev=""
+          else
+            cat err.txt; echo "::error::cannot read the current \"latest\" release"; exit 1
+          fi
+          echo "previous release: ${prev:-none}"
+          [ "$prev" = "Vectis ${VER}" ] || echo "new=true" >> "$GITHUB_OUTPUT"
+
           cat > notes.md <<NOTES
           Vectis ${VER} (${GITHUB_SHA::7}): static Linux binary (musl), no dependencies.
 
@@ -196,7 +211,7 @@ jobs:
           Check: \`sha256sum -c SHA256SUMS\`. Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
           NOTES
           # "latest" is missing only before the first publication
-          if gh release view latest >/dev/null 2>&1; then
+          if [ "$exists" = 1 ]; then
             gh release delete latest --cleanup-tag --yes
           fi
           gh release create latest dist/* \
@@ -204,3 +219,25 @@ jobs:
             --title "Vectis ${VER}" \
             --target "${GITHUB_SHA}" \
             --notes-file notes.md
+
+      # Organization secrets; a failed post is a warning, not a failed release.
+      - name: Telegram
+        if: steps.publish.outputs.new == 'true'
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN_BOT_OPENIPC }}
+          TG_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL_OPENIPC_DEV }}
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHANNEL" ]; then
+            echo "::warning::Telegram secrets are not available, version not announced"; exit 0
+          fi
+          # the CHANGELOG.md section of this version, without its heading
+          changes=$(awk -v h="## ${VER} — " 'index($0, h) == 1 {f = 1; next} /^## / && f {exit} f' \
+            CHANGELOG.md | sed '/./,$!d' | head -n 15)
+          text=$(printf 'Vectis %s\nCommit: %s\nTime: %s\n\n%s\n\n%s' "$VER" "${GITHUB_SHA::7}" \
+            "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$changes" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/latest")
+          HTTP=$(curl -sS -o tg.json -w '%{http_code}' "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TG_CHANNEL}" --data-urlencode "text=${text}" \
+            --data "disable_web_page_preview=true") || HTTP=000
+          echo "Telegram response: $HTTP"
+          [ "$HTTP" = 200 ] || echo "::warning::Telegram post failed (HTTP $HTTP)"
