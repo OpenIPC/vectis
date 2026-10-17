@@ -38,7 +38,10 @@ jobs:
           fetch-depth: 0
 
       - name: Code changes come with a new version
-        run: .github/check-version.sh "origin/${{ github.base_ref }}"
+        env:
+          # through the environment, not pasted into the script
+          BASE: ${{ github.base_ref }}
+        run: .github/check-version.sh "origin/$BASE"
 
   linux:
     name: Linux ${{ matrix.platform.name }}
