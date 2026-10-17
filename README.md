@@ -40,8 +40,54 @@ without a kernel driver" below.
 
 `vectis-bootrom.c`, the original UART bridge this program grew out of, is
 kept in the repository for its HiSilicon boot-ROM catching extension; it
-is described at the end of this document and is not part of the default
-build.
+is described in [docs/vectis-bootrom.md](docs/vectis-bootrom.md) and is not part of
+the default build.
+
+## Quick start
+
+On a Linux PC with the board plugged in, as a user in the `dialout` group:
+
+```sh
+# 1. Download the static binary and check it
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS && install -m 755 vectis-linux-x86_64 vectis
+
+# 2. The board's console: Ctrl+P = reset (power cycle), Ctrl+B = break, Ctrl+] = exit
+./vectis -u /dev/ttyUSB0
+
+# 3. Share it: the console on TCP port 2021, the power page on http://<this host>:8080/
+./vectis -u /dev/ttyUSB0 -l 2021 -w 8080
+```
+
+From another machine `vectis -h <host> -p 2021` (or `telnet <host> 2021`)
+opens that console, and `curl http://<host>:8080/power/reset` resets the
+camera. On an OpenWrt router take `vectis-linux-mipsel`; if the router's
+kernel has no driver for the adapter, give its USB path with `-U` instead of
+`-u` (see "USB mode without a kernel driver"). Running vectis as a service
+and several boards on one host are described below.
+
+## Contents
+
+- [Quick start](#quick-start)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Build](#build)
+- [Releases and permanent links](#releases-and-permanent-links)
+- [How it fits together](#how-it-fits-together)
+- [How it works](#how-it-works)
+- [Usage](#usage)
+- [Examples](#examples)
+- [Session controls](#session-controls)
+- [Non-interactive use](#non-interactive-use)
+- [Serving the port over TCP (`-l`)](#serving-the-port-over-tcp--l)
+- [Web power console (`-w`)](#web-power-console--w)
+- [USB mode without a kernel driver (`-U`)](#usb-mode-without-a-kernel-driver--u)
+- [Several adapters on one host: stable device names (udev)](#several-adapters-on-one-host-stable-device-names-udev)
+- [Running vectis as a service (systemd)](#running-vectis-as-a-service-systemd)
+- [vectis-bootrom.c: the original UART bridge](#vectis-bootromc-the-original-uart-bridge)
+- [License](#license)
+- [Support](#support)
 
 ## Features
 
@@ -157,6 +203,203 @@ sources, the `Makefile`, `ci/`) raises the version as its last commit before the
 together with its `CHANGELOG.md` section. Changes to the docs, tests, screenshots or the
 workflows in `.github/` do not. CI checks this on every pull request
 (`.github/check-version.sh`).
+
+## How it fits together
+
+```mermaid
+flowchart LR
+    subgraph REMOTE["🌐 Remote workstation"]
+        direction TB
+        T["⌨️ <b>Terminal</b><br/>vectis -h HOST -p 2021<br/>telnet · pyserial · nc"]
+        B["🖱️ <b>Browser / curl</b><br/>http://HOST:8080"]
+    end
+
+    subgraph HOST["💻 Debug host · PC, router, dev board"]
+        V["⚙️ <b>vectis</b><br/>-u /dev/ttyUSB0<br/>-l 2021 · -w 8080"]
+    end
+
+    subgraph BOARD["🟩 OpenIPC UART 38x38"]
+        direction TB
+        U["🔌 <b>USB-UART bridge</b>"]
+        SW{{"⚡ <b>Power switch</b><br/>RTS + DTR"}}
+    end
+
+    subgraph DUT["📷 IP camera · device under test"]
+        direction TB
+        C["🖥️ <b>UART console</b><br/>bootrom · U-Boot · Linux"]
+        P["🔋 <b>Power input</b>"]
+    end
+
+    PSU(["⚡ Power supply"])
+
+    T <-->|"TCP/IP · Telnet / RFC 2217"| V
+    B -->|"HTTP · Enable / Disable / Reset"| V
+    V <==>|USB| U
+    U <-->|"UART · TX / RX / GND"| C
+    U -.->|"RTS + DTR · Ctrl+P, /power/*"| SW
+    PSU ==> SW
+    SW ==>|"switched power"| P
+
+    classDef net   fill:#e7f5ff,stroke:#1c7ed6,color:#0b3d6e,stroke-width:1.5px
+    classDef host  fill:#f3f0ff,stroke:#7048e8,color:#3b1f8f,stroke-width:1.5px
+    classDef board fill:#ebfbee,stroke:#2f9e44,color:#14532d,stroke-width:1.5px
+    classDef power fill:#fff4e6,stroke:#e8590c,color:#7a2e05,stroke-width:1.5px
+    classDef cam   fill:#f8f9fa,stroke:#495057,color:#212529,stroke-width:1.5px
+    class T,B net
+    class V host
+    class U board
+    class SW,PSU,P power
+    class C cam
+
+    style REMOTE fill:#f8fbff,stroke:#1c7ed6,stroke-dasharray:4 3,color:#0b3d6e
+    style HOST   fill:#faf8ff,stroke:#7048e8,stroke-dasharray:4 3,color:#3b1f8f
+    style BOARD  fill:#f4fcf5,stroke:#2f9e44,stroke-width:2px,color:#14532d
+    style DUT    fill:#fcfcfd,stroke:#495057,stroke-dasharray:4 3,color:#212529
+
+    linkStyle 0,1 stroke:#1c7ed6,stroke-width:2px
+    linkStyle 2 stroke:#7048e8,stroke-width:3px
+    linkStyle 3 stroke:#2f9e44,stroke-width:2.5px
+    linkStyle 4 stroke:#e8590c,stroke-width:2px
+    linkStyle 5,6 stroke:#e03131,stroke-width:3px
+```
+
+| Line              | Link         | Carries                                                    |
+|-------------------|--------------|------------------------------------------------------------|
+| 🟦 blue           | TCP/IP, HTTP | the console over the network, power commands from the page |
+| 🟪 purple, thick  | USB          | everything between the host and the board                  |
+| 🟩 green          | UART         | TX, RX and GND to the camera's debug console               |
+| 🟧 orange, dashed | RTS + DTR    | control of the power switch on the board                   |
+| 🟥 red, thick     | power        | supply to the camera, switched by the board                |
+
+### A reset, step by step
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as 👩‍💻 Developer<br/>keyboard · browser · -l client
+    participant V as ⚙️ vectis
+    participant B as 🟩 UART 38x38
+    participant C as 📷 IP camera
+
+    rect rgba(232, 89, 12, 0.10)
+        Dev->>V: Ctrl+P · Reset button · /power/reset
+        V->>B: deassert RTS + DTR
+        B-->>C: ⚡ power off
+        Note over V,C: wait -t ms (default 200)
+        V->>B: assert RTS + DTR
+        B-->>C: ⚡ power on
+        V-->>Dev: /power/reset answers with the new state
+    end
+
+    rect rgba(47, 158, 68, 0.10)
+        C->>V: bootrom, then the U-Boot banner over UART
+        Dev->>V: Ctrl+B
+        V->>C: serial break
+        C->>V: U-Boot prompt, autoboot stopped
+        Dev->>V: U-Boot commands
+        V->>C: over UART, as typed
+    end
+```
+
+The power steps (orange) are the same whatever started them: a `Ctrl+P`
+on the keyboard, the web page, `/power/reset`, or an RFC 2217
+`SET-CONTROL` from a client on the `-l` port. The page shows a reset
+started elsewhere, and `/status` names its source.
+
+### RTS + DTR over time
+
+```text
+                            vectis    Disable   Enable    Reset           vectis
+                            starts                       Ctrl+P           exits
+                              │         │         │         │               │
+ -u                           ┌─────────┐         ┌─────────┐    ┌──────────┐
+ RTS+DTR    ──────────────────┘         └─────────┘         └────┘          └───────
+                                                            ◄─t─►
+
+ -U         ────────────────────────────┐         ┌─────────┐    ┌──────────────────
+ RTS+DTR                                └─────────┘         └────┘
+
+ high = RTS and DTR asserted = camera powered (the logical state, not the pin voltage)
+ t    = reset pulse length, -t MS (default 200 ms)
+```
+
+- With `-u`, opening the tty asserts both lines and closing it drops them,
+  so starting or restarting vectis power-cycles the camera.
+- With `-U`, vectis sets the lines on start without dropping them first and
+  leaves them as they are on exit, so a restart or an update of vectis
+  does not touch the camera. Use `Ctrl+P` or `/power/reset` when a reset is
+  wanted.
+
+### A test bench with several cameras
+
+```mermaid
+flowchart LR
+    subgraph LAB["🌐 Lab network"]
+        W["👩‍💻 <b>Developers</b><br/>vectis -h · telnet · browser"]
+    end
+
+    subgraph HOST["💻 Debug host"]
+        direction TB
+        UDEV["🧷 <b>udev rule</b><br/>USB socket → /dev/vectisN"]
+        S0["⚙️ <b>vectis@vectis0</b><br/>-l 2020 · -w 2080"]
+        S1["⚙️ <b>vectis@vectis1</b><br/>-l 2021 · -w 2081"]
+        S2["⚙️ <b>vectis@vectis2</b><br/>-l 2022 · -w 2082"]
+    end
+
+    subgraph USB["🔌 USB sockets"]
+        direction TB
+        B0["🟩 <b>38x38</b><br/>socket 1-1.2"]
+        B1["🟩 <b>38x38</b><br/>socket 1-1.3.1"]
+        B2["🟩 <b>38x38</b><br/>socket 1-1.3.2"]
+    end
+
+    subgraph CAMS["📷 Cameras under test"]
+        direction TB
+        C0["📷 camera 0"]
+        C1["📷 camera 1"]
+        C2["📷 camera 2"]
+    end
+
+    W <-->|"TCP 202N · HTTP 208N"| S0
+    W <--> S1
+    W <--> S2
+    UDEV -.->|"starts on plug-in"| S0
+    UDEV -.-> S1
+    UDEV -.-> S2
+    S0 <==> B0
+    S1 <==> B1
+    S2 <==> B2
+    B0 -->|"UART + power"| C0
+    B1 --> C1
+    B2 --> C2
+
+    classDef net   fill:#e7f5ff,stroke:#1c7ed6,color:#0b3d6e,stroke-width:1.5px
+    classDef host  fill:#f3f0ff,stroke:#7048e8,color:#3b1f8f,stroke-width:1.5px
+    classDef board fill:#ebfbee,stroke:#2f9e44,color:#14532d,stroke-width:1.5px
+    classDef rule  fill:#fff4e6,stroke:#e8590c,color:#7a2e05,stroke-width:1.5px
+    classDef cam   fill:#f8f9fa,stroke:#495057,color:#212529,stroke-width:1.5px
+    class W net
+    class S0,S1,S2 host
+    class UDEV rule
+    class B0,B1,B2 board
+    class C0,C1,C2 cam
+
+    style LAB  fill:#f8fbff,stroke:#1c7ed6,stroke-dasharray:4 3,color:#0b3d6e
+    style HOST fill:#faf8ff,stroke:#7048e8,stroke-dasharray:4 3,color:#3b1f8f
+    style USB  fill:#f4fcf5,stroke:#2f9e44,stroke-width:2px,color:#14532d
+    style CAMS fill:#fcfcfd,stroke:#495057,stroke-dasharray:4 3,color:#212529
+
+    linkStyle 0,1,2 stroke:#1c7ed6,stroke-width:2px
+    linkStyle 3,4,5 stroke:#e8590c,stroke-width:1.5px
+    linkStyle 6,7,8 stroke:#7048e8,stroke-width:3px
+    linkStyle 9,10,11 stroke:#2f9e44,stroke-width:2.5px
+```
+
+Each board is named by the USB socket it is plugged into, not by the order
+the kernel found it, and gets its own service instance with its own TCP
+and web ports (`/etc/vectis/vectisN.conf`). Plugging a board into a known
+socket starts its instance; unplugging it stops the instance. See
+"Several adapters on one host" below.
 
 ## How it works
 
@@ -759,245 +1002,8 @@ not built by default:
 make vectis-bootrom        # or: cc -std=gnu99 -Os -o vectis-bootrom vectis-bootrom.c
 ```
 
-In this section `Vectis` and `vectis-bootrom` mean this original binary.
-
-### Usage
-
-```sh
-./vectis-bootrom [options]
-```
-
-#### Options
-
-- `-p, --port <port>` — serial device path, default: `/dev/ttyUSB0`
-- `-b, --baud <rate>` — baud rate, default: `115200`. Supported rates:
-  `9600`, `19200`, `38400`, `57600`, `115200`, `230400`, `460800`, `921600`
-- `-t, --tcp-port [port]` — enable TCP listener, default port: `35240`
-- `-s, --status` — print RTS/DTR status
-- `-v, --version` — print version and build date
-- `-h, --help` — show help
-
-#### Hotkeys
-
-- `Ctrl+P` — generate an inverted reset pulse on RTS and DTR
-- `Ctrl+C` — exit
-- `Ctrl+X` — exit
-
-### Notes
-
-- UART is configured for `8N1`.
-- RTS and DTR are asserted on startup and deasserted on exit.
-- RTS and DTR use normal asserted/deasserted signaling.
-- The Ctrl+P pulse uses the opposite asserted/deasserted sequence.
-- This tool is designed for rapid debugging and control, including power-related device handling, during integration work with OpenIPC UART 38x38.
-- The TCP listener accepts one client at a time; a new connection
-  replaces the current client.
-- The TCP listener starts only when `-t` is provided. When `-t` is given
-  and stdin is not a terminal (for example a backgrounded
-  `vectis -t > log 2>&1 &`), stdin is ignored and the console hotkeys are
-  unavailable.
-- If the serial device disappears (a USB adapter is unplugged), Vectis
-  logs `UART closed` and exits with status 1. Use the `inittab` or
-  `inetd` respawn setups below to bring it back automatically.
-- For interactive TCP use, run the local terminal side in raw mode so keys like `Ctrl+P` are sent immediately without waiting for `Enter`.
-- Example:
-
-```sh
-socat -,raw,echo=0 TCP:192.168.1.10:35240
-```
-
-```sh
-nc -C 192.168.1.10 35240
-```
-
-### RFC 2217 mode (binary-safe + out-of-band control)
-
-The TCP listener auto-detects whether a connecting client speaks
-[RFC 2217][rfc2217] (Telnet COM-Port Control Option). Detection is
-purely passive: Vectis stays in legacy raw mode until the client
-transmits a Telnet `IAC` byte (`0xFF`). Interactive humans never
-type `0xFF`, so existing `socat`/`nc`/`cat` workflows are unchanged.
-The moment a programmatic client begins option negotiation Vectis
-locks into Telnet mode for the rest of that connection and:
-
-- stops intercepting `Ctrl+P` (`0x10`) — the data path is binary-safe;
-- stops `\n`→`\r` normalisation and TCP-echo suppression;
-- escapes `0xFF` in both directions as `0xFF 0xFF` per RFC 854;
-- accepts `SET-CONTROL` to drive RTS/DTR independently
-  (values `8`/`9` = DTR ON/OFF, `11`/`12` = RTS ON/OFF, as assigned by
-  RFC 2217 §3.5; `10` reports the current RTS state and `0` the current
-  DTR state; anything else, such as flow-control settings, is
-  acknowledged as received so the client never hangs waiting);
-- accepts `SET-BAUDRATE` (the same fixed list that `-b` supports:
-  `9600`, `19200`, `38400`, `57600`, `115200`, `230400`, `460800`,
-  `921600`). A rate outside the list is answered with the rate still in
-  effect, and `0` queries the current rate;
-- acknowledges `SET-DATASIZE`, `SET-PARITY` and `SET-STOPSIZE` with the
-  values actually in effect. The UART is hard-wired to 8N1, so the reply
-  is always `8`, none, `1` regardless of the request (pyserial waits
-  synchronously for these acks when opening the port);
-- acknowledges `PURGE-DATA` (`1` = RX, `2` = TX, `3` = both) and flushes
-  the matching UART queue;
-- replies to `SIGNATURE` with `Vectis <version>`;
-- accepts a vendor-extension sub-option `BOOTROM-CATCH` (50) that
-  pulses RTS/DTR and runs the HiSilicon bootrom `0x20`-marker /
-  `0xAA`-ack handshake locally — see "BOOTROM-CATCH" below.
-
-#### BOOTROM-CATCH (vendor extension, sub-option 50)
-
-The HiSilicon boot ROM emits `0x20` markers and listens for `0xAA`
-in a ~100 ms window after reset.  Over a network with one-way
-latency above ~25 ms a remote client cannot complete a marker→ack
-round trip in time, so the camera autoboots before the client sees
-the markers.  The `BOOTROM-CATCH` sub-option moves the catch loop
-into Vectis itself, next to the UART, where the response time is
-in microseconds — RTT and jitter no longer matter.
-
-Wire format (client → server):
-
-```
-IAC SB COMPORT BOOTROM-CATCH
-    <pulse_ms     : 4 bytes BE>
-    <max_wait_ms  : 4 bytes BE>
-    [<mode        : 1 byte>]   # optional, default 0 = MARKER
-    [<min_markers : 1 byte>]   # optional, MARKER threshold; 0 → default (5)
-    [<head_frame  : ≤ 64 bytes>] # optional pipelined HEAD frame
-IAC SE
-```
-
-- `pulse_ms` (clamped to `0..5000`) — RTS+DTR low time before the
-  catch loop starts.  Set to `0` when external hardware (e.g. a
-  PoE switch) handles the actual reset.
-- `max_wait_ms` (clamped to `100..30000`) — overall catch deadline.
-  `5000` is a comfortable default.
-- `mode` (optional, default `0`):
-  - `0  MARKER` — wait for `min_markers` consecutive `0x20` bytes
-    from the chip, then send a final `0xAA`.  Matches the documented
-    hi3516 bootrom protocol; finishes early (typically ~500 ms) when
-    the chip emits markers.  Returns ``OK`` on confirmation,
-    ``TIMEOUT`` if no qualifying run within `max_wait_ms`.
-  - `1  BLIND` — keep blasting `0xAA` for the full `max_wait_ms`
-    and unconditionally return ``OK``.  Use for chip variants that
-    enter download mode silently without emitting markers we can
-    observe.  The client confirms by sending a HEAD frame and
-    watching for an ACK.
-- `min_markers` (optional, MARKER mode only).  How many *consecutive*
-  `0x20` bytes the chip must emit before the catch is declared
-  successful.  `0` (and the no-byte default) → 5, the canonical
-  HiSilicon protocol value.  Some hi3516 variants emit shorter
-  bursts and need `4` (or even `3`).  Clamped server-side to `1..16`.
-  An adaptive client can issue the catch with `0`, observe the
-  reply's `max_marker_run`, and retry with `min_markers =
-  max_marker_run` if the first attempt timed out — purely
-  protocol-driven, no operator intervention.
-
-- `head_frame` (optional, any bytes appended after byte 10).  The
-  *first* HEAD frame the client wants to send to the chip after the
-  catch.  When present, Vectis writes the final `0xAA` followed —
-  with no network round trip in between — by the HEAD frame and
-  captures the chip's reply byte locally.  This is the bit that
-  closes the RTT-window problem: on links where the chip's
-  download-mode hold window is shorter than one client→server round
-  trip, the chip otherwise moves on to SPL before any client-issued
-  HEAD can arrive.  Capped server-side to 64 bytes (a HiSilicon
-  HEAD frame is 14, with margin for variants).
-
-Older clients that send only the 8/9/10-byte payload default to
-MARKER mode, the canonical threshold, and no HEAD pipelining
-respectively — no behaviour change.
-
-Wire format (server → client):
-
-```
-IAC SB COMPORT (BOOTROM-CATCH+100=150)
-    <status        : 1 byte>      0=ok / 1=timeout / 2=io_err
-    <markers_seen  : 4 bytes BE>  total 0x20 bytes counted
-    <max_marker_run: 1 byte>      longest consecutive 0x20 run (capped 255)
-    <bytes_rx      : 4 bytes BE>  total bytes received from UART
-    <bytes_tx      : 4 bytes BE>  total 0xAA bytes blasted
-    <elapsed_ms    : 4 bytes BE>  actual catch-loop runtime
-    <last_byte     : 1 byte>      last non-marker byte (0 if none)
-    <head_ack      : 1 byte>      chip's reply to the pipelined HEAD,
-                                  or 0 if no HEAD was provided
-    <head_ack_seen : 1 byte>      1 if any byte arrived during the
-                                  post-HEAD window (so a `head_ack=0`
-                                  can be told from "no reply at all")
-IAC SE
-```
-
-The trailing counters are diagnostic: a high-RTT or noisy-link
-client can see whether the catch failed because the chip really
-emitted nothing (`bytes_rx=0`), because a different byte family
-arrived (`last_byte` non-zero, `markers_seen=0`), or because some
-markers arrived but never strung together (`markers_seen` high but
-`max_marker_run < 5`).  Older clients that read just the first
-byte (status) still work — the extra counters are appended after
-it.
-
-While the catch loop runs, Vectis owns the local UART exclusively
-(no bytes forwarded to the client).  After it returns, normal
-forwarding resumes — the client can immediately send a `HEAD` frame
-and proceed with the firmware upload.
-
-Example client (Python, with `pyserial`):
-
-```python
-import serial, struct, socket
-ser = serial.serial_for_url("rfc2217://vectis.lan:35240", baudrate=115200)
-sock = ser._socket
-# Ask Vectis to do a 200 ms RTS/DTR pulse, then catch the bootrom
-# locally with a 5-second deadline.  Mode 0 = MARKER (default), 1 = BLIND.
-sock.sendall(
-    b"\xff\xfa\x2c\x32"
-    + struct.pack(">IIB", 200, 5000, 0)
-    + b"\xff\xf0",
-)
-# (Read the IAC SB 44 150 <status> IAC SE reply with your IAC parser.)
-ser.write(head_frame)            # bootrom is now in download mode
-print(ser.read(1))                # → b"\xaa"
-```
-
-RFC 2217 detection runs on **both** TCP entry points:
-
-- the standalone `-t [port]` listener, and
-- the inetd `nowait` socket (where stdin/stdout *is* the TCP socket).
-
-The legacy `Ctrl+P` hotkey on the local interactive console (no `-t`,
-stdin is a tty) is unchanged — humans don't speak Telnet by hand, so
-the detection is a no-op for them.
-
-### The inetd integration
-
-Vectis can also be launched from `inetd`:
-
-```conf
-# OpenIPC
-#
-35240   stream  tcp     nowait  root    /usr/local/sbin/vectis-bootrom vectis-bootrom -s -p /dev/ttyUSB0 -b 115200
-```
-
-In `nowait` mode each TCP connection spawns a fresh Vectis with the
-socket wired to its stdin/stdout. RFC 2217 detection works on this
-path too: a programmatic client sending `IAC` flips the connection
-into Telnet mode, sub-options like `SET-CONTROL` are answered over
-the same socket, and `0xFF` bytes are escaped per RFC 854.
-
-On Debian/Ubuntu, install `inetd` with:
-
-```sh
-sudo apt update
-sudo apt install inetutils-inetd
-```
-
-### The inittab integration
-
-Vectis can also be started from `inittab` on systems with BusyBox init:
-
-```conf
-# OpenIPC
-#
-ttyS0::respawn:/usr/local/sbin/vectis-bootrom -s -p /dev/ttyUSB0 -b 115200
-```
+Its options, hotkeys, the RFC 2217 mode with the `BOOTROM-CATCH` extension
+and the inetd/inittab setups are in [docs/vectis-bootrom.md](docs/vectis-bootrom.md).
 
 ## License
 
@@ -1011,4 +1017,3 @@ ttyS0::respawn:/usr/local/sbin/vectis-bootrom -s -p /dev/ttyUSB0 -b 115200
 [![Telegram](https://openipc.org/images/telegram_button.svg)](https://openipc.org/our-channels)
 
 [logo]: https://raw.githubusercontent.com/OpenIPC/.github/refs/heads/main/assets/openipc-logo-black.svg
-[rfc2217]: https://www.rfc-editor.org/rfc/rfc2217

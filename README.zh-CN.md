@@ -37,8 +37,53 @@ Vectis 是一款串口控制台，用于在配合 OpenIPC UART 38x38 板开发�
 </p>
 
 `vectis-bootrom.c` 是本程序最初由之发展而来的 UART 桥接程序，因其
-HiSilicon boot ROM 捕获扩展而保留在仓库中；本文档末尾对其进行了说明，
-它不属于默认构建的一部分。
+HiSilicon boot ROM 捕获扩展而保留在仓库中；其说明见
+[docs/vectis-bootrom.md](docs/vectis-bootrom.md)，它不属于默认构建的一部分。
+
+## 快速开始
+
+在接好板子的 Linux PC 上，以 `dialout` 组中的用户运行：
+
+```sh
+# 1. 下载静态二进制文件并校验
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS && install -m 755 vectis-linux-x86_64 vectis
+
+# 2. 板子的控制台：Ctrl+P = 复位（断电重启），Ctrl+B = break，Ctrl+] = 退出
+./vectis -u /dev/ttyUSB0
+
+# 3. 共享出去：控制台在 TCP 端口 2021，电源页面在 http://<本机>:8080/
+./vectis -u /dev/ttyUSB0 -l 2021 -w 8080
+```
+
+在另一台机器上，`vectis -h <host> -p 2021`（或 `telnet <host> 2021`）可打开该
+控制台，`curl http://<host>:8080/power/reset` 可复位摄像机。在 OpenWrt 路由器上
+请使用 `vectis-linux-mipsel`；如果路由器内核没有该适配器的驱动，请用 `-U` 加其
+USB 路径代替 `-u`（参见“无内核驱动的 USB 模式”）。以服务方式运行 vectis 以及
+一台主机上的多块板，见下文。
+
+## 目录
+
+- [快速开始](#快速开始)
+- [功能特性](#功能特性)
+- [系统要求](#系统要求)
+- [构建](#构建)
+- [发布与永久链接](#发布与永久链接)
+- [整体结构](#整体结构)
+- [工作原理](#工作原理)
+- [用法](#用法)
+- [示例](#示例)
+- [会话控制](#会话控制)
+- [非交互使用](#非交互使用)
+- [通过 TCP 提供串口（`-l`）](#通过-tcp-提供串口-l)
+- [Web 电源控制台（`-w`）](#web-电源控制台-w)
+- [无内核驱动的 USB 模式（`-U`）](#无内核驱动的-usb-模式-u)
+- [一台主机上的多个适配器：固定设备名（udev）](#一台主机上的多个适配器固定设备名udev)
+- [将 vectis 作为服务运行（systemd）](#将-vectis-作为服务运行systemd)
+- [vectis-bootrom.c：原始的 UART 桥接程序](#vectis-bootromc原始的-uart-桥接程序)
+- [许可证](#许可证)
+- [支持](#支持)
 
 ## 功能特性
 
@@ -148,6 +193,198 @@ MINOR 表示新功能，MAJOR 表示不兼容的变更或大规模更新，仅�
 （源代码、`Makefile`、`ci/`）的 PR 需要在合并前的最后一个提交中提升版本号，并在
 `CHANGELOG.md` 中添加对应章节。仅修改文档、测试、截图或 `.github/` 中工作流的 PR 不提升
 版本号。CI 会在每个 PR 中检查这一点（`.github/check-version.sh`）。
+
+## 整体结构
+
+```mermaid
+flowchart LR
+    subgraph REMOTE["🌐 远程工作站"]
+        direction TB
+        T["⌨️ <b>终端</b><br/>vectis -h HOST -p 2021<br/>telnet · pyserial · nc"]
+        B["🖱️ <b>浏览器 / curl</b><br/>http://HOST:8080"]
+    end
+
+    subgraph HOST["💻 调试主机 · PC、路由器、开发板"]
+        V["⚙️ <b>vectis</b><br/>-u /dev/ttyUSB0<br/>-l 2021 · -w 8080"]
+    end
+
+    subgraph BOARD["🟩 OpenIPC UART 38x38"]
+        direction TB
+        U["🔌 <b>USB-UART 桥</b>"]
+        SW{{"⚡ <b>电源开关</b><br/>RTS + DTR"}}
+    end
+
+    subgraph DUT["📷 IP 摄像机 · 被测设备"]
+        direction TB
+        C["🖥️ <b>UART 控制台</b><br/>bootrom · U-Boot · Linux"]
+        P["🔋 <b>电源输入</b>"]
+    end
+
+    PSU(["⚡ 电源"])
+
+    T <-->|"TCP/IP · Telnet / RFC 2217"| V
+    B -->|"HTTP · Enable / Disable / Reset"| V
+    V <==>|USB| U
+    U <-->|"UART · TX / RX / GND"| C
+    U -.->|"RTS + DTR · Ctrl+P, /power/*"| SW
+    PSU ==> SW
+    SW ==>|"受控供电"| P
+
+    classDef net   fill:#e7f5ff,stroke:#1c7ed6,color:#0b3d6e,stroke-width:1.5px
+    classDef host  fill:#f3f0ff,stroke:#7048e8,color:#3b1f8f,stroke-width:1.5px
+    classDef board fill:#ebfbee,stroke:#2f9e44,color:#14532d,stroke-width:1.5px
+    classDef power fill:#fff4e6,stroke:#e8590c,color:#7a2e05,stroke-width:1.5px
+    classDef cam   fill:#f8f9fa,stroke:#495057,color:#212529,stroke-width:1.5px
+    class T,B net
+    class V host
+    class U board
+    class SW,PSU,P power
+    class C cam
+
+    style REMOTE fill:#f8fbff,stroke:#1c7ed6,stroke-dasharray:4 3,color:#0b3d6e
+    style HOST   fill:#faf8ff,stroke:#7048e8,stroke-dasharray:4 3,color:#3b1f8f
+    style BOARD  fill:#f4fcf5,stroke:#2f9e44,stroke-width:2px,color:#14532d
+    style DUT    fill:#fcfcfd,stroke:#495057,stroke-dasharray:4 3,color:#212529
+
+    linkStyle 0,1 stroke:#1c7ed6,stroke-width:2px
+    linkStyle 2 stroke:#7048e8,stroke-width:3px
+    linkStyle 3 stroke:#2f9e44,stroke-width:2.5px
+    linkStyle 4 stroke:#e8590c,stroke-width:2px
+    linkStyle 5,6 stroke:#e03131,stroke-width:3px
+```
+
+| 线条          | 连接         | 传输内容                             |
+|---------------|--------------|--------------------------------------|
+| 🟦 蓝色       | TCP/IP、HTTP | 网络上的控制台，来自网页的电源命令   |
+| 🟪 紫色，粗线 | USB          | 主机与板之间的一切                   |
+| 🟩 绿色       | UART         | 连接摄像机调试控制台的 TX、RX 和 GND |
+| 🟧 橙色，虚线 | RTS + DTR    | 控制板上的电源开关                   |
+| 🟥 红色，粗线 | 电源         | 摄像机的供电，由板上的开关切换       |
+
+### 复位的步骤
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as 👩‍💻 开发者<br/>键盘 · 浏览器 · -l 客户端
+    participant V as ⚙️ vectis
+    participant B as 🟩 UART 38x38
+    participant C as 📷 IP 摄像机
+
+    rect rgba(232, 89, 12, 0.10)
+        Dev->>V: Ctrl+P · Reset 按钮 · /power/reset
+        V->>B: 释放 RTS + DTR
+        B-->>C: ⚡ 断电
+        Note over V,C: 等待 -t 毫秒（默认 200）
+        V->>B: 置位 RTS + DTR
+        B-->>C: ⚡ 上电
+        V-->>Dev: /power/reset 返回新的状态
+    end
+
+    rect rgba(47, 158, 68, 0.10)
+        C->>V: bootrom，然后经 UART 输出 U-Boot 横幅
+        Dev->>V: Ctrl+B
+        V->>C: 串口 break
+        C->>V: U-Boot 提示符，autoboot 已停止
+        Dev->>V: U-Boot 命令
+        V->>C: 按输入原样经 UART 发送
+    end
+```
+
+无论由什么触发，电源步骤（橙色）都相同：键盘上的 `Ctrl+P`、网页、
+`/power/reset`，或 `-l` 端口上的客户端发出的 RFC 2217 `SET-CONTROL`。网页也会
+显示在别处发起的复位，`/status` 会给出其来源。
+
+### RTS + DTR 随时间的变化
+
+```text
+                            vectis    Disable   Enable    Reset           vectis
+                            启动                         Ctrl+P           退出
+                              │         │         │         │               │
+ -u                           ┌─────────┐         ┌─────────┐    ┌──────────┐
+ RTS+DTR    ──────────────────┘         └─────────┘         └────┘          └───────
+                                                            ◄─t─►
+
+ -U         ────────────────────────────┐         ┌─────────┐    ┌──────────────────
+ RTS+DTR                                └─────────┘         └────┘
+
+ 高 = RTS 和 DTR 置位 = 摄像机通电（逻辑状态，而非引脚电压）
+ t  = 复位脉冲长度，-t MS（默认 200 ms）
+```
+
+- 使用 `-u` 时，打开 tty 会置位两条线，关闭时将其释放，因此启动或重启
+  vectis 会使摄像机断电重启。
+- 使用 `-U` 时，vectis 启动时设置线路而不先释放，退出时保持原样，因此重启
+  或更新 vectis 不会影响摄像机。需要复位时请使用 `Ctrl+P` 或 `/power/reset`。
+
+### 多台摄像机的测试台
+
+```mermaid
+flowchart LR
+    subgraph LAB["🌐 实验室网络"]
+        W["👩‍💻 <b>开发者</b><br/>vectis -h · telnet · 浏览器"]
+    end
+
+    subgraph HOST["💻 调试主机"]
+        direction TB
+        UDEV["🧷 <b>udev 规则</b><br/>USB 插口 → /dev/vectisN"]
+        S0["⚙️ <b>vectis@vectis0</b><br/>-l 2020 · -w 2080"]
+        S1["⚙️ <b>vectis@vectis1</b><br/>-l 2021 · -w 2081"]
+        S2["⚙️ <b>vectis@vectis2</b><br/>-l 2022 · -w 2082"]
+    end
+
+    subgraph USB["🔌 USB 插口"]
+        direction TB
+        B0["🟩 <b>38x38</b><br/>插口 1-1.2"]
+        B1["🟩 <b>38x38</b><br/>插口 1-1.3.1"]
+        B2["🟩 <b>38x38</b><br/>插口 1-1.3.2"]
+    end
+
+    subgraph CAMS["📷 被测摄像机"]
+        direction TB
+        C0["📷 摄像机 0"]
+        C1["📷 摄像机 1"]
+        C2["📷 摄像机 2"]
+    end
+
+    W <-->|"TCP 202N · HTTP 208N"| S0
+    W <--> S1
+    W <--> S2
+    UDEV -.->|"插入时启动"| S0
+    UDEV -.-> S1
+    UDEV -.-> S2
+    S0 <==> B0
+    S1 <==> B1
+    S2 <==> B2
+    B0 -->|"UART + 电源"| C0
+    B1 --> C1
+    B2 --> C2
+
+    classDef net   fill:#e7f5ff,stroke:#1c7ed6,color:#0b3d6e,stroke-width:1.5px
+    classDef host  fill:#f3f0ff,stroke:#7048e8,color:#3b1f8f,stroke-width:1.5px
+    classDef board fill:#ebfbee,stroke:#2f9e44,color:#14532d,stroke-width:1.5px
+    classDef rule  fill:#fff4e6,stroke:#e8590c,color:#7a2e05,stroke-width:1.5px
+    classDef cam   fill:#f8f9fa,stroke:#495057,color:#212529,stroke-width:1.5px
+    class W net
+    class S0,S1,S2 host
+    class UDEV rule
+    class B0,B1,B2 board
+    class C0,C1,C2 cam
+
+    style LAB  fill:#f8fbff,stroke:#1c7ed6,stroke-dasharray:4 3,color:#0b3d6e
+    style HOST fill:#faf8ff,stroke:#7048e8,stroke-dasharray:4 3,color:#3b1f8f
+    style USB  fill:#f4fcf5,stroke:#2f9e44,stroke-width:2px,color:#14532d
+    style CAMS fill:#fcfcfd,stroke:#495057,stroke-dasharray:4 3,color:#212529
+
+    linkStyle 0,1,2 stroke:#1c7ed6,stroke-width:2px
+    linkStyle 3,4,5 stroke:#e8590c,stroke-width:1.5px
+    linkStyle 6,7,8 stroke:#7048e8,stroke-width:3px
+    linkStyle 9,10,11 stroke:#2f9e44,stroke-width:2.5px
+```
+
+每块板按其所插入的 USB 插口命名，而不是按内核发现它的顺序，并拥有自己的
+服务实例及各自的 TCP 和 Web 端口（`/etc/vectis/vectisN.conf`）。把板插入已知
+插口会启动其实例，拔出则停止该实例。参见下文“一台主机上的多个适配器”。
 
 ## 工作原理
 
@@ -737,245 +974,8 @@ inetd/inittab 集成，以及一个厂商扩展
 make vectis-bootrom        # 或：cc -std=gnu99 -Os -o vectis-bootrom vectis-bootrom.c
 ```
 
-在本节中，`Vectis` 和 `vectis-bootrom` 均指这个原始的二进制程序。
-
-### 用法
-
-```sh
-./vectis-bootrom [options]
-```
-
-#### 选项
-
-- `-p, --port <port>` —— 串口设备路径，默认：`/dev/ttyUSB0`
-- `-b, --baud <rate>` —— 波特率，默认：`115200`。支持的波特率：
-  `9600`、`19200`、`38400`、`57600`、`115200`、`230400`、`460800`、`921600`
-- `-t, --tcp-port [port]` —— 启用 TCP 监听，默认端口：`35240`
-- `-s, --status` —— 打印 RTS/DTR 状态
-- `-v, --version` —— 打印版本号和构建日期
-- `-h, --help` —— 显示帮助
-
-#### 快捷键
-
-- `Ctrl+P` —— 在 RTS 和 DTR 上产生反相的复位脉冲
-- `Ctrl+C` —— 退出
-- `Ctrl+X` —— 退出
-
-### 说明
-
-- UART 配置为 `8N1`。
-- 启动时拉高 RTS 和 DTR，退出时释放。
-- RTS 和 DTR 使用常规的拉高/释放信号。
-- Ctrl+P 脉冲使用相反的拉高/释放顺序。
-- 本工具专为配合 OpenIPC UART 38x38 进行集成工作时的快速调试和控制而设计，包括与设备供电相关的操作。
-- TCP 监听端口同一时间只接受一个客户端；新连接会
-  替换当前客户端。
-- 只有在指定 `-t` 时才会启动 TCP 监听。当指定了 `-t`
-  且 stdin 不是终端时（例如在后台运行
-  `vectis -t > log 2>&1 &`），stdin 会被忽略，控制台快捷键
-  不可用。
-- 如果串口设备消失（USB 适配器被拔出），Vectis
-  会记录 `UART closed` 并以状态码 1 退出。可使用下文的 `inittab` 或
-  `inetd` 自动重启（respawn）配置使其自动恢复。
-- 交互式使用 TCP 时，请将本地终端一侧设置为原始模式，这样 `Ctrl+P` 等按键会立即发送，无需等待 `Enter`。
-- 示例：
-
-```sh
-socat -,raw,echo=0 TCP:192.168.1.10:35240
-```
-
-```sh
-nc -C 192.168.1.10 35240
-```
-
-### RFC 2217 模式（二进制安全 + 带外控制）
-
-TCP 监听端口会自动检测连入的客户端是否使用
-[RFC 2217][rfc2217]（Telnet COM-Port Control Option）。检测
-完全是被动的：Vectis 保持在传统原始模式，直到客户端
-发送 Telnet `IAC` 字节（`0xFF`）。人工交互时从不会
-输入 `0xFF`，因此现有的 `socat`/`nc`/`cat` 工作流程不受影响。
-一旦程序化客户端开始选项协商，Vectis
-就会在该连接的剩余时间内锁定为 Telnet 模式，并且：
-
-- 不再截获 `Ctrl+P`（`0x10`）—— 数据通道是二进制安全的；
-- 不再进行 `\n`→`\r` 规范化和 TCP 回显抑制；
-- 按 RFC 854 在两个方向上将 `0xFF` 转义为 `0xFF 0xFF`；
-- 接受 `SET-CONTROL` 以独立控制 RTS/DTR
-  （按照 RFC 2217 §3.5 的分配，取值 `8`/`9` = DTR ON/OFF，`11`/`12` = RTS ON/OFF；
-  `10` 报告当前 RTS 状态，`0` 报告当前
-  DTR 状态；其他任何取值，例如流控设置，都会
-  按收到的值确认，因此客户端永远不会因等待而挂起）；
-- 接受 `SET-BAUDRATE`（与 `-b` 支持的固定列表相同：
-  `9600`、`19200`、`38400`、`57600`、`115200`、`230400`、`460800`、
-  `921600`）。列表之外的波特率会以当前仍在生效的波特率
-  应答，`0` 用于查询当前波特率；
-- 以实际生效的值确认 `SET-DATASIZE`、`SET-PARITY` 和 `SET-STOPSIZE`。
-  UART 固定为 8N1，因此无论请求什么，应答
-  始终是 `8`、none、`1`（pyserial 在打开串口时会同步等待
-  这些确认）；
-- 确认 `PURGE-DATA`（`1` = RX，`2` = TX，`3` = 两者）并清空
-  对应的 UART 队列；
-- 以 `Vectis <version>` 应答 `SIGNATURE`；
-- 接受厂商扩展子选项 `BOOTROM-CATCH`（50），它会
-  发出 RTS/DTR 脉冲，并在本地执行 HiSilicon bootrom 的 `0x20` 标记 /
-  `0xAA` 应答握手——参见下文“BOOTROM-CATCH”。
-
-#### BOOTROM-CATCH（厂商扩展，子选项 50）
-
-HiSilicon boot ROM 在复位后约 100 ms 的窗口内发出 `0x20` 标记，
-并监听 `0xAA`。在单向时延超过约 25 ms 的网络上，
-远程客户端无法及时完成一次标记→应答的往返，
-因此摄像机会在客户端看到标记之前就自动启动。
-`BOOTROM-CATCH` 子选项把捕获循环移到
-Vectis 自身中，紧挨着 UART，这里的响应时间
-以微秒计——RTT 和抖动不再有影响。
-
-线路格式（客户端 → 服务器）：
-
-```
-IAC SB COMPORT BOOTROM-CATCH
-    <pulse_ms     : 4 bytes BE>
-    <max_wait_ms  : 4 bytes BE>
-    [<mode        : 1 byte>]   # 可选，默认 0 = MARKER
-    [<min_markers : 1 byte>]   # 可选，MARKER 阈值；0 → 默认值（5）
-    [<head_frame  : ≤ 64 bytes>] # 可选，流水线发送的 HEAD 帧
-IAC SE
-```
-
-- `pulse_ms`（限制在 `0..5000`）—— 捕获循环开始之前 RTS+DTR
-  保持低电平的时间。当由外部硬件（例如
-  PoE 交换机）执行实际复位时，设为 `0`。
-- `max_wait_ms`（限制在 `100..30000`）—— 捕获的总截止时间。
-  `5000` 是一个稳妥的默认值。
-- `mode`（可选，默认 `0`）：
-  - `0  MARKER` —— 等待芯片连续发出 `min_markers` 个 `0x20` 字节，
-    然后发送最后一个 `0xAA`。符合文档记载的
-    hi3516 bootrom 协议；当芯片发出标记时会提前结束（通常约 500 ms）。
-    确认成功时返回 ``OK``，
-    如果在 `max_wait_ms` 内没有出现符合条件的连续标记则返回 ``TIMEOUT``。
-  - `1  BLIND` —— 在整个 `max_wait_ms` 期间持续猛发 `0xAA`，
-    并无条件返回 ``OK``。适用于那些
-    静默进入下载模式、不发出可观察到的标记的芯片型号。
-    客户端通过发送 HEAD 帧并
-    观察是否收到 ACK 来确认。
-- `min_markers`（可选，仅限 MARKER 模式）。芯片必须发出多少个*连续的*
-  `0x20` 字节才判定捕获
-  成功。`0`（以及不带该字节时的默认值）→ 5，即 HiSilicon 协议的
-  标准值。某些 hi3516 型号发出的标记串较短，
-  需要 `4`（甚至 `3`）。服务器端将其限制在 `1..16`。
-  自适应客户端可以先以 `0` 发起捕获，观察
-  应答中的 `max_marker_run`，如果第一次尝试超时，再以 `min_markers =
-  max_marker_run` 重试——完全由
-  协议驱动，无需人工干预。
-
-- `head_frame`（可选，附加在第 10 字节之后的任意字节）。客户端
-  希望在捕获之后发送给芯片的*第一个* HEAD 帧。
-  如果提供了该字段，Vectis 会在写出最后一个 `0xAA` 之后紧接着
-  （中间没有任何网络往返）写出该 HEAD 帧，并在本地
-  捕获芯片的应答字节。正是这一点
-  解决了 RTT 窗口问题：在某些链路上，芯片的
-  下载模式保持窗口比一次客户端→服务器往返
-  还短，否则芯片会在任何由客户端发出的
-  HEAD 到达之前就进入 SPL。服务器端将其上限限制为 64 字节（HiSilicon
-  HEAD 帧为 14 字节，余量留给各种变体）。
-
-只发送 8/9/10 字节载荷的旧客户端，会分别默认使用
-MARKER 模式、标准阈值，以及不进行 HEAD 流水线发送——
-行为没有任何变化。
-
-线路格式（服务器 → 客户端）：
-
-```
-IAC SB COMPORT (BOOTROM-CATCH+100=150)
-    <status        : 1 byte>      0=ok / 1=timeout / 2=io_err
-    <markers_seen  : 4 bytes BE>  total 0x20 bytes counted
-    <max_marker_run: 1 byte>      longest consecutive 0x20 run (capped 255)
-    <bytes_rx      : 4 bytes BE>  total bytes received from UART
-    <bytes_tx      : 4 bytes BE>  total 0xAA bytes blasted
-    <elapsed_ms    : 4 bytes BE>  actual catch-loop runtime
-    <last_byte     : 1 byte>      last non-marker byte (0 if none)
-    <head_ack      : 1 byte>      chip's reply to the pipelined HEAD,
-                                  or 0 if no HEAD was provided
-    <head_ack_seen : 1 byte>      1 if any byte arrived during the
-                                  post-HEAD window (so a `head_ack=0`
-                                  can be told from "no reply at all")
-IAC SE
-```
-
-末尾的计数器用于诊断：高 RTT 或链路噪声较大的
-客户端可以借此判断捕获失败的原因：是芯片确实
-什么都没发出（`bytes_rx=0`），是收到了另一类字节
-（`last_byte` 非零，`markers_seen=0`），还是虽然收到了一些
-标记但从未连成串（`markers_seen` 很高但
-`max_marker_run < 5`）。只读取第一个
-字节（status）的旧客户端仍然可以正常工作——额外的计数器附加在
-它之后。
-
-捕获循环运行期间，Vectis 独占本地 UART
-（不向客户端转发任何字节）。循环返回后，恢复正常
-转发——客户端可以立即发送 `HEAD` 帧，
-继续上传固件。
-
-客户端示例（Python，使用 `pyserial`）：
-
-```python
-import serial, struct, socket
-ser = serial.serial_for_url("rfc2217://vectis.lan:35240", baudrate=115200)
-sock = ser._socket
-# 让 Vectis 发出 200 ms 的 RTS/DTR 脉冲，然后在本地捕获 bootrom，
-# 截止时间为 5 秒。模式 0 = MARKER（默认），1 = BLIND。
-sock.sendall(
-    b"\xff\xfa\x2c\x32"
-    + struct.pack(">IIB", 200, 5000, 0)
-    + b"\xff\xf0",
-)
-# （用你自己的 IAC 解析器读取 IAC SB 44 150 <status> IAC SE 应答。）
-ser.write(head_frame)            # bootrom 现已进入下载模式
-print(ser.read(1))                # → b"\xaa"
-```
-
-RFC 2217 检测在**两个** TCP 入口上都会运行：
-
-- 独立的 `-t [port]` 监听端口，以及
-- inetd `nowait` 套接字（此时 stdin/stdout *就是* TCP 套接字）。
-
-本地交互式控制台（没有 `-t`，stdin 为 tty）上传统的 `Ctrl+P` 快捷键
-保持不变——人不会手动说 Telnet 协议，因此
-检测对他们来说不起任何作用。
-
-### inetd 集成
-
-Vectis 也可以由 `inetd` 启动：
-
-```conf
-# OpenIPC
-#
-35240   stream  tcp     nowait  root    /usr/local/sbin/vectis-bootrom vectis-bootrom -s -p /dev/ttyUSB0 -b 115200
-```
-
-在 `nowait` 模式下，每个 TCP 连接都会派生一个新的 Vectis 进程，
-套接字连接到它的 stdin/stdout。RFC 2217 检测在这条
-路径上同样有效：发送 `IAC` 的程序化客户端会把连接切换
-到 Telnet 模式，`SET-CONTROL` 等子选项通过
-同一个套接字应答，`0xFF` 字节按 RFC 854 转义。
-
-在 Debian/Ubuntu 上，可以这样安装 `inetd`：
-
-```sh
-sudo apt update
-sudo apt install inetutils-inetd
-```
-
-### inittab 集成
-
-在使用 BusyBox init 的系统上，Vectis 也可以由 `inittab` 启动：
-
-```conf
-# OpenIPC
-#
-ttyS0::respawn:/usr/local/sbin/vectis-bootrom -s -p /dev/ttyUSB0 -b 115200
-```
+其选项、热键、带 `BOOTROM-CATCH` 扩展的 RFC 2217 模式以及 inetd/inittab 集成，
+见 [docs/vectis-bootrom.md](docs/vectis-bootrom.md)（英文）。
 
 ## 许可证
 
@@ -989,4 +989,3 @@ ttyS0::respawn:/usr/local/sbin/vectis-bootrom -s -p /dev/ttyUSB0 -b 115200
 [![Telegram](https://openipc.org/images/telegram_button.svg)](https://openipc.org/our-channels)
 
 [logo]: https://raw.githubusercontent.com/OpenIPC/.github/refs/heads/main/assets/openipc-logo-black.svg
-[rfc2217]: https://www.rfc-editor.org/rfc/rfc2217
