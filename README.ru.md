@@ -124,6 +124,8 @@ python3 tests/test_vectis.py .
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
 ```
 
+История изменений по версиям — в [CHANGELOG.md](CHANGELOG.md).
+
 ## Как это работает
 
 В режиме клиента RFC 2217 `vectis` подключается к TCP-серверу, переводит локальный терминал в режим raw
