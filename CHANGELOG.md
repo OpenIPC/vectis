@@ -6,6 +6,23 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.9.0 — 2026-10-17
+
+A release binary for OpenWrt routers (#49) and a `-U` receive fix (#48).
+
+- `-U`: the end of a burst is delivered at once. Bulk IN URBs were 256 bytes and complete
+  only when full or on a short packet; a burst ending on a full 32-byte CH340 packet stayed
+  in the URB until more data arrived, so the last 32…192 bytes of e.g. a boot log showed
+  up only with the next output. Each IN URB is now one packet of the IN endpoint
+  (wMaxPacketSize from the device's descriptors).
+- Releases: `vectis-linux-mipsel`, static musl, soft-float MIPS32r2, for MediaTek
+  MT7620/MT7621/MT7628 and other MIPS little-endian routers, with or without an FPU; built
+  by `ci/build-mipsel.sh` with the OpenWrt 23.05.5 toolchain. `SHA256SUMS` covers both
+  files.
+- Checked on a ZBT WR8305RT (MT7620N, no FPU, OpenWrt 15.05.1, kernel 3.18, whose `ch341`
+  does not bind `1a86:7522`) with a CH340 in RX/TX loopback: 1200…921600 baud,
+  8N1/8E1/8O2/7N1, up to 64 KiB per burst, RTS/DTR, break, the web power console.
+
 ## 1.8.0 — 2026-10-17
 
 One binary and one release (#39, #40).
