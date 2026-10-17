@@ -5,6 +5,7 @@
 [English](README.md) | [Русский](README.ru.md) | **简体中文**
 
 [![Build](https://github.com/OpenIPC/vectis/actions/workflows/build.yml/badge.svg)](https://github.com/OpenIPC/vectis/actions/workflows/build.yml)
+[![Release](https://img.shields.io/badge/download-latest-blue)](https://github.com/OpenIPC/vectis/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Code size](https://img.shields.io/github/languages/code-size/OpenIPC/vectis)](https://github.com/OpenIPC/vectis)
 [![Platform](https://img.shields.io/badge/platform-Linux-brightgreen)](#系统要求)
@@ -27,9 +28,9 @@ Vectis 是一款串口控制台，用于在配合 OpenIPC UART 38x38 板开发�
 终端）；适配器被拔出后会自行重新打开设备链路；除 libc 外没有任何
 依赖。
 
-第二个构建 `vectis-ch34x` 增加了 `-U`：它在用户空间通过 usbfs 直接驱动
-CH340/CH341 USB-UART 适配器，适用于内核中没有 `ch341` 驱动且无法重新
-编译内核的路由器及其他用作调试主机的板子；参见下文“无内核驱动的 USB 模式”。
+使用 `-U` 时，它在用户空间通过 usbfs 直接驱动 CH340/CH341 USB-UART
+适配器，适用于内核中没有 `ch341` 驱动且无法重新编译内核的路由器及其他
+用作调试主机的板子；参见下文“无内核驱动的 USB 模式”。
 
 <p align="center">
   <img src="device.jpg" alt="OpenIPC UART 38x38 板" width="640">
@@ -65,7 +66,7 @@ HiSilicon boot ROM 捕获扩展而保留在仓库中；本文档末尾对其进�
 - 构建需要 C99 编译器（GCC 或 Clang）和 `make`
 - 对串口设备的读写权限，通常需要加入
   `dialout` 用户组
-- 使用 `-U`（`vectis-ch34x`）时：需要 usbfs（`/dev/bus/usb`）以及对其中
+- 使用 `-U` 时：需要 usbfs（`/dev/bus/usb`）以及对其中
   适配器节点的写权限；不需要 `ch341` 或 `usbserial` 驱动
 
 ## 构建
@@ -74,10 +75,10 @@ HiSilicon boot ROM 捕获扩展而保留在仓库中；本文档末尾对其进�
 make
 ```
 
-这会构建 `vectis` 和 `vectis-ch34x`（体积优化并已 strip）。
-`make vectis` 或 `make vectis-ch34x` 只构建其中一个，`make USB=0` 只构建
-`vectis`。`USB_CHIPS` 列出 `-U` 支持的 USB 芯片系列，每个系列一个二进制
-文件 `vectis-<芯片>`；目前只有 `ch34x`。`make DEBUG=1` 则构建
+这会构建带 `-U` 的 `vectis`（体积优化并已 strip）。`USB_CHIPS` 列出 `-U`
+支持的 USB 芯片系列，它们都链接进同一个二进制文件；运行时按 USB VID:PID
+选择芯片，目前只有 `ch34x`。`make USB=0` 构建不带 `-U` 的 `vectis`（仅 tty
+和 RFC 2217）。`make DEBUG=1` 则构建
 带调试符号、不做优化的版本。`make vectis-bootrom`
 按需构建原始的桥接程序；`make all` 不会构建它。
 
@@ -97,7 +98,7 @@ make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
 时间戳，仅更换 `CC` 不会重新构建已存在的二进制文件。
 
 每次 push 和 pull request 时，CI 都会为 x86_64、arm、aarch64 和 mipsel
-构建 `vectis`、`vectis-ch34x` 和 `vectis-bootrom`；生成的二进制文件作为
+构建 `vectis` 和 `vectis-bootrom`，并检查 `make USB=0` 能否构建；生成的二进制文件作为
 构建产物附加在每次运行上。在 x86_64 上 CI 还会运行回归测试：测试只需要
 Python 3，并用 pty 代替串口设备：
 
@@ -106,10 +107,27 @@ make
 python3 tests/test_vectis.py .
 ```
 
-发布版本（[GitHub Releases](https://github.com/OpenIPC/vectis/releases)）提供基于 musl
-的静态二进制文件，可在同一架构的任何 Linux 上运行：`vectis-<版本>-linux-x86_64`
-和 `vectis-ch34x-<版本>-linux-x86_64`，并附带 `SHA256SUMS`。它们由 CI 根据版本标签
-使用 `ci/build-static.sh` 构建；也可以用该脚本在本地构建：
+## 发布与永久链接
+
+只有一个发布版本：[`latest`](https://github.com/OpenIPC/vectis/releases/latest)。
+每次 push 到 `master` 且所有构建通过后，CI 都会重新构建它；标题中带有版本号
+（`Vectis 1.8.0`），不保留按版本的发布。其中包含一个基于 musl 的静态二进制
+文件，可在同一架构的任何 Linux 上运行，并附带 `SHA256SUMS`。文件名不含版本号，
+因此以下链接始终不变：
+
+| 内容                  | 链接                                                                             |
+|-----------------------|----------------------------------------------------------------------------------|
+| 发布页面              | <https://github.com/OpenIPC/vectis/releases/latest>                              |
+| `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
+| `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
+
+```sh
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS && chmod 755 vectis-linux-x86_64
+```
+
+发布用的二进制文件由 `ci/build-static.sh` 构建；也可以用该脚本在本地构建：
 
 ```sh
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
@@ -169,7 +187,7 @@ RFC 2217/Telnet 模式：
 
 - `-u DEVICE`、`--device DEVICE` —— 本地 tty 设备路径，例如 `/dev/ttyUSB0`
 
-USB 模式（仅 `vectis-ch34x`）：
+USB 模式（`make USB=0` 构建中没有）：
 
 - `-U SPEC`、`--usb SPEC` —— 通过 usbfs 驱动的 USB-UART；`SPEC` 是适配器的
   USB 路径（`1-1.3.4`，与 `/sys/bus/usb/devices` 中一致）、`usb:VID:PID`
@@ -439,14 +457,14 @@ Reset 按钮点亮、指针摆动，日志行中会注明
 
 ## 无内核驱动的 USB 模式（`-U`）
 
-`vectis-ch34x` 可以通过内核的 usbfs 接口自行驱动 CH340/CH341 适配器，
+`vectis -U` 通过内核的 usbfs 接口自行驱动 CH340/CH341 适配器，
 无需 `ch341` 或 `usbserial` 驱动。只有在内核缺少该驱动且无法重新编译的
 主机上才使用此模式：路由器以及其他用作调试主机的板子。在其他所有系统上，
 包括桌面 Linux、macOS 和 Windows，请使用标准驱动和 `-u /dev/ttyUSB0`。
 
 ```sh
-./vectis-ch34x -U 1-1.3.4 -l 2021 -w 2081      # 按 USB 路径
-./vectis-ch34x -U usb:1a86:7523                # 找到的第一个 CH340
+./vectis -U 1-1.3.4 -l 2021 -w 2081      # 按 USB 路径
+./vectis -U usb:1a86:7523                # 找到的第一个 CH340
 ```
 
 一切都与 `-u` 相同：控制台、`-l`、`-w`、`Ctrl+P`、`Ctrl+B`，通过 RFC 2217

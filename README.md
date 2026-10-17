@@ -5,6 +5,7 @@
 **English** | [Русский](README.ru.md) | [简体中文](README.zh-CN.md)
 
 [![Build](https://github.com/OpenIPC/vectis/actions/workflows/build.yml/badge.svg)](https://github.com/OpenIPC/vectis/actions/workflows/build.yml)
+[![Release](https://img.shields.io/badge/download-latest-blue)](https://github.com/OpenIPC/vectis/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Code size](https://img.shields.io/github/languages/code-size/OpenIPC/vectis)](https://github.com/OpenIPC/vectis)
 [![Platform](https://img.shields.io/badge/platform-Linux-brightgreen)](#requirements)
@@ -28,10 +29,10 @@ It runs interactively in a terminal or as a daemon (`systemd`, no
 terminal), reopens the device link on its own when an adapter is
 unplugged, and needs nothing but libc.
 
-A second build, `vectis-ch34x`, adds `-U`: it drives a CH340/CH341
-USB-UART adapter from user space through usbfs, for routers and other
-boards used as debug hosts whose kernel has no `ch341` driver and cannot
-be rebuilt; see "USB mode without a kernel driver" below.
+With `-U` it drives a CH340/CH341 USB-UART adapter itself, from user
+space through usbfs, for routers and other boards used as debug hosts
+whose kernel has no `ch341` driver and cannot be rebuilt; see "USB mode
+without a kernel driver" below.
 
 <p align="center">
   <img src="device.jpg" alt="OpenIPC UART 38x38 board" width="640">
@@ -68,7 +69,7 @@ build.
 - A C99 compiler (GCC or Clang) and `make` to build
 - Read/write access to the serial device, usually membership in the
   `dialout` group
-- For `-U` (`vectis-ch34x`): usbfs (`/dev/bus/usb`) and write access to
+- For `-U`: usbfs (`/dev/bus/usb`) and write access to
   the adapter's node there; no `ch341` or `usbserial` driver
 
 ## Build
@@ -77,10 +78,11 @@ build.
 make
 ```
 
-This builds `vectis` and `vectis-ch34x` (size-optimised and stripped).
-`make vectis` or `make vectis-ch34x` builds one of them, `make USB=0`
-only `vectis`. `USB_CHIPS` lists the USB chip families for `-U`, one
-binary `vectis-<chip>` each; `ch34x` is the only one so far. `make DEBUG=1` builds
+This builds `vectis` (size-optimised and stripped) with `-U`.
+`USB_CHIPS` lists the USB chip families for `-U`, all linked into the one
+binary; the chip is picked by its USB VID:PID at run time, and `ch34x` is
+the only one so far. `make USB=0` builds `vectis` without `-U` (tty and
+RFC 2217 only). `make DEBUG=1` builds
 with debug symbols and no optimisation instead. `make vectis-bootrom`
 builds the original bridge on demand; `make all` does not.
 
@@ -100,8 +102,8 @@ Run `make clean` when switching toolchains: Make compares only the
 source and binary timestamps, so a different `CC` alone does not
 rebuild a binary that is already there.
 
-CI builds `vectis`, `vectis-ch34x` and `vectis-bootrom` for x86_64, arm,
-aarch64 and mipsel on every push and pull request; the binaries are
+CI builds `vectis` and `vectis-bootrom` for x86_64, arm, aarch64 and
+mipsel on every push and pull request, and checks that `make USB=0` builds; the binaries are
 attached to each run as artifacts. On x86_64 it also runs the regression
 tests, which need only Python 3 and use a pty in place of the serial
 device:
@@ -111,11 +113,27 @@ make
 python3 tests/test_vectis.py .
 ```
 
-Releases ([GitHub Releases](https://github.com/OpenIPC/vectis/releases)) ship
-static musl binaries that run on any Linux of their architecture:
-`vectis-<version>-linux-x86_64` and `vectis-ch34x-<version>-linux-x86_64`
-with `SHA256SUMS`. They are built by CI from a version tag with
-`ci/build-static.sh`, which also builds them locally:
+## Releases and permanent links
+
+There is one release, [`latest`](https://github.com/OpenIPC/vectis/releases/latest).
+CI rebuilds it from every push to `master` once all builds pass; its title carries
+the version (`Vectis 1.8.0`), and no versioned releases are kept. It holds a static
+musl binary that runs on any Linux of its architecture, with `SHA256SUMS`. The file
+names carry no version, so these links never change:
+
+| What                  | Link                                                                             |
+|-----------------------|----------------------------------------------------------------------------------|
+| release page          | <https://github.com/OpenIPC/vectis/releases/latest>                              |
+| `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
+| `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
+
+```sh
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS && chmod 755 vectis-linux-x86_64
+```
+
+The release binary is built with `ci/build-static.sh`, which also builds it locally:
 
 ```sh
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
@@ -178,7 +196,7 @@ Direct serial mode:
 
 - `-u DEVICE`, `--device DEVICE` — local tty device path, for example `/dev/ttyUSB0`
 
-USB mode (`vectis-ch34x` only):
+USB mode (not in a `make USB=0` build):
 
 - `-U SPEC`, `--usb SPEC` — USB-UART driven through usbfs; `SPEC` is the
   adapter's USB path (`1-1.3.4`, as in `/sys/bus/usb/devices`),
@@ -448,7 +466,7 @@ the `-l` listener.
 
 ## USB mode without a kernel driver (`-U`)
 
-`vectis-ch34x` can drive a CH340/CH341 adapter itself, through the
+`vectis -U` drives a CH340/CH341 adapter itself, through the
 kernel's usbfs interface, with no `ch341` or `usbserial` driver. Use it
 only on hosts whose kernel lacks the driver and cannot be rebuilt:
 routers and other boards used as debug hosts. Everywhere else, desktop
@@ -456,8 +474,8 @@ Linux, macOS and Windows included, use the standard driver and
 `-u /dev/ttyUSB0`.
 
 ```sh
-./vectis-ch34x -U 1-1.3.4 -l 2021 -w 2081      # by USB path
-./vectis-ch34x -U usb:1a86:7523                # the first CH340 found
+./vectis -U 1-1.3.4 -l 2021 -w 2081      # by USB path
+./vectis -U usb:1a86:7523                # the first CH340 found
 ```
 
 Everything works as with `-u`: the console, `-l`, `-w`, `Ctrl+P`,

@@ -32,9 +32,6 @@ import urllib.request
 
 BIN_DIR = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
 VECTIS = os.path.join(BIN_DIR, "vectis")
-USB_BINS = sorted(os.path.join(BIN_DIR, f) for f in os.listdir(BIN_DIR)
-                  if f.startswith("vectis-") and f != "vectis-bootrom"
-                  and os.access(os.path.join(BIN_DIR, f), os.X_OK))
 
 IAC, DONT, DO, WONT, WILL, SB, SE, BRK = 255, 254, 253, 252, 251, 250, 240, 243
 COMPORT = 44
@@ -349,46 +346,48 @@ def test_stdin_eof(tmp):
 
 def test_usb_cli():
     print("== -U command line")
-    r = subprocess.run([VECTIS, "-U", "1-1"], capture_output=True, text=True)
-    check(r.returncode == 1 and "no USB support" in r.stderr, "vectis: -U refused")
-    for b in USB_BINS:
-        name = os.path.basename(b)
-        r = subprocess.run([b, "--version"], capture_output=True, text=True)
-        check("USB chips (-U)" in r.stdout, "%s --version lists the chips" % name)
-        r = subprocess.run([b, "-U", "nonsense"], capture_output=True, text=True)
-        check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "%s: bad -U spec" % name)
-        r = subprocess.run([b, "-U", "usb:zz:1"], capture_output=True, text=True)
-        check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "%s: bad VID:PID" % name)
-        r = subprocess.run([b, "-U", "usb:0000:7523@1-1"], capture_output=True, text=True)
-        check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "%s: VID 0000 refused" % name)
-        r = subprocess.run([b, "-U", "9-9.9", "-b", "10000"], capture_output=True, text=True)
-        check(r.returncode == 1 and "Unsupported baud rate" in r.stderr,
-              "%s: unsupported baud refused before opening" % name)
-        r = subprocess.run([b, "-U", "1-1", "-u", "/dev/null"], capture_output=True, text=True)
-        check(r.returncode == 1, "%s: -U with -u refused" % name)
-        r = subprocess.run([b, "-U", "9-9.9"], capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL)
-        check(r.returncode == 1 and "no USB device at 9-9.9" in r.stderr,
-              "%s: absent device reported" % name)
-        wport = free_port()
-        p = start([b, "-U", "usb:1a86:7523@9-9.9", "-w", "127.0.0.1:%d" % wport])
-        try:
-            st = wait_status(wport, "mode", "usb")
-            check(st.get("target") == "usb:1a86:7523@9-9.9",
-                  "%s: /status target %r" % (name, st.get("target")))
-        finally:
-            stop(p)
-        wport = free_port()
-        p = start([b, "-U", "9-9.9", "-w", "127.0.0.1:%d" % wport])
-        try:
-            st = wait_status(wport, "mode", "usb")
-            check(st.get("mode") == "usb" and st.get("link") == "offline",
-                  "%s: daemon without the device serves /status offline" % name)
-            share = cpu_share(p.pid, 1.0)
-            check(share < 0.05, "%s: waiting for the device, idle CPU" % name)
-        finally:
-            log = stop(p)
-        check(log.count("no USB device") == 1, "%s: the outage is logged once" % name)
+    # vectis has -U unless built with USB=0; --version lists the chips then.
+    r = subprocess.run([VECTIS, "--version"], capture_output=True, text=True)
+    if "USB chips (-U)" not in r.stdout:
+        r = subprocess.run([VECTIS, "-U", "1-1"], capture_output=True, text=True)
+        check(r.returncode == 1 and "no USB support" in r.stderr, "vectis (USB=0): -U refused")
+        return
+    check("ch34x" in r.stdout, "vectis --version lists ch34x among the USB chips")
+    b, name = VECTIS, "vectis"
+    r = subprocess.run([b, "-U", "nonsense"], capture_output=True, text=True)
+    check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "%s: bad -U spec" % name)
+    r = subprocess.run([b, "-U", "usb:zz:1"], capture_output=True, text=True)
+    check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "%s: bad VID:PID" % name)
+    r = subprocess.run([b, "-U", "usb:0000:7523@1-1"], capture_output=True, text=True)
+    check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "%s: VID 0000 refused" % name)
+    r = subprocess.run([b, "-U", "9-9.9", "-b", "10000"], capture_output=True, text=True)
+    check(r.returncode == 1 and "Unsupported baud rate" in r.stderr,
+          "%s: unsupported baud refused before opening" % name)
+    r = subprocess.run([b, "-U", "1-1", "-u", "/dev/null"], capture_output=True, text=True)
+    check(r.returncode == 1, "%s: -U with -u refused" % name)
+    r = subprocess.run([b, "-U", "9-9.9"], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    check(r.returncode == 1 and "no USB device at 9-9.9" in r.stderr,
+          "%s: absent device reported" % name)
+    wport = free_port()
+    p = start([b, "-U", "usb:1a86:7523@9-9.9", "-w", "127.0.0.1:%d" % wport])
+    try:
+        st = wait_status(wport, "mode", "usb")
+        check(st.get("target") == "usb:1a86:7523@9-9.9",
+              "%s: /status target %r" % (name, st.get("target")))
+    finally:
+        stop(p)
+    wport = free_port()
+    p = start([b, "-U", "9-9.9", "-w", "127.0.0.1:%d" % wport])
+    try:
+        st = wait_status(wport, "mode", "usb")
+        check(st.get("mode") == "usb" and st.get("link") == "offline",
+              "%s: daemon without the device serves /status offline" % name)
+        share = cpu_share(p.pid, 1.0)
+        check(share < 0.05, "%s: waiting for the device, idle CPU" % name)
+    finally:
+        log = stop(p)
+    check(log.count("no USB device") == 1, "%s: the outage is logged once" % name)
 
 
 def main():

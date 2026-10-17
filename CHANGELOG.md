@@ -1,9 +1,27 @@
 # Changelog
 
 The version lives in `PROGRAM_VERSION` in `vectis.c` (`MAJOR.MINOR.PATCH`). Binaries are
-published as GitHub releases (see the README); this file is the change history. Versions
+published only as the [`latest`](https://github.com/OpenIPC/vectis/releases/latest) release,
+rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
+
+## 1.8.0 — 2026-10-17
+
+One binary and one release (#39, #40).
+
+- `-U` is part of `vectis`: the USB chip drivers of `USB_CHIPS` (now `ch34x`) are linked
+  into the one binary and the chip is picked by its VID:PID. The separate `vectis-ch34x`
+  build is gone; use `vectis -U` instead, the command line is the same. `make USB=0`
+  still builds `vectis` without `-U`, and CI checks that it builds.
+- Releases: one release, `latest`, rebuilt from every push to `master` once all builds
+  pass, titled `Vectis <version>`. The file names carry no version:
+  `vectis-linux-x86_64` and `SHA256SUMS` under
+  `https://github.com/OpenIPC/vectis/releases/latest/download/`. The `v1.7.0` release and
+  its `vectis-1.7.0-linux-x86_64` / `vectis-ch34x-1.7.0-linux-x86_64` links are gone.
+- Size: the x86_64 release binary is 141 176 bytes, as `vectis-ch34x` was; for users of
+  the plain build +12 KiB.
+- READMEs: "Releases and permanent links", the release badge.
 
 ## 1.7.0 — 2026-10-17
 

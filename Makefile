@@ -4,15 +4,13 @@
 # Makefile — build rules for Vectis
 #
 # `make` builds `vectis` from vectis.c: the serial console, RFC 2217
-# client/server and web power console; and, for every chip family in
-# USB_CHIPS, `vectis-<chip>`: the same program plus -U, the USB-UART
-# driven from user space through usbfs (usbserial.c + <chip>.c), for hosts
-# whose kernel has no driver for the adapter.
+# client/server and web power console, with -U: a USB-UART driven from
+# user space through usbfs (usbserial.c + one <chip>.c per family in
+# USB_CHIPS), for hosts whose kernel has no driver for the adapter.  The
+# chip is picked by its USB VID:PID at run time.
 #
-#   make                    vectis and vectis-ch34x
-#   make vectis             tty and RFC 2217 only
-#   make vectis-ch34x       with -U for CH340/CH341
-#   make USB=0              vectis only
+#   make                    vectis with -U (USB_CHIPS = ch34x: CH340/CH341)
+#   make USB=0              vectis without -U (tty and RFC 2217 only)
 #
 # vectis-bootrom.c is the original
 # UART bridge with the HiSilicon BOOTROM-CATCH extension; it is kept for
@@ -23,12 +21,14 @@
 TARGET  := vectis
 CC      ?= cc
 
-# USB-UART chip families for -U, one binary each (vectis-<chip>).
+# USB-UART chip families for -U, all linked into vectis.
 USB       ?= 1
 USB_CHIPS ?= ch34x
 
 ifeq ($(USB),1)
-USB_TARGETS := $(addprefix vectis-,$(USB_CHIPS))
+USB_SRC   := usbserial.c $(addsuffix .c,$(USB_CHIPS))
+USB_DEPS  := $(USB_SRC) usbserial.h
+USB_FLAGS := -DVECTIS_USB $(foreach c,$(USB_CHIPS),-DVECTIS_CHIP_$(shell echo '$(c)' | tr '[:lower:]-' '[:upper:]_'))
 endif
 STRIP   ?= strip
 
@@ -44,17 +44,11 @@ CFLAGS  ?= -std=gnu99 -Wall -Wextra -Wpedantic -Os -ffunction-sections -fdata-se
 LDFLAGS ?= -Wl,--gc-sections
 endif
 
-all: $(TARGET) $(USB_TARGETS)
+all: $(TARGET)
 
-$(TARGET): vectis.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
-	@if [ "$(DEBUG)" = "0" ]; then $(STRIP) $@; fi
-
-# vectis-ch34x: -DVECTIS_USB -DVECTIS_CHIP_CH34X, vectis.c usbserial.c ch34x.c
-vectis-%: vectis.c usbserial.c usbserial.h %.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -DVECTIS_USB \
-		-DVECTIS_CHIP_$(shell echo '$*' | tr '[:lower:]-' '[:upper:]_') \
-		-o $@ vectis.c usbserial.c $*.c $(LDFLAGS)
+# USB=1: -DVECTIS_USB -DVECTIS_CHIP_<CHIP> for every chip, vectis.c usbserial.c <chip>.c
+$(TARGET): vectis.c $(USB_DEPS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(USB_FLAGS) -o $@ vectis.c $(USB_SRC) $(LDFLAGS)
 	@if [ "$(DEBUG)" = "0" ]; then $(STRIP) $@; fi
 
 # Optional, not built by `make all`.
@@ -62,6 +56,7 @@ vectis-bootrom: vectis-bootrom.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(LDFLAGS)
 	@if [ "$(DEBUG)" = "0" ]; then $(STRIP) $@; fi
 
+# vectis-<chip>: the separate USB builds before 1.8.0, removed if left over.
 clean:
 	rm -f $(TARGET) vectis-bootrom $(addprefix vectis-,$(USB_CHIPS))
 
