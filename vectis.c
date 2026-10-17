@@ -3078,6 +3078,10 @@ int main(int argc, char **argv)
                  * misinterpreted as commands. Batch the rest into one write. */
                 static uint8_t outbuf[sizeof(buf) * 2]; /* worst case: every byte is IAC; static = no stack (N2) */
                 size_t  outlen = 0;
+                /* A failed write means the link is gone (adapter unplugged,
+                 * socket reset): leave the I/O loop like a read error does,
+                 * so a daemon reopens it, instead of quitting. */
+                int     link_failed = 0;
 
                 for (ssize_t i = 0; i < n; i++) {
                     uint8_t c = buf[i];
@@ -3086,7 +3090,7 @@ int main(int argc, char **argv)
                         if (c == KEY_RESET) {
                             if (outlen > 0) {
                                 if (link_write(outbuf, outlen) < 0) {
-                                    g_quit = 1;
+                                    link_failed = 1;
                                     break;
                                 }
                                 outlen = 0;
@@ -3097,7 +3101,7 @@ int main(int argc, char **argv)
                         if (c == KEY_BREAK) {
                             if (outlen > 0) {
                                 if (link_write(outbuf, outlen) < 0) {
-                                    g_quit = 1;
+                                    link_failed = 1;
                                     break;
                                 }
                                 outlen = 0;
@@ -3108,7 +3112,7 @@ int main(int argc, char **argv)
                         if (c == KEY_EXIT) {
                             if (outlen > 0) {
                                 if (link_write(outbuf, outlen) < 0) {
-                                    g_quit = 1;
+                                    link_failed = 1;
                                     break;
                                 }
                                 outlen = 0;
@@ -3128,9 +3132,13 @@ int main(int argc, char **argv)
                     }
                 }
 
-                if (!g_quit && outlen > 0) {
+                if (!g_quit && !link_failed && outlen > 0) {
                     if (link_write(outbuf, outlen) < 0)
-                        g_quit = 1;
+                        link_failed = 1;
+                }
+                if (link_failed) {
+                    log_errno(LOG_ERR, g_serial_mode ? "write(serial)" : "write(socket)");
+                    break;
                 }
             }
         }

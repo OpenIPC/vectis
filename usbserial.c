@@ -44,8 +44,7 @@ const struct usbs_chip *const usbs_chips[] = {
 
 #define USBS_N_IN        16     /* IN URBs kept queued */
 #define USBS_IN_SIZE     256    /* bytes per IN URB; a short packet ends it */
-#define USBS_OUT_CHUNK   256    /* bytes per synchronous OUT transfer */
-#define USBS_OUT_TIMEOUT 2000   /* ms per OUT chunk */
+#define USBS_OUT_CHUNK   256    /* max bytes per synchronous OUT transfer */
 #define USBS_CTRL_TIMEOUT 1000  /* ms per control request */
 #define USBS_RX_SIZE     65536  /* receive backlog */
 
@@ -54,7 +53,6 @@ static struct usbs_dev g_dev = { .fd = -1 };
  * cannot be an array element itself. */
 static struct usbdevfs_urb *g_urb[USBS_N_IN];
 static uint8_t g_urb_buf[USBS_N_IN][USBS_IN_SIZE];
-static int g_urb_live[USBS_N_IN];   /* submitted, not reaped yet */
 
 static uint8_t g_rx[USBS_RX_SIZE];
 static size_t  g_rx_head, g_rx_len;
@@ -108,6 +106,10 @@ int usbs_parse_spec(const char *spec, uint16_t *vid, uint16_t *pid,
         if (sscanf(spec + 4, "%4x:%4x%n", &v, &p, &n) != 2 ||
             (spec[4 + n] != '\0' && spec[4 + n] != '@')) {
             *why = "expected usb:VID:PID or usb:VID:PID@PATH (hex VID/PID)";
+            return -1;
+        }
+        if (v == 0) {
+            *why = "VID 0000 is not a valid vendor ID";
             return -1;
         }
         *vid = (uint16_t)v;
@@ -274,10 +276,7 @@ static int submit_in(int i)
     u->buffer        = g_urb_buf[i];
     u->buffer_length = USBS_IN_SIZE;
     u->usercontext   = (void *)(intptr_t)i;
-    if (ioctl(g_dev.fd, USBDEVFS_SUBMITURB, u) != 0)
-        return -1;
-    g_urb_live[i] = 1;
-    return 0;
+    return ioctl(g_dev.fd, USBDEVFS_SUBMITURB, u);
 }
 
 static void rx_put(const uint8_t *p, size_t n)
@@ -312,6 +311,9 @@ size_t usbs_read(uint8_t *buf, size_t n)
 
 void usbs_purge_rx(void)
 {
+    /* Drop what completed URBs hold as well, not only the backlog. */
+    if (g_dev.fd >= 0)
+        (void)usbs_service();
     g_rx_head = g_rx_len = 0;
     g_rx_overflow = 0;
 }
@@ -336,7 +338,6 @@ int usbs_service(void)
         i = (int)(intptr_t)u->usercontext;
         if (i < 0 || i >= USBS_N_IN)
             continue;
-        g_urb_live[i] = 0;
         switch (u->status) {
         case 0:
             rx_put(g_urb_buf[i], (size_t)u->actual_length);
@@ -346,9 +347,11 @@ int usbs_service(void)
             (void)ioctl(g_dev.fd, USBDEVFS_CLEAR_HALT, &ep);
             break;
         }
-        case -ENOENT: case -ECONNRESET:
-            continue;            /* discarded by us: not resubmitted */
-        case -ENODEV: case -ESHUTDOWN:
+        case -ENOENT: case -ECONNRESET: case -ENODEV: case -ESHUTDOWN:
+            /* vectis never discards a URB itself: the kernel killed it
+             * (unplug, reset, interface taken away).  Report the link as
+             * lost, so the caller reopens it, rather than receive less
+             * and less until nothing arrives. */
             errno = ENODEV;
             return -1;
         default:
@@ -361,9 +364,19 @@ int usbs_service(void)
 
 int usbs_write(const uint8_t *buf, size_t n)
 {
+    /* About 100 ms of line time per chunk (32 bytes at least), and a
+     * timeout of twice the chunk's line time plus a second, so a slow
+     * baud rate neither times out nor holds the poll loop for long. */
+    uint32_t baud = g_dev.line.baud ? g_dev.line.baud : 115200;
+    size_t chunk = baud / 100;
+
+    if (chunk < 32)
+        chunk = 32;
+    if (chunk > USBS_OUT_CHUNK)
+        chunk = USBS_OUT_CHUNK;
     while (n > 0) {
         struct usbdevfs_bulktransfer b;
-        size_t len = n > USBS_OUT_CHUNK ? USBS_OUT_CHUNK : n;
+        size_t len = n > chunk ? chunk : n;
         int r;
 
         if (g_dev.fd < 0) {
@@ -373,7 +386,7 @@ int usbs_write(const uint8_t *buf, size_t n)
         memset(&b, 0, sizeof b);
         b.ep      = g_dev.chip->ep_out;
         b.len     = (unsigned)len;
-        b.timeout = USBS_OUT_TIMEOUT;
+        b.timeout = (unsigned)(1000 + 2 * len * 12 * 1000 / baud);   /* 12 bits/byte max */
         b.data    = (void *)buf;
         r = ioctl(g_dev.fd, USBDEVFS_BULK, &b);
         if (r < 0) {
@@ -430,6 +443,8 @@ int usbs_open(uint16_t vid, uint16_t pid, const char *path)
 
     /* Take the interface from the kernel driver (ch341 & co.), if any.
      * It is not given back on close: see usbs_close(). */
+    int detached = 0;
+
     ifno = chip->iface;
     memset(&gd, 0, sizeof gd);
     gd.interface = ifno;
@@ -445,9 +460,16 @@ int usbs_open(uint16_t vid, uint16_t pid, const char *path)
             return -1;
         }
         usbs_log(LOG_INFO, "usb: %s: kernel driver %.32s detached", found, gd.driver);
+        detached = 1;
     }
     if (ioctl(fd, USBDEVFS_CLAIMINTERFACE, &ifno) != 0) {
         int e = errno;
+        /* Someone else took it in between: give the driver back. */
+        if (detached) {
+            struct usbdevfs_ioctl cmd = { .ifno = (int)ifno, .ioctl_code = USBDEVFS_CONNECT,
+                                          .data = NULL };
+            (void)ioctl(fd, USBDEVFS_IOCTL, &cmd);
+        }
         snprintf(g_err, sizeof g_err, "%s: claim interface %u: %s%s", found, ifno,
                  strerror(e), e == EBUSY ? " (another program holds it)" : "");
         close(fd);
@@ -493,7 +515,6 @@ void usbs_close(void)
         (void)ioctl(g_dev.fd, USBDEVFS_RELEASEINTERFACE, &ifno);
         close(g_dev.fd);
     }
-    memset(g_urb_live, 0, sizeof g_urb_live);
     g_dev.fd = -1;
     usbs_purge_rx();
 }

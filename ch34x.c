@@ -162,6 +162,12 @@ static int ch34x_set_line(struct usbs_dev *d, const struct usbs_line *l)
     }
     if (l->stop_bits == 2)
         lcr |= CH34X_LCR_STOP_BITS_2;
+    /* Before version 0x30 the line format sits elsewhere: 8N1 only, so
+     * refuse anything else rather than report it as applied. */
+    if (version < 0x30 && (l->data_bits != 8 || l->parity != 'N' || l->stop_bits != 1)) {
+        errno = EINVAL;
+        return -1;
+    }
 
     /* Without bit 7 the chip holds received data until a full 32-byte
      * packet; version 0x27 has the bit inverted. */
@@ -170,7 +176,6 @@ static int ch34x_set_line(struct usbs_dev *d, const struct usbs_line *l)
     if (out_req(d, CH34X_REQ_WRITE_REG,
                 CH34X_REG_DIVISOR << 8 | CH34X_REG_PRESCALER, (uint16_t)val) != 0)
         return -1;
-    /* Before version 0x30 the line format sits elsewhere: 8N1 only. */
     if (version < 0x30)
         return 0;
     return out_req(d, CH34X_REQ_WRITE_REG, CH34X_REG_LCR2 << 8 | CH34X_REG_LCR, lcr);
@@ -240,6 +245,11 @@ static int ch34x_init(struct usbs_dev *d)
         (CH34X_LCR_ENABLE_RX | CH34X_LCR_ENABLE_TX)) {
         if (out_req(d, CH34X_REQ_SERIAL_INIT, 0, 0) != 0)
             return -1;
+        /* Chips before 0x30 have no LCR to tell a set-up chip by, so they
+         * get the init request on every start. */
+        if (d->chip_priv[PRIV_VERSION] < 0x30)
+            usbs_log(LOG_WARNING, "usb: ch34x version 0x%02x has no LCR: initialised on "
+                     "every start, RTS/DTR may drop on a restart", d->chip_priv[PRIV_VERSION]);
         usbs_log(LOG_INFO, "usb: ch34x version 0x%02x%s: initialised", d->chip_priv[PRIV_VERSION],
                  (d->chip_priv[PRIV_QUIRKS] & QUIRK_SIMULATE_BREAK) ? ", simulated break" : "");
     } else {

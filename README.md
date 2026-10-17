@@ -461,7 +461,10 @@ reopening the link after the adapter is lost. The differences:
 - `rts`/`dtr` in `/status` show the state last set: the chip cannot
   report its outputs.
 - CH340/CH341 only (`1a86:7523`, `1a86:7522`, `1a86:5523` and the IDs
-  the Linux `ch341` driver knows); Linux only.
+  the Linux `ch341` driver knows); Linux only. Checked on chip version
+  0x31; chips older than 0x30 work at 8N1 only and are initialised on
+  every start, so their lines may drop on a restart (vectis logs a
+  warning).
 
 The host needs a kernel with USB host support and usbfs (`/dev/bus/usb`,
 created by devtmpfs); `ch341` and `usbserial` are not needed. The user

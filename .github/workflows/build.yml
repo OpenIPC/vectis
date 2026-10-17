@@ -30,18 +30,24 @@ jobs:
       fail-fast: false
       matrix:
         platform:
+          # run: how the smoke test starts a binary (qemu-user for the
+          # cross builds, with the toolchain's libc as the sysroot)
           - name: x86_64
             cross: ""
             pkgs: ""
+            run: ""
           - name: arm
             cross: arm-linux-gnueabi-
-            pkgs: gcc-arm-linux-gnueabi
+            pkgs: gcc-arm-linux-gnueabi qemu-user
+            run: qemu-arm -L /usr/arm-linux-gnueabi
           - name: aarch64
             cross: aarch64-linux-gnu-
-            pkgs: gcc-aarch64-linux-gnu
+            pkgs: gcc-aarch64-linux-gnu qemu-user
+            run: qemu-aarch64 -L /usr/aarch64-linux-gnu
           - name: mipsel
             cross: mipsel-linux-gnu-
-            pkgs: gcc-mipsel-linux-gnu
+            pkgs: gcc-mipsel-linux-gnu qemu-user
+            run: qemu-mipsel -L /usr/mipsel-linux-gnu
 
     steps:
       - name: Checkout
@@ -67,11 +73,10 @@ jobs:
           ls -l vectis vectis-ch34x vectis-bootrom
 
       - name: Smoke test
-        if: matrix.platform.name == 'x86_64'
         run: |
-          ./vectis --version
-          ./vectis-ch34x --version
-          ./vectis-bootrom --version
+          ${{ matrix.platform.run }} ./vectis --version
+          ${{ matrix.platform.run }} ./vectis-ch34x --version
+          ${{ matrix.platform.run }} ./vectis-bootrom --version
 
       - name: Regression tests
         if: matrix.platform.name == 'x86_64'
