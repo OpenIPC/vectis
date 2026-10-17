@@ -1,8 +1,9 @@
 #
 # Copyright (c) OpenIPC  https://openipc.org  MIT License
 #
-# build.yml — CI for vectis: build vectis and vectis-bootrom for Linux
-# targets through the Makefile; any compiler warning fails the job.
+# build.yml — CI for vectis: build vectis, vectis-ch34x and vectis-bootrom
+# for Linux targets through the Makefile (any compiler warning fails the
+# job) and run the regression tests on x86_64.
 #
 
 name: Build
@@ -11,6 +12,10 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+
+# The build only reads the repository and uploads artifacts.
+permissions:
+  contents: read
 
 # A newer push to the same branch or PR cancels the run still in progress.
 concurrency:
@@ -53,19 +58,24 @@ jobs:
         run: |
           make clean
           make CC=${{ matrix.platform.cross }}gcc STRIP=${{ matrix.platform.cross }}strip \
-               vectis vectis-bootrom 2>&1 | tee build.log
+               all vectis-bootrom 2>&1 | tee build.log
           if grep -q 'warning:' build.log; then
             echo "::error::compiler warnings, see the build log"
             exit 1
           fi
-          file vectis vectis-bootrom
-          ls -l vectis vectis-bootrom
+          file vectis vectis-ch34x vectis-bootrom
+          ls -l vectis vectis-ch34x vectis-bootrom
 
       - name: Smoke test
         if: matrix.platform.name == 'x86_64'
         run: |
           ./vectis --version
+          ./vectis-ch34x --version
           ./vectis-bootrom --version
+
+      - name: Regression tests
+        if: matrix.platform.name == 'x86_64'
+        run: python3 tests/test_vectis.py .
 
       - name: Upload binaries
         uses: actions/upload-artifact@v5
@@ -73,5 +83,6 @@ jobs:
           name: vectis-${{ matrix.platform.name }}
           path: |
             vectis
+            vectis-ch34x
             vectis-bootrom
           if-no-files-found: error
