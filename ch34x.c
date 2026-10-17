@@ -194,15 +194,23 @@ static int ch34x_set_break(struct usbs_dev *d, int on)
     uint8_t r[2];
 
     if (d->chip_priv[PRIV_QUIRKS] & QUIRK_SIMULATE_BREAK) {
-        /* No break register: hold the line low with a NUL byte at the
-         * lowest rate (~170 ms at 46 bps), then restore the settings. */
+        /* No break register: a NUL byte at the lowest rate holds the line
+         * low for its start and data bits, ~195 ms at 46 bps; the stop
+         * bit ends it.  That is shorter than the 250 ms asked for, but
+         * enough for U-Boot and SysRq.  Then restore the settings. */
         struct usbs_line slow = { CH34X_MIN_BPS, 8, 1, 'N' };
         static const uint8_t nul = 0;
         if (!on)
             return ch34x_set_line(d, &d->line);
         if (ch34x_set_line(d, &slow) != 0)
             return -1;
-        return usbs_write(&nul, 1);
+        if (usbs_write(&nul, 1) != 0) {
+            int e = errno;
+            (void)ch34x_set_line(d, &d->line);   /* do not stay at 46 bps */
+            errno = e;
+            return -1;
+        }
+        return 0;
     }
     if (in_req(d, CH34X_REQ_READ_REG, reg, 0, r, sizeof r) != 0)
         return -1;

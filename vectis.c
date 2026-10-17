@@ -1327,6 +1327,15 @@ static int tcp_send_all(int fd, const char *data, size_t len)
                 struct pollfd p = { .fd = fd, .events = POLLOUT, .revents = 0 };
                 if (left <= 0)
                     return -1;
+#ifdef VECTIS_USB
+                /* -U: a slow client must not leave the USB receive URBs
+                 * unreaped; keep moving them into the backlog meanwhile. */
+                if (g_usb && g_fd >= 0) {
+                    if (left > 20)
+                        left = 20;
+                    (void)usbs_service();
+                }
+#endif
                 if (poll(&p, 1, (int)left) < 0 && errno != EINTR)
                     return -1;
                 continue;
@@ -2851,7 +2860,14 @@ int main(int argc, char **argv)
                 }
                 return 1;
             }
-            (void)power_set(1, "link");
+            if (power_set(1, "link") != 0) {
+                disconnect();
+                if (session_retry()) {
+                    retry_pause();
+                    continue;
+                }
+                return 1;
+            }
             log_message(LOG_INFO, "Opened USB device %s. baud=%u, data=%d, stop=%d, parity=%c",
                 usbs_name(), baud, data_bits, stop_bits, parity);
             if (g_interactive)
