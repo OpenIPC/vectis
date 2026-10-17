@@ -3,7 +3,8 @@
 #
 # build.yml — CI for vectis: build vectis, vectis-ch34x and vectis-bootrom
 # for Linux targets through the Makefile (any compiler warning fails the
-# job) and run the regression tests on x86_64.
+# job) and run the regression tests on x86_64; plus the static musl build
+# the releases ship (ci/build-static.sh, the same as release.yml).
 #
 
 name: Build
@@ -90,4 +91,23 @@ jobs:
             vectis
             vectis-ch34x
             vectis-bootrom
+          if-no-files-found: error
+
+  static:
+    name: Linux x86_64 static (musl)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build and test in alpine:3.22
+        run: docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v5
+        with:
+          name: vectis-x86_64-static
+          path: |
+            vectis
+            vectis-ch34x
           if-no-files-found: error

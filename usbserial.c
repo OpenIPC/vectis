@@ -48,6 +48,14 @@ const struct usbs_chip *const usbs_chips[] = {
 #define USBS_CTRL_TIMEOUT 1000  /* ms per control request */
 #define USBS_RX_SIZE     65536  /* receive backlog */
 
+/* ioctl() takes the request as unsigned long in glibc and uClibc, as int
+ * in musl; the usbfs numbers do not fit an int, so convert explicitly. */
+#ifdef __GLIBC__
+#define USBS_IOCTL(fd, req, arg) ioctl((fd), (unsigned long)(req), (arg))
+#else
+#define USBS_IOCTL(fd, req, arg) ioctl((fd), (int)(req), (arg))
+#endif
+
 static struct usbs_dev g_dev = { .fd = -1 };
 /* Allocated once: struct usbdevfs_urb ends in a flexible array, so it
  * cannot be an array element itself. */
@@ -289,7 +297,7 @@ int usbs_ctrl(struct usbs_dev *d, uint8_t req_type, uint8_t req,
     c.wLength      = len;
     c.timeout      = USBS_CTRL_TIMEOUT;
     c.data         = data;
-    return ioctl(d->fd, USBDEVFS_CONTROL, &c);
+    return USBS_IOCTL(d->fd, USBDEVFS_CONTROL, &c);
 }
 
 static int submit_in(int i)
@@ -302,7 +310,7 @@ static int submit_in(int i)
     u->buffer        = g_urb_buf[i];
     u->buffer_length = USBS_IN_SIZE;
     u->usercontext   = (void *)(intptr_t)i;
-    return ioctl(g_dev.fd, USBDEVFS_SUBMITURB, u);
+    return USBS_IOCTL(g_dev.fd, USBDEVFS_SUBMITURB, u);
 }
 
 static void rx_put(const uint8_t *p, size_t n)
@@ -354,7 +362,7 @@ int usbs_service(void)
         struct usbdevfs_urb *u = NULL;
         int i;
 
-        if (ioctl(g_dev.fd, USBDEVFS_REAPURBNDELAY, &u) != 0) {
+        if (USBS_IOCTL(g_dev.fd, USBDEVFS_REAPURBNDELAY, &u) != 0) {
             if (errno == EAGAIN)
                 return 0;
             if (errno == EINTR)
@@ -370,7 +378,7 @@ int usbs_service(void)
             break;
         case -EPIPE: {
             unsigned ep = g_dev.chip->ep_in;
-            (void)ioctl(g_dev.fd, USBDEVFS_CLEAR_HALT, &ep);
+            (void)USBS_IOCTL(g_dev.fd, USBDEVFS_CLEAR_HALT, &ep);
             break;
         }
         case -ENOENT: case -ECONNRESET: case -ENODEV: case -ESHUTDOWN:
@@ -414,7 +422,7 @@ int usbs_write(const uint8_t *buf, size_t n)
         b.len     = (unsigned)len;
         b.timeout = (unsigned)(1000 + 2 * len * 12 * 1000 / baud);   /* 12 bits/byte max */
         b.data    = (void *)buf;
-        r = ioctl(g_dev.fd, USBDEVFS_BULK, &b);
+        r = USBS_IOCTL(g_dev.fd, USBDEVFS_BULK, &b);
         if (r < 0) {
             if (errno == EINTR)
                 continue;
@@ -476,10 +484,10 @@ int usbs_open(uint16_t vid, uint16_t pid, const char *path)
     ifno = chip->iface;
     memset(&gd, 0, sizeof gd);
     gd.interface = ifno;
-    if (ioctl(fd, USBDEVFS_GETDRIVER, &gd) == 0 && strcmp(gd.driver, "usbfs") != 0) {
+    if (USBS_IOCTL(fd, USBDEVFS_GETDRIVER, &gd) == 0 && strcmp(gd.driver, "usbfs") != 0) {
         struct usbdevfs_ioctl cmd = { .ifno = (int)ifno, .ioctl_code = USBDEVFS_DISCONNECT,
                                       .data = NULL };
-        if (ioctl(fd, USBDEVFS_IOCTL, &cmd) < 0) {
+        if (USBS_IOCTL(fd, USBDEVFS_IOCTL, &cmd) < 0) {
             int e = errno;
             snprintf(g_err, sizeof g_err, "%s: detach kernel driver %.32s: %s",
                      found, gd.driver, strerror(e));
@@ -490,13 +498,13 @@ int usbs_open(uint16_t vid, uint16_t pid, const char *path)
         usbs_log(LOG_INFO, "usb: %s: kernel driver %.32s detached", found, gd.driver);
         detached = 1;
     }
-    if (ioctl(fd, USBDEVFS_CLAIMINTERFACE, &ifno) != 0) {
+    if (USBS_IOCTL(fd, USBDEVFS_CLAIMINTERFACE, &ifno) != 0) {
         int e = errno;
         /* Someone else took it in between: give the driver back. */
         if (detached) {
             struct usbdevfs_ioctl cmd = { .ifno = (int)ifno, .ioctl_code = USBDEVFS_CONNECT,
                                           .data = NULL };
-            (void)ioctl(fd, USBDEVFS_IOCTL, &cmd);
+            (void)USBS_IOCTL(fd, USBDEVFS_IOCTL, &cmd);
         }
         snprintf(g_err, sizeof g_err, "%s: claim interface %u: %s%s", found, ifno,
                  strerror(e), e == EBUSY ? " (another program holds it)" : "");
@@ -540,7 +548,7 @@ void usbs_close(void)
         unsigned ifno = g_dev.chip->iface;
         /* Releasing the interface kills our URBs; the modem lines stay
          * as they are, and the kernel driver is not reattached. */
-        (void)ioctl(g_dev.fd, USBDEVFS_RELEASEINTERFACE, &ifno);
+        (void)USBS_IOCTL(g_dev.fd, USBDEVFS_RELEASEINTERFACE, &ifno);
         close(g_dev.fd);
     }
     g_dev.fd = -1;

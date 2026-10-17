@@ -114,6 +114,16 @@ make
 python3 tests/test_vectis.py .
 ```
 
+В релизах ([GitHub Releases](https://github.com/OpenIPC/vectis/releases))
+лежат статические бинарные файлы на musl, которые работают на любом Linux
+своей архитектуры: `vectis-<версия>-linux-x86_64` и
+`vectis-ch34x-<версия>-linux-x86_64` с `SHA256SUMS`. Их собирает CI по тегу
+версии скриптом `ci/build-static.sh`; им же можно собрать их локально:
+
+```sh
+docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
+```
+
 ## Как это работает
 
 В режиме клиента RFC 2217 `vectis` подключается к TCP-серверу, переводит локальный терминал в режим raw
