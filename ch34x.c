@@ -246,15 +246,17 @@ static int ch34x_init(struct usbs_dev *d)
         d->chip_priv[PRIV_QUIRKS] = QUIRK_LIMITED_PRESCALER | QUIRK_SIMULATE_BREAK;
     }
 
-    if (in_req(d, CH34X_REQ_READ_REG, CH34X_REG_LCR2 << 8 | CH34X_REG_LCR, 0,
+    /* Chips before 0x30 have no LCR to tell a set-up chip by: always
+     * initialised.  Newer ones only when RX/TX are still disabled. */
+    if (d->chip_priv[PRIV_VERSION] >= 0x30 &&
+        in_req(d, CH34X_REQ_READ_REG, CH34X_REG_LCR2 << 8 | CH34X_REG_LCR, 0,
                buf, sizeof buf) != 0)
         return -1;
-    if ((buf[0] & (CH34X_LCR_ENABLE_RX | CH34X_LCR_ENABLE_TX)) !=
+    if (d->chip_priv[PRIV_VERSION] < 0x30 ||
+        (buf[0] & (CH34X_LCR_ENABLE_RX | CH34X_LCR_ENABLE_TX)) !=
         (CH34X_LCR_ENABLE_RX | CH34X_LCR_ENABLE_TX)) {
         if (out_req(d, CH34X_REQ_SERIAL_INIT, 0, 0) != 0)
             return -1;
-        /* Chips before 0x30 have no LCR to tell a set-up chip by, so they
-         * get the init request on every start. */
         if (d->chip_priv[PRIV_VERSION] < 0x30)
             usbs_log(LOG_WARNING, "usb: ch34x version 0x%02x has no LCR: initialised on "
                      "every start, RTS/DTR may drop on a restart", d->chip_priv[PRIV_VERSION]);

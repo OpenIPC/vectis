@@ -58,8 +58,34 @@ static uint8_t g_rx[USBS_RX_SIZE];
 static size_t  g_rx_head, g_rx_len;
 static int     g_rx_overflow;       /* logged once per overflow */
 
+/* The last bulk OUT: when it completed and how long it was, so a break
+ * can wait until those bytes have left the chip's FIFO. */
+static struct timespec g_out_done;
+static size_t          g_out_len;
+
 static char g_err[160];
 static char g_name[64];
+
+static long long ms_since(const struct timespec *t)
+{
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (long long)(now.tv_sec - t->tv_sec) * 1000 + (now.tv_nsec - t->tv_nsec) / 1000000;
+}
+
+/* Sleep about ms milliseconds in 5 ms slices, reaping the IN side. */
+static void wait_reaping(long long ms)
+{
+    struct timespec start;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    while (ms_since(&start) < ms) {
+        struct timespec slice = { 0, 5 * 1000000L };
+        nanosleep(&slice, NULL);
+        (void)usbs_service();
+    }
+}
 
 const char *usbs_error(void) { return g_err; }
 const char *usbs_name(void)  { return g_name; }
@@ -396,6 +422,8 @@ int usbs_write(const uint8_t *buf, size_t n)
         }
         buf += r;
         n   -= (size_t)r;
+        clock_gettime(CLOCK_MONOTONIC, &g_out_done);
+        g_out_len = (size_t)r;
         /* Keep the IN side drained while the chip is busy sending. */
         if (usbs_service() != 0)
             return -1;
@@ -560,30 +588,22 @@ int usbs_set_modem(int dtr, int rts)
 
 int usbs_send_break(int ms)
 {
-    struct timespec now, end;
+    uint32_t baud = g_dev.line.baud ? g_dev.line.baud : 115200;
 
     if (g_dev.fd < 0) {
         errno = ENODEV;
         return -1;
     }
+    /* A finished bulk OUT only means the chip has the bytes: let the
+     * last chunk leave the wire first (12 bits per byte at most), as
+     * tcsendbreak() drains a tty. */
+    if (g_out_len > 0) {
+        long long left = (long long)g_out_len * 12 * 1000 / baud + 5 - ms_since(&g_out_done);
+        if (left > 0)
+            wait_reaping(left);
+    }
     if (g_dev.chip->set_break(&g_dev, 1) != 0)
         return -1;
-    /* Wait in 10 ms slices, reaping the IN side meanwhile. */
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    end.tv_sec  += ms / 1000;
-    end.tv_nsec += (long)(ms % 1000) * 1000000L;
-    if (end.tv_nsec >= 1000000000L) {
-        end.tv_sec++;
-        end.tv_nsec -= 1000000000L;
-    }
-    for (;;) {
-        struct timespec slice = { 0, 10 * 1000000L };
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        if (now.tv_sec > end.tv_sec ||
-            (now.tv_sec == end.tv_sec && now.tv_nsec >= end.tv_nsec))
-            break;
-        nanosleep(&slice, NULL);
-        (void)usbs_service();
-    }
+    wait_reaping(ms);
     return g_dev.chip->set_break(&g_dev, 0);
 }
