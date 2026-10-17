@@ -58,7 +58,8 @@ if grep -q 'warning:' build.log; then
     exit 1
 fi
 rm -f build.log
-file vectis vectis-bootrom
+# informational only: `file` is not a prerequisite
+if command -v file >/dev/null; then file vectis vectis-bootrom; fi
 
 # The binary must start and report the version vectis.c defines.
 ver=$(sed -n 's/^#define PROGRAM_VERSION *"\(.*\)"/\1/p' vectis.c)
