@@ -46,8 +46,15 @@ endif
 
 all: $(TARGET)
 
+# The USB settings decide what goes into vectis, so a change of USB or
+# USB_CHIPS rebuilds it without `make clean`: .build-config is rewritten
+# only when they differ from the last build.
+BUILD_CONFIG := USB=$(USB) USB_CHIPS=$(USB_CHIPS)
+.build-config: FORCE
+	@echo '$(BUILD_CONFIG)' | cmp -s - $@ || echo '$(BUILD_CONFIG)' > $@
+
 # USB=1: -DVECTIS_USB -DVECTIS_CHIP_<CHIP> for every chip, vectis.c usbserial.c <chip>.c
-$(TARGET): vectis.c $(USB_DEPS)
+$(TARGET): vectis.c $(USB_DEPS) .build-config
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(USB_FLAGS) -o $@ vectis.c $(USB_SRC) $(LDFLAGS)
 	@if [ "$(DEBUG)" = "0" ]; then $(STRIP) $@; fi
 
@@ -58,6 +65,6 @@ vectis-bootrom: vectis-bootrom.c
 
 # vectis-<chip>: the separate USB builds before 1.8.0, removed if left over.
 clean:
-	rm -f $(TARGET) vectis-bootrom $(addprefix vectis-,$(USB_CHIPS))
+	rm -f $(TARGET) vectis-bootrom $(addprefix vectis-,$(USB_CHIPS)) .build-config
 
-.PHONY: all clean
+.PHONY: all clean FORCE

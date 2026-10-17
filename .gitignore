@@ -2,3 +2,4 @@ vectis
 vectis-bootrom
 build.log
 dist/
+.build-config

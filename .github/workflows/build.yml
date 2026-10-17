@@ -26,10 +26,12 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or PR cancels the run still in progress.
+# A newer push to the same branch or PR cancels the run still in progress;
+# on master it waits instead, so a release job is never stopped between
+# deleting the old "latest" and creating the new one.
 concurrency:
   group: build-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   version:
@@ -128,6 +130,10 @@ jobs:
           fi
           ${{ matrix.platform.run }} ./vectis --version
 
+      - name: Regression tests without USB (USB=0)
+        if: matrix.platform.name == 'x86_64'
+        run: python3 tests/test_vectis.py .
+
   static:
     name: Linux x86_64 static (musl)
     runs-on: ubuntu-latest
@@ -189,7 +195,10 @@ jobs:
 
           Check: \`sha256sum -c SHA256SUMS\`. Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
           NOTES
-          gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+          # "latest" is missing only before the first publication
+          if gh release view latest >/dev/null 2>&1; then
+            gh release delete latest --cleanup-tag --yes
+          fi
           gh release create latest dist/* \
             --latest \
             --title "Vectis ${VER}" \
