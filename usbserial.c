@@ -44,7 +44,6 @@ const struct usbs_chip *const usbs_chips[] = {
 
 #define USBS_N_IN        16     /* IN URBs kept queued */
 #define USBS_IN_MAX      512    /* largest IN URB: a high-speed bulk packet */
-#define USBS_IN_DEFAULT  64     /* IN URB size when the descriptor is unreadable */
 #define USBS_OUT_CHUNK   256    /* max bytes per synchronous OUT transfer */
 #define USBS_CTRL_TIMEOUT 1000  /* ms per control request */
 #define USBS_RX_SIZE     65536  /* receive backlog */
@@ -63,7 +62,7 @@ static struct usbs_dev g_dev = { .fd = -1 };
 static struct usbdevfs_urb *g_urb[USBS_N_IN];
 static uint8_t g_urb_buf[USBS_N_IN][USBS_IN_MAX];
 /* Bytes per IN URB: one packet of the IN endpoint (see in_packet_size()). */
-static size_t g_in_size = USBS_IN_DEFAULT;
+static size_t g_in_size;
 
 static uint8_t g_rx[USBS_RX_SIZE];
 static size_t  g_rx_head, g_rx_len;
@@ -546,11 +545,18 @@ int usbs_open(uint16_t vid, uint16_t pid, const char *path)
         return -1;
     }
 
+    /* No guessing: a URB larger than the packet brings the held-back
+     * tail back, a smaller one overflows. */
     g_in_size = in_packet_size(fd, ifno, chip->ep_in);
     if (g_in_size == 0 || g_in_size > USBS_IN_MAX) {
-        usbs_log(LOG_WARNING, "usb: %s: no usable wMaxPacketSize for IN endpoint 0x%02x, using %d",
-                 found, chip->ep_in, USBS_IN_DEFAULT);
-        g_in_size = USBS_IN_DEFAULT;
+        snprintf(g_err, sizeof g_err, "%s: no usable wMaxPacketSize for IN endpoint 0x%02x (%u)",
+                 found, chip->ep_in, (unsigned)g_in_size);
+        /* As usbs_close(): the kernel driver is not given back, its probe
+         * would drop the modem lines on every retry of the open. */
+        (void)USBS_IOCTL(fd, USBDEVFS_RELEASEINTERFACE, &ifno);
+        close(fd);
+        errno = EPROTO;
+        return -1;
     }
 
     memset(&g_dev, 0, sizeof g_dev);
