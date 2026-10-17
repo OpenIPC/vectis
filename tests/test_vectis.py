@@ -364,6 +364,14 @@ def test_usb_cli():
         check(r.returncode == 1 and "no USB device at 9-9.9" in r.stderr,
               "%s: absent device reported" % name)
         wport = free_port()
+        p = start([b, "-U", "usb:1a86:7523@9-9.9", "-w", "127.0.0.1:%d" % wport])
+        try:
+            st = wait_status(wport, "mode", "usb")
+            check(st.get("target") == "usb:1a86:7523@9-9.9",
+                  "%s: /status target %r" % (name, st.get("target")))
+        finally:
+            stop(p)
+        wport = free_port()
         p = start([b, "-U", "9-9.9", "-w", "127.0.0.1:%d" % wport])
         try:
             st = wait_status(wport, "mode", "usb")

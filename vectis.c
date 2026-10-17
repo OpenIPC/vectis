@@ -2813,7 +2813,8 @@ int main(int argc, char **argv)
 
     g_serial_mode = (device != NULL || usb_spec != NULL);
     if (g_usb)
-        snprintf(g_web_target, sizeof g_web_target, "usb:%s", usb_spec);
+        snprintf(g_web_target, sizeof g_web_target, "%s%s",
+                 strncmp(usb_spec, "usb:", 4) == 0 ? "" : "usb:", usb_spec);
     else if (g_serial_mode)
         snprintf(g_web_target, sizeof g_web_target, "%s", device);
     else
