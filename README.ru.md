@@ -5,6 +5,7 @@
 [English](README.md) | **Русский** | [简体中文](README.zh-CN.md)
 
 [![Build](https://github.com/OpenIPC/vectis/actions/workflows/build.yml/badge.svg)](https://github.com/OpenIPC/vectis/actions/workflows/build.yml)
+[![Release](https://img.shields.io/badge/download-latest-blue)](https://github.com/OpenIPC/vectis/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Code size](https://img.shields.io/github/languages/code-size/OpenIPC/vectis)](https://github.com/OpenIPC/vectis)
 [![Platform](https://img.shields.io/badge/platform-Linux-brightgreen)](#требования)
@@ -29,10 +30,10 @@ OpenIPC UART 38x38. Один небольшой бинарный файл, `vect
 терминала), сама заново открывает связь с устройством, если адаптер
 отключили, и не требует ничего, кроме libc.
 
-Вторая сборка, `vectis-ch34x`, добавляет `-U`: она сама управляет
-USB-UART адаптером CH340/CH341 из пространства пользователя через usbfs —
-для роутеров и других плат-отладчиков, в ядре которых нет драйвера
-`ch341` и пересобрать его нельзя; см. «Режим USB без драйвера ядра» ниже.
+С `-U` он сам управляет USB-UART адаптером CH340/CH341 из пространства
+пользователя через usbfs — для роутеров и других плат-отладчиков, в ядре
+которых нет драйвера `ch341` и пересобрать его нельзя; см. «Режим USB без
+драйвера ядра» ниже.
 
 <p align="center">
   <img src="device.jpg" alt="Плата OpenIPC UART 38x38" width="640">
@@ -69,7 +70,7 @@ USB-UART адаптером CH340/CH341 из пространства польз
 - Для сборки — компилятор C99 (GCC или Clang) и `make`
 - Права на чтение и запись последовательного устройства, обычно — членство
   в группе `dialout`
-- Для `-U` (`vectis-ch34x`): usbfs (`/dev/bus/usb`) и право записи в узел
+- Для `-U`: usbfs (`/dev/bus/usb`) и право записи в узел
   адаптера там; драйверы `ch341` и `usbserial` не нужны
 
 ## Сборка
@@ -78,11 +79,11 @@ USB-UART адаптером CH340/CH341 из пространства польз
 make
 ```
 
-Собираются `vectis` и `vectis-ch34x` (с оптимизацией по размеру, без
-отладочных символов). `make vectis` или `make vectis-ch34x` собирает
-один из них, `make USB=0` — только `vectis`. `USB_CHIPS` перечисляет
-семейства USB-микросхем для `-U`, по одному бинарному файлу
-`vectis-<чип>` на каждое; пока есть только `ch34x`.
+Собирается `vectis` с `-U` (с оптимизацией по размеру, без отладочных
+символов). `USB_CHIPS` перечисляет семейства USB-микросхем для `-U`, все
+они входят в один бинарный файл; микросхема выбирается при запуске по её
+USB VID:PID, пока есть только `ch34x`. `make USB=0` собирает `vectis` без
+`-U` (только tty и RFC 2217).
 `make DEBUG=1` вместо этого собирает с отладочными символами и без
 оптимизации. `make vectis-bootrom` собирает исходный мост по запросу;
 `make all` его не собирает.
@@ -103,8 +104,8 @@ make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
 время изменения исходника и бинарника, поэтому другой `CC` сам по себе
 не пересоберёт уже существующий бинарный файл.
 
-CI собирает `vectis`, `vectis-ch34x` и `vectis-bootrom` для x86_64, arm,
-aarch64 и mipsel при каждом push и pull request; бинарные файлы
+CI собирает `vectis` и `vectis-bootrom` для x86_64, arm, aarch64 и mipsel
+при каждом push и pull request и проверяет, что собирается `make USB=0`; бинарные файлы
 прикладываются к каждому запуску как артефакты. На x86_64 CI ещё
 запускает регрессионные тесты: им нужен только Python 3, а вместо
 последовательного устройства они используют pty:
@@ -114,11 +115,29 @@ make
 python3 tests/test_vectis.py .
 ```
 
-В релизах ([GitHub Releases](https://github.com/OpenIPC/vectis/releases))
-лежат статические бинарные файлы на musl, которые работают на любом Linux
-своей архитектуры: `vectis-<версия>-linux-x86_64` и
-`vectis-ch34x-<версия>-linux-x86_64` с `SHA256SUMS`. Их собирает CI по тегу
-версии скриптом `ci/build-static.sh`; им же можно собрать их локально:
+## Релизы и постоянные ссылки
+
+Релиз один — [`latest`](https://github.com/OpenIPC/vectis/releases/latest).
+CI пересобирает его при каждом push в `master`, когда проходят все сборки; в
+заголовке — версия (`Vectis 1.8.0`), релизы по версиям не хранятся. В нём
+статический бинарный файл на musl, который работает на любом Linux своей
+архитектуры, и `SHA256SUMS`. В именах файлов нет версии, поэтому эти ссылки не
+меняются:
+
+| Что                   | Ссылка                                                                           |
+|-----------------------|----------------------------------------------------------------------------------|
+| страница релиза       | <https://github.com/OpenIPC/vectis/releases/latest>                              |
+| `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
+| `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
+
+```sh
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS && chmod 755 vectis-linux-x86_64
+```
+
+Релизный файл собирается скриптом `ci/build-static.sh`; им же можно собрать его
+локально:
 
 ```sh
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
@@ -182,7 +201,7 @@ docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
 
 - `-u DEVICE`, `--device DEVICE` — путь к локальному tty-устройству, например `/dev/ttyUSB0`
 
-Режим USB (только `vectis-ch34x`):
+Режим USB (нет в сборке `make USB=0`):
 
 - `-U SPEC`, `--usb SPEC` — USB-UART через usbfs; `SPEC` — USB-путь
   адаптера (`1-1.3.4`, как в `/sys/bus/usb/devices`), `usb:VID:PID`
@@ -454,7 +473,7 @@ Telnet-клиента) или `link` (линии выставлены при о�
 
 ## Режим USB без драйвера ядра (`-U`)
 
-`vectis-ch34x` умеет сам управлять адаптером CH340/CH341 через интерфейс
+`vectis -U` сам управляет адаптером CH340/CH341 через интерфейс
 usbfs ядра, без драйверов `ch341` и `usbserial`. Этот режим нужен только
 на хостах, в ядре которых нет драйвера и пересобрать его нельзя: на
 роутерах и других платах, которые служат отладчиками. Везде остальном,
@@ -462,8 +481,8 @@ usbfs ядра, без драйверов `ch341` и `usbserial`. Этот ре�
 и `-u /dev/ttyUSB0`.
 
 ```sh
-./vectis-ch34x -U 1-1.3.4 -l 2021 -w 2081      # по USB-пути
-./vectis-ch34x -U usb:1a86:7523                # первый найденный CH340
+./vectis -U 1-1.3.4 -l 2021 -w 2081      # по USB-пути
+./vectis -U usb:1a86:7523                # первый найденный CH340
 ```
 
 Всё работает так же, как с `-u`: консоль, `-l`, `-w`, `Ctrl+P`, `Ctrl+B`,

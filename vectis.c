@@ -102,7 +102,7 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.7.0"
+#define PROGRAM_VERSION      "1.8.0"
 #define PROGRAM_RELEASE_DATE "2026-10-17"
 
 #define RECONNECT_DELAY_S 5
@@ -2774,7 +2774,7 @@ int main(int argc, char **argv)
         }
         g_usb = 1;
 #else
-        log_message(LOG_ERR, "-U: this build has no USB support (use vectis-ch34x)");
+        log_message(LOG_ERR, "-U: this build has no USB support (built with USB=0)");
         return 1;
 #endif
     }

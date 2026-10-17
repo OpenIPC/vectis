@@ -1,13 +1,18 @@
 #
 # Copyright (c) OpenIPC  https://openipc.org  MIT License
 #
-# build.yml — CI for vectis: build vectis, vectis-ch34x and vectis-bootrom
+# build.yml — CI for vectis: build vectis (with -U) and vectis-bootrom
 # for Linux targets through the Makefile (any compiler warning fails the
-# job) and run the regression tests on x86_64; plus the static musl build
-# the releases ship (ci/build-static.sh, the same as release.yml).
+# job), check that `make USB=0` still builds, and run the regression tests
+# on x86_64; plus the static musl build the release ships
+# (ci/build-static.sh).
 # On pull requests, .github/check-version.sh checks that a change to the
 # code or the build comes with a new PROGRAM_VERSION and its CHANGELOG.md
 # section.
+# Release: one release only, "latest", replaced by every push to master
+# once all builds pass. Its title carries PROGRAM_VERSION ("Vectis 1.8.0"),
+# its notes are short; the history is in CHANGELOG.md. No versioned
+# releases or v* tags are kept.
 #
 
 name: Build
@@ -21,10 +26,12 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or PR cancels the run still in progress.
+# A newer push to the same branch or PR cancels the run still in progress;
+# on master it waits instead, so a release job is never stopped between
+# deleting the old "latest" and creating the new one.
 concurrency:
   group: build-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   version:
@@ -89,13 +96,12 @@ jobs:
             echo "::error::compiler warnings, see the build log"
             exit 1
           fi
-          file vectis vectis-ch34x vectis-bootrom
-          ls -l vectis vectis-ch34x vectis-bootrom
+          file vectis vectis-bootrom
+          ls -l vectis vectis-bootrom
 
       - name: Smoke test
         run: |
           ${{ matrix.platform.run }} ./vectis --version
-          ${{ matrix.platform.run }} ./vectis-ch34x --version
           ${{ matrix.platform.run }} ./vectis-bootrom --version
 
       - name: Regression tests
@@ -108,9 +114,25 @@ jobs:
           name: vectis-${{ matrix.platform.name }}
           path: |
             vectis
-            vectis-ch34x
             vectis-bootrom
           if-no-files-found: error
+
+      # make USB=0 stays a build option: vectis without -U
+      - name: Build without USB (USB=0)
+        shell: bash
+        run: |
+          make clean
+          make CC=${{ matrix.platform.cross }}gcc STRIP=${{ matrix.platform.cross }}strip \
+               USB=0 2>&1 | tee build.log
+          if grep -q 'warning:' build.log; then
+            echo "::error::compiler warnings, see the build log"
+            exit 1
+          fi
+          ${{ matrix.platform.run }} ./vectis --version
+
+      - name: Regression tests without USB (USB=0)
+        if: matrix.platform.name == 'x86_64'
+        run: python3 tests/test_vectis.py .
 
   static:
     name: Linux x86_64 static (musl)
@@ -120,13 +142,65 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build and test in alpine:3.22
-        run: docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
+        run: |
+          docker run --rm -v "$PWD":/src -w /src alpine:3.22 \
+            sh ci/build-static.sh dist x86_64
 
       - name: Upload binaries
         uses: actions/upload-artifact@v5
         with:
           name: vectis-x86_64-static
-          path: |
-            vectis
-            vectis-ch34x
+          path: dist/*
           if-no-files-found: error
+
+  # The one release, "latest": rebuilt from every push to master after all
+  # builds pass, from the static binary built and tested above.
+  release:
+    name: Publish "latest"
+    needs: [linux, static]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # replace the release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download
+        uses: actions/download-artifact@v5
+        with:
+          name: vectis-x86_64-static
+          path: dist
+
+      - name: Check the files
+        run: |
+          ver=$(sed -n 's/^#define PROGRAM_VERSION *"\(.*\)"/\1/p' vectis.c)
+          [ -n "$ver" ] || { echo "::error::no PROGRAM_VERSION in vectis.c"; exit 1; }
+          (cd dist && sha256sum -c SHA256SUMS)
+          chmod 755 dist/vectis-linux-x86_64
+          # first line: "<argv[0]> <version>"
+          got=$(dist/vectis-linux-x86_64 --version | head -1 | awk '{print $NF}')
+          echo "binary says $got, vectis.c says $ver"
+          [ "$got" = "$ver" ] || { echo "::error::the binary is $got, not $ver"; exit 1; }
+          echo "VER=$ver" >> "$GITHUB_ENV"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<NOTES
+          Vectis ${VER} (${GITHUB_SHA::7}): static Linux binary (musl), no dependencies.
+
+          - \`vectis-linux-x86_64\` — serial console, RFC 2217 client/server, web power console (\`-u\`, \`-h/-p\`, \`-l\`, \`-w\`) and \`-U\`: CH340/CH341 adapters driven through usbfs on hosts without a kernel driver
+
+          Check: \`sha256sum -c SHA256SUMS\`. Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
+          NOTES
+          # "latest" is missing only before the first publication
+          if gh release view latest >/dev/null 2>&1; then
+            gh release delete latest --cleanup-tag --yes
+          fi
+          gh release create latest dist/* \
+            --latest \
+            --title "Vectis ${VER}" \
+            --target "${GITHUB_SHA}" \
+            --notes-file notes.md
