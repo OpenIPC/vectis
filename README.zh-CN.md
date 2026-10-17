@@ -115,6 +115,8 @@ python3 tests/test_vectis.py .
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
 ```
 
+各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 工作原理
 
 在 RFC 2217 客户端模式下，`vectis` 连接到 TCP 服务器，将本地终端切换为原始模式，

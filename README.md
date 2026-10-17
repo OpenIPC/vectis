@@ -121,6 +121,8 @@ with `SHA256SUMS`. They are built by CI from a version tag with
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
 ```
 
+The change history of every version is in [CHANGELOG.md](CHANGELOG.md).
+
 ## How it works
 
 In RFC 2217 client mode `vectis` connects to a TCP server, puts the local terminal into raw mode,
