@@ -120,29 +120,34 @@ python3 tests/test_vectis.py .
 Релиз один — [`latest`](https://github.com/OpenIPC/vectis/releases/latest).
 CI пересобирает его при каждом push в `master`, когда проходят все сборки; в
 заголовке — версия (`Vectis 1.8.0`), релизы по версиям не хранятся. В нём
-статический бинарный файл на musl, который работает на любом Linux своей
-архитектуры, и `SHA256SUMS`. В именах файлов нет версии, поэтому эти ссылки не
-меняются:
+статические бинарные файлы на musl, которые работают на любом Linux своей
+архитектуры, и `SHA256SUMS`: `vectis-linux-x86_64` для ПК и серверов,
+`vectis-linux-mipsel` для роутеров MIPS little-endian (MediaTek MT7620/MT7621/MT7628
+и подобные, OpenWrt) — soft-float, работает с FPU и без него. В именах файлов нет
+версии, поэтому эти ссылки не меняются:
 
 | Что                   | Ссылка                                                                           |
 |-----------------------|----------------------------------------------------------------------------------|
 | страница релиза       | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
+| `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
 | `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
 
 ```sh
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS && chmod 755 vectis-linux-x86_64
+sha256sum -c --ignore-missing SHA256SUMS && chmod 755 vectis-linux-x86_64
 ```
 
 О каждой новой версии сообщается в Telegram-каналах OpenIPC ([наши каналы](https://openipc.org/our-channels)).
 
-Релизный файл собирается скриптом `ci/build-static.sh`; им же можно собрать его
-локально:
+Релизные файлы собираются скриптами `ci/build-static.sh` (x86_64) и
+`ci/build-mipsel.sh` (тулчейн OpenWrt 23.05.5, скачивается один раз и проверяется по
+SHA256; нужны curl, xz, make и qemu-mipsel); ими же можно собрать их локально:
 
 ```sh
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
+ci/build-mipsel.sh
 ```
 
 История изменений по версиям — в [CHANGELOG.md](CHANGELOG.md).

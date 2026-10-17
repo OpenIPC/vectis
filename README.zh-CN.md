@@ -111,28 +111,34 @@ python3 tests/test_vectis.py .
 
 只有一个发布版本：[`latest`](https://github.com/OpenIPC/vectis/releases/latest)。
 每次 push 到 `master` 且所有构建通过后，CI 都会重新构建它；标题中带有版本号
-（`Vectis 1.8.0`），不保留按版本的发布。其中包含一个基于 musl 的静态二进制
-文件，可在同一架构的任何 Linux 上运行，并附带 `SHA256SUMS`。文件名不含版本号，
+（`Vectis 1.8.0`），不保留按版本的发布。其中包含基于 musl 的静态二进制文件，
+可在同一架构的任何 Linux 上运行，并附带 `SHA256SUMS`：`vectis-linux-x86_64`
+用于 PC 和服务器，`vectis-linux-mipsel` 用于 MIPS 小端路由器（MediaTek
+MT7620/MT7621/MT7628 等，OpenWrt），软浮点，有无 FPU 均可运行。文件名不含版本号，
 因此以下链接始终不变：
 
 | 内容                  | 链接                                                                             |
 |-----------------------|----------------------------------------------------------------------------------|
 | 发布页面              | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
+| `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
 | `SHA256SUMS`          | <https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS>          |
 
 ```sh
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS && chmod 755 vectis-linux-x86_64
+sha256sum -c --ignore-missing SHA256SUMS && chmod 755 vectis-linux-x86_64
 ```
 
 每个新版本都会在 OpenIPC 的 Telegram 频道中发布（[我们的频道](https://openipc.org/our-channels)）。
 
-发布用的二进制文件由 `ci/build-static.sh` 构建；也可以用该脚本在本地构建：
+发布用的二进制文件由 `ci/build-static.sh`（x86_64）和 `ci/build-mipsel.sh`
+（OpenWrt 23.05.5 工具链，只下载一次并校验 SHA256；需要 curl、xz、make 和
+qemu-mipsel）构建；也可以用这些脚本在本地构建：
 
 ```sh
 docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
+ci/build-mipsel.sh
 ```
 
 各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。
