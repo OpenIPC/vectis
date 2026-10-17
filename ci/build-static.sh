@@ -17,7 +17,12 @@ set -eu
 apk add -q build-base linux-headers python3 file
 
 make clean
-make LDFLAGS="-static -Wl,--gc-sections" all vectis-bootrom 2>&1 | tee build.log
+# No pipe: a failing make must stop the script (sh has no pipefail).
+if ! make LDFLAGS="-static -Wl,--gc-sections" all vectis-bootrom > build.log 2>&1; then
+    cat build.log
+    exit 1
+fi
+cat build.log
 if grep -q 'warning:' build.log; then
     echo "compiler warnings, see above" >&2
     exit 1
@@ -33,5 +38,8 @@ if [ $# -ge 3 ]; then
     mkdir -p "$out"
     cp vectis "$out/vectis-$ver-linux-$arch"
     cp vectis-ch34x "$out/vectis-ch34x-$ver-linux-$arch"
-    (cd "$out" && sha256sum vectis-* > SHA256SUMS && cat SHA256SUMS)
+    # Only this build's files: an OUTDIR reused for another version
+    # must not mix older binaries into the checksums.
+    (cd "$out" && sha256sum "vectis-$ver-linux-$arch" "vectis-ch34x-$ver-linux-$arch" \
+        > SHA256SUMS && cat SHA256SUMS)
 fi
