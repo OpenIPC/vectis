@@ -49,8 +49,8 @@ On a Linux PC with the board plugged in, as a user in the `dialout` group:
 
 ```sh
 # 1. Download the static binary
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-install -m 755 vectis-linux-x86_64 vectis
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  install -m 755 vectis-linux-x86_64 vectis
 
 # 2. The board's console: Ctrl+P = reset (power cycle), Ctrl+B = break, Ctrl+] = exit
 ./vectis -u /dev/ttyUSB0
@@ -177,8 +177,8 @@ these links never change:
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
 
 ```sh
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-chmod 755 vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  chmod 755 vectis-linux-x86_64
 ```
 
 The binaries of every new version are also posted to the OpenIPC Telegram channel ([our channels](https://openipc.org/our-channels)), for the archive and test downloads.

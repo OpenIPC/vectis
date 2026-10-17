@@ -50,8 +50,8 @@ OpenIPC UART 38x38. Один небольшой бинарный файл, `vect
 
 ```sh
 # 1. Скачать статический бинарный файл
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-install -m 755 vectis-linux-x86_64 vectis
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  install -m 755 vectis-linux-x86_64 vectis
 
 # 2. Консоль платы: Ctrl+P — сброс (перезапуск питания), Ctrl+B — break, Ctrl+] — выход
 ./vectis -u /dev/ttyUSB0
@@ -180,8 +180,8 @@ CI пересобирает его при каждом push в `master`, ког�
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
 
 ```sh
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-chmod 755 vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  chmod 755 vectis-linux-x86_64
 ```
 
 Бинарники каждой новой версии также выкладываются в Telegram-канал OpenIPC ([наши каналы](https://openipc.org/our-channels)) — для архива и тестовых скачиваний.

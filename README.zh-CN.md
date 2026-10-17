@@ -46,8 +46,8 @@ HiSilicon boot ROM 捕获扩展而保留在仓库中；其说明见
 
 ```sh
 # 1. 下载静态二进制文件
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-install -m 755 vectis-linux-x86_64 vectis
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  install -m 755 vectis-linux-x86_64 vectis
 
 # 2. 板子的控制台：Ctrl+P = 复位（断电重启），Ctrl+B = break，Ctrl+] = 退出
 ./vectis -u /dev/ttyUSB0
@@ -169,8 +169,8 @@ MT7620/MT7621/MT7628 等，OpenWrt），软浮点，有无 FPU 均可运行。�
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
 
 ```sh
-curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64
-chmod 755 vectis-linux-x86_64
+curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
+  chmod 755 vectis-linux-x86_64
 ```
 
 每个新版本的二进制文件也会发布到 OpenIPC 的 Telegram 频道（[我们的频道](https://openipc.org/our-channels)），用于存档和测试下载。
