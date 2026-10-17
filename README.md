@@ -28,6 +28,11 @@ It runs interactively in a terminal or as a daemon (`systemd`, no
 terminal), reopens the device link on its own when an adapter is
 unplugged, and needs nothing but libc.
 
+A second build, `vectis-ch34x`, adds `-U`: it drives a CH340/CH341
+USB-UART adapter from user space through usbfs, for routers and other
+boards used as debug hosts whose kernel has no `ch341` driver and cannot
+be rebuilt; see "USB mode without a kernel driver" below.
+
 <p align="center">
   <img src="device.jpg" alt="OpenIPC UART 38x38 board" width="640">
 </p>
@@ -63,6 +68,8 @@ build.
 - A C99 compiler (GCC or Clang) and `make` to build
 - Read/write access to the serial device, usually membership in the
   `dialout` group
+- For `-U` (`vectis-ch34x`): usbfs (`/dev/bus/usb`) and write access to
+  the adapter's node there; no `ch341` or `usbserial` driver
 
 ## Build
 
@@ -70,7 +77,10 @@ build.
 make
 ```
 
-This builds `vectis` (size-optimised and stripped). `make DEBUG=1` builds
+This builds `vectis` and `vectis-ch34x` (size-optimised and stripped).
+`make vectis` or `make vectis-ch34x` builds one of them, `make USB=0`
+only `vectis`. `USB_CHIPS` lists the USB chip families for `-U`, one
+binary `vectis-<chip>` each; `ch34x` is the only one so far. `make DEBUG=1` builds
 with debug symbols and no optimisation instead. `make vectis-bootrom`
 builds the original bridge on demand; `make all` does not.
 
@@ -90,9 +100,16 @@ Run `make clean` when switching toolchains: Make compares only the
 source and binary timestamps, so a different `CC` alone does not
 rebuild a binary that is already there.
 
-CI builds both programs for x86_64, arm, aarch64 and mipsel on every
-push and pull request; the binaries are attached to each run as
-artifacts.
+CI builds `vectis`, `vectis-ch34x` and `vectis-bootrom` for x86_64, arm,
+aarch64 and mipsel on every push and pull request; the binaries are
+attached to each run as artifacts. On x86_64 it also runs the regression
+tests, which need only Python 3 and use a pty in place of the serial
+device:
+
+```sh
+make
+python3 tests/test_vectis.py .
+```
 
 ## How it works
 
@@ -141,7 +158,14 @@ Direct serial mode:
 
 - `-u DEVICE`, `--device DEVICE` — local tty device path, for example `/dev/ttyUSB0`
 
-The two modes are mutually exclusive.
+USB mode (`vectis-ch34x` only):
+
+- `-U SPEC`, `--usb SPEC` — USB-UART driven through usbfs; `SPEC` is the
+  adapter's USB path (`1-1.3.4`, as in `/sys/bus/usb/devices`),
+  `usb:VID:PID` (the first such device) or `usb:VID:PID@PATH`; see
+  "USB mode without a kernel driver" below
+
+The modes are mutually exclusive.
 
 Port settings (default **115200 8N1**):
 
@@ -161,7 +185,7 @@ Connection options:
 - `-t MS`, `--reset-ms MS` — reset pulse duration in milliseconds,
   `1..60000` (default 200)
 - `-n`, `--no-crlf` — disable LF→CR+LF translation (for devices that already send `\r\n`, or for binary capture)
-- `-l [ADDR:]PORT`, `--listen [ADDR:]PORT` — serve the local port (`-u`)
+- `-l [ADDR:]PORT`, `--listen [ADDR:]PORT` — serve the local port (`-u`, `-U`)
   to one TCP client at a time: telnet, another `vectis -h HOST -p PORT`,
   pyserial `rfc2217://`, or raw nc/socat; see "Serving the port over TCP"
   below
@@ -367,12 +391,12 @@ curl -s http://192.168.1.20:8080/power/reset
 {"link":"online","mode":"serial","target":"/dev/ttyUSB0","power":"on",
  "rts":1,"dtr":1,"reset_ms":200,"tcp_client":"192.168.1.5",
  "event":{"seq":7,"kind":"reset","source":"rfc2217","ago_ms":1830},
- "version":"1.6.1"}
+ "version":"1.7.0"}
 ```
 
 `link` is `online` or `offline`, `power` is the state last commanded by
-this process, `rts`/`dtr` are the real modem bits in `-u` mode (`-1`
-when unavailable or in RFC 2217 mode), `tcp_client` is the address of
+this process, `rts`/`dtr` are the real modem bits in `-u` mode and the
+state last set in `-U` mode (`-1` when unavailable or in RFC 2217 mode), `tcp_client` is the address of
 the `-l` client or `null`, and `event` is the last change of the power
 lines from any side: `kind` is `on`, `off` or `reset` (an off followed by
 an on within 5 seconds from the same source), `source` is `web`,
@@ -401,6 +425,63 @@ the `-l` listener.
 # Headless: no terminal, device output to a log, console on localhost only
 ./vectis -h 192.168.1.10 -p 35240 -w 127.0.0.1:8080 -n < /dev/null > uart.log 2>&1 &
 ```
+
+## USB mode without a kernel driver (`-U`)
+
+`vectis-ch34x` can drive a CH340/CH341 adapter itself, through the
+kernel's usbfs interface, with no `ch341` or `usbserial` driver. Use it
+only on hosts whose kernel lacks the driver and cannot be rebuilt:
+routers and other boards used as debug hosts. Everywhere else, desktop
+Linux, macOS and Windows included, use the standard driver and
+`-u /dev/ttyUSB0`.
+
+```sh
+./vectis-ch34x -U 1-1.3.4 -l 2021 -w 2081      # by USB path
+./vectis-ch34x -U usb:1a86:7523                # the first CH340 found
+```
+
+Everything works as with `-u`: the console, `-l`, `-w`, `Ctrl+P`,
+`Ctrl+B`, RFC 2217 control of the baud rate, line settings and RTS/DTR,
+reopening the link after the adapter is lost. The differences:
+
+- **RTS/DTR survive a restart.** With `-u` the kernel drops both lines
+  when the tty is closed, so restarting vectis power-cycles the target.
+  With `-U` vectis leaves the lines as they are on exit and sets them on
+  start without dropping them first, so an update or a restart of vectis
+  does not reset the device. Use `/power/reset` or `Ctrl+P` when a reset
+  is wanted.
+- **Taking the adapter from the kernel driver resets once.** If `ch341`
+  is bound to the adapter, vectis detaches it, and the kernel drops the
+  lines at that moment. The driver stays detached until the adapter is
+  replugged or the host reboots; `/dev/ttyUSB*` of that adapter is gone
+  meanwhile.
+- **No tty for other programs.** While vectis holds the adapter,
+  minicom, picocom or pyserial cannot open it: connect them to the `-l`
+  port instead (`rfc2217://HOST:PORT` in pyserial).
+- `rts`/`dtr` in `/status` show the state last set: the chip cannot
+  report its outputs.
+- CH340/CH341 only (`1a86:7523`, `1a86:7522`, `1a86:5523` and the IDs
+  the Linux `ch341` driver knows); Linux only.
+
+The host needs a kernel with USB host support and usbfs (`/dev/bus/usb`,
+created by devtmpfs); `ch341` and `usbserial` are not needed. The user
+that runs vectis needs read and write access to the adapter's node
+`/dev/bus/usb/BBB/DDD`. Root has it; for another user add a udev rule.
+The node gets a new number on every replug, so match the USB path:
+
+```sh
+sudo tee /etc/udev/rules.d/71-vectis-usb.rules >/dev/null <<'EOF'
+# vectis -U: raw USB access to the CH340 at USB path 1-1.3.4 for the dialout group
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1a86", KERNEL=="1-1.3.4", GROUP="dialout", MODE="0660"
+EOF
+sudo udevadm control --reload
+sudo udevadm trigger --action=change /sys/bus/usb/devices/1-1.3.4
+```
+
+and add the user to `dialout` (`sudo usermod -aG dialout USER`, effective
+at the next login). Detaching the kernel driver needs no more than write
+access to the node. On OpenWrt and similar systems without udev the
+daemon usually runs as root and needs nothing more.
 
 ## Several adapters on one host: stable device names (udev)
 
