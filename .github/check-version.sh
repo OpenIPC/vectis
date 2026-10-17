@@ -6,7 +6,8 @@
 # but not PROGRAM_VERSION in vectis.c.  The new version must be
 # MAJOR.MINOR.PATCH without leading zeros, greater than the base one,
 # and have its section in CHANGELOG.md ("## <version> — <date>").
-# Docs, tests, screenshots and .github/ do not need a new version.
+# The sources, the Makefile and ci/ count as code or build; docs, tests,
+# screenshots and the workflows in .github/ do not need a new version.
 #
 # Usage: .github/check-version.sh [BASE]   (default origin/master)
 #
