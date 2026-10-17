@@ -106,6 +106,15 @@ make
 python3 tests/test_vectis.py .
 ```
 
+发布版本（[GitHub Releases](https://github.com/OpenIPC/vectis/releases)）提供基于 musl
+的静态二进制文件，可在同一架构的任何 Linux 上运行：`vectis-<版本>-linux-x86_64`
+和 `vectis-ch34x-<版本>-linux-x86_64`，并附带 `SHA256SUMS`。它们由 CI 根据版本标签
+使用 `ci/build-static.sh` 构建；也可以用该脚本在本地构建：
+
+```sh
+docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh ci/build-static.sh
+```
+
 ## 工作原理
 
 在 RFC 2217 客户端模式下，`vectis` 连接到 TCP 服务器，将本地终端切换为原始模式，
