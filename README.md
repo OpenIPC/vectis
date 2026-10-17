@@ -133,6 +133,8 @@ curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/SHA256SUM
 sha256sum -c SHA256SUMS && chmod 755 vectis-linux-x86_64
 ```
 
+Every new version is announced in the OpenIPC Telegram channels ([our channels](https://openipc.org/our-channels)).
+
 The release binary is built with `ci/build-static.sh`, which also builds it locally:
 
 ```sh
