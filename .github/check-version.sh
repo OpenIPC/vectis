@@ -54,4 +54,11 @@ if ! grep -Eq "^## $re — [0-9]{4}-[0-9]{2}-[0-9]{2}\$" CHANGELOG.md; then
 	exit 1
 fi
 
+# The section must come with this pull request, not be one the base
+# branch already has (a version taken from there brings no notes).
+if git show "$base:CHANGELOG.md" 2>/dev/null | grep -Eq "^## $re — "; then
+	echo "::error::the section \"## $new\" is already on $base: take a new version"
+	exit 1
+fi
+
 echo "version $old -> $new, CHANGELOG.md section found"
