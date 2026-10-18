@@ -8,8 +8,11 @@
 # (ci/build-static.sh) and soft-float mipsel for OpenWrt routers
 # (ci/build-mipsel.sh).
 # On pull requests, .github/check-version.sh checks that a change to the
-# code or the build comes with a new PROGRAM_VERSION and its CHANGELOG.md
-# section.
+# code or the build (this workflow included) comes with a new
+# PROGRAM_VERSION and its CHANGELOG.md section; the no-release label lets
+# a change that keeps the release files as they are through without one.
+# Only the head of master publishes, so a re-run of an older run never
+# rolls "latest" back.
 # Release: one release only, "latest", replaced by every push to master
 # once all builds pass. Its title carries PROGRAM_VERSION ("Vectis 1.8.0"),
 # its notes are short; the history is in CHANGELOG.md. No versioned
@@ -22,6 +25,8 @@ name: Build
 on:
   push:
   pull_request:
+    # labeled / unlabeled: the version check reads the no-release label
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 # The build only reads the repository and uploads artifacts.
@@ -46,11 +51,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The checkout is the merge commit; its first parent is the base it was made from.
       - name: Code changes come with a new version
         env:
-          # through the environment, not pasted into the script
-          BASE: ${{ github.base_ref }}
-        run: .github/check-version.sh "origin/$BASE"
+          # a change that leaves the release files as they are may skip the new version
+          NO_RELEASE: ${{ contains(github.event.pull_request.labels.*.name, 'no-release') }}
+        run: .github/check-version.sh HEAD^1
 
   linux:
     name: Linux ${{ matrix.platform.name }}
@@ -229,6 +235,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Only the head of master publishes: a re-run of an older run must not
+          # roll "latest" back to its commit. Checked here, right before the
+          # release is touched; a newer push's run waits for this one (concurrency)
+          # and publishes after it. A failed lookup fails the job, not skips it.
+          if ! head=$(git ls-remote --exit-code origin refs/heads/master); then
+            echo "::error::cannot read the head of master"; exit 1
+          fi
+          head=${head%%[[:space:]]*}
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::master is at ${head:0:7} now, not ${GITHUB_SHA::7}: not published"
+            exit 0
+          fi
           # The release being replaced: its title tells Telegram whether this
           # is a new version. "Not found" means there is none yet; any other
           # failure stops here, before anything is deleted or announced.
