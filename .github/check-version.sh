@@ -15,8 +15,9 @@
 # leave the release files as they are (a test or publication step in the
 # workflow, a build-script tidy-up, a comment).
 #
-# Usage: .github/check-version.sh [BASE]   (default origin/master; CI passes
-# HEAD^1, the base side of the pull request's merge commit)
+# Usage: .github/check-version.sh [BASE]   (default origin/master; CI,
+# .github/workflows/version.yml, passes HEAD^1, the base side of the pull
+# request's merge commit; version.yml itself is CI, not build)
 #
 
 set -eu
