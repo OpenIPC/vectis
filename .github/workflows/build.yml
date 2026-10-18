@@ -7,8 +7,8 @@
 # on x86_64; plus the static musl builds the release ships: x86_64
 # (ci/build-static.sh) and soft-float mipsel for OpenWrt routers
 # (ci/build-mipsel.sh).
-# On pull requests, .github/check-version.sh checks that a change to the
-# code or the build (this workflow included) comes with a new
+# On pull requests, version.yml runs .github/check-version.sh: a change to
+# the code or the build (this workflow included) comes with a new
 # PROGRAM_VERSION and its CHANGELOG.md section; the no-release label lets
 # a change that keeps the release files as they are through without one.
 # Only the head of master publishes, so a re-run of an older run never
@@ -25,8 +25,6 @@ name: Build
 on:
   push:
   pull_request:
-    # labeled / unlabeled: the version check reads the no-release label
-    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 # The build only reads the repository and uploads artifacts.
@@ -41,22 +39,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
-  version:
-    name: Version bump
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      # The checkout is the merge commit; its first parent is the base it was made from.
-      - name: Code changes come with a new version
-        env:
-          # a change that leaves the release files as they are may skip the new version
-          NO_RELEASE: ${{ contains(github.event.pull_request.labels.*.name, 'no-release') }}
-        run: .github/check-version.sh HEAD^1
+  # The version check of pull requests runs in version.yml: a label change
+  # re-runs only that check, not the builds.
 
   linux:
     name: Linux ${{ matrix.platform.name }}

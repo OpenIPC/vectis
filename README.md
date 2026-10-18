@@ -197,10 +197,12 @@ The change history of every version is in [CHANGELOG.md](CHANGELOG.md).
 Versions are `MAJOR.MINOR.PATCH` (`PROGRAM_VERSION` in `vectis.c`): PATCH for fixes and
 small changes, MINOR for a new feature, MAJOR for an incompatible change or a large update,
 only when the maintainer decides. A pull request that changes the code or the build (the
-sources, the `Makefile`, `ci/`) raises the version as its last commit before the merge,
-together with its `CHANGELOG.md` section. Changes to the docs, tests, screenshots or the
-workflows in `.github/` do not. CI checks this on every pull request
-(`.github/check-version.sh`).
+sources, the `Makefile`, `ci/`, the build workflow `.github/workflows/build.yml`) raises the
+version as its last commit before the merge, together with its `CHANGELOG.md` section.
+Changes to the docs, tests, screenshots or the other workflows in `.github/` do not; a change
+to the code or the build that leaves the release files as they are takes the `no-release`
+label instead of a new version. CI checks this on every pull request
+(`.github/check-version.sh`, run by `.github/workflows/version.yml`).
 
 ## Hardware
 
