@@ -8,8 +8,11 @@
 # (ci/build-static.sh) and soft-float mipsel for OpenWrt routers
 # (ci/build-mipsel.sh).
 # On pull requests, .github/check-version.sh checks that a change to the
-# code or the build comes with a new PROGRAM_VERSION and its CHANGELOG.md
-# section.
+# code or the build (this workflow included) comes with a new
+# PROGRAM_VERSION and its CHANGELOG.md section; the no-release label lets
+# a change that keeps the release files as they are through without one.
+# Only the head of master publishes, so a re-run of an older run never
+# rolls "latest" back.
 # Release: one release only, "latest", replaced by every push to master
 # once all builds pass. Its title carries PROGRAM_VERSION ("Vectis 1.8.0"),
 # its notes are short; the history is in CHANGELOG.md. No versioned
@@ -22,6 +25,8 @@ name: Build
 on:
   push:
   pull_request:
+    # labeled / unlabeled: the version check reads the no-release label
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 # The build only reads the repository and uploads artifacts.
@@ -46,11 +51,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The checkout is the merge commit; its first parent is the base it was made from.
       - name: Code changes come with a new version
         env:
-          # through the environment, not pasted into the script
-          BASE: ${{ github.base_ref }}
-        run: .github/check-version.sh "origin/$BASE"
+          # a change that leaves the release files as they are may skip the new version
+          NO_RELEASE: ${{ contains(github.event.pull_request.labels.*.name, 'no-release') }}
+        run: .github/check-version.sh HEAD^1
 
   linux:
     name: Linux ${{ matrix.platform.name }}
@@ -224,8 +230,20 @@ jobs:
           [ "$got" = "$ver" ] || { echo "::error::the binary is $got, not $ver"; exit 1; }
           echo "VER=$ver" >> "$GITHUB_ENV"
 
+      # Only the head of master publishes: a re-run of an older run (or one that
+      # finishes after a newer push) must not roll "latest" back to its commit.
+      - name: Branch head
+        id: head
+        run: |
+          head=$(git ls-remote origin refs/heads/master | cut -f 1)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::master is at ${head:0:7} now, not ${GITHUB_SHA::7}: not published"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
         id: publish
+        if: steps.head.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
