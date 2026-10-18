@@ -230,23 +230,23 @@ jobs:
           [ "$got" = "$ver" ] || { echo "::error::the binary is $got, not $ver"; exit 1; }
           echo "VER=$ver" >> "$GITHUB_ENV"
 
-      # Only the head of master publishes: a re-run of an older run (or one that
-      # finishes after a newer push) must not roll "latest" back to its commit.
-      - name: Branch head
-        id: head
-        run: |
-          head=$(git ls-remote origin refs/heads/master | cut -f 1)
-          if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "::notice::master is at ${head:0:7} now, not ${GITHUB_SHA::7}: not published"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Publish
         id: publish
-        if: steps.head.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Only the head of master publishes: a re-run of an older run must not
+          # roll "latest" back to its commit. Checked here, right before the
+          # release is touched; a newer push's run waits for this one (concurrency)
+          # and publishes after it. A failed lookup fails the job, not skips it.
+          if ! head=$(git ls-remote --exit-code origin refs/heads/master); then
+            echo "::error::cannot read the head of master"; exit 1
+          fi
+          head=${head%%[[:space:]]*}
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::master is at ${head:0:7} now, not ${GITHUB_SHA::7}: not published"
+            exit 0
+          fi
           # The release being replaced: its title tells Telegram whether this
           # is a new version. "Not found" means there is none yet; any other
           # failure stops here, before anything is deleted or announced.
