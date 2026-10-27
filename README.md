@@ -1,6 +1,6 @@
 ![OpenIPC logo][logo]
 
-# OpenIPC Vectis
+# Vectis
 
 **English** | [Русский](README.ru.md) | [简体中文](README.zh-CN.md)
 
