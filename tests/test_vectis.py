@@ -9,8 +9,9 @@
 # plays the target on the master.  Covered: the -l server in raw and
 # Telnet/RFC 2217 mode (LF->CR, 0xFF escaping, SET-BAUDRATE, SET-CONTROL,
 # SIGNATURE, BRK), the -w web API, the RFC 2217 client (-h/-p) against
-# the -l server, stdin EOF and device loss without a busy loop, and the
-# -U command line of the USB builds.
+# the -l server, stdin EOF and device loss without a busy loop, the -u
+# check of the USB adapter on reconnect (a fake sysfs), and the -U command
+# line of the USB builds.
 #
 # Usage: tests/test_vectis.py [DIR]   (DIR holds vectis and vectis-*; default .)
 # Python 3 standard library only; Linux.
@@ -344,6 +345,98 @@ def test_stdin_eof(tmp):
     check("reply" in out, "device output still forwarded after stdin EOF")
 
 
+class FakeSysfs:
+    """A sysfs tree that says which USB adapter a pty is (VECTIS_SYSFS_ROOT)."""
+
+    ADAPTERS = {"ch340": ("1a86", "7523", None, "1-2"),
+                "ch340-next-port": ("1a86", "7523", None, "1-3"),
+                "ftdi": ("0403", "6001", "A50285BI", "1-4"),
+                "ftdi-moved": ("0403", "6001", "A50285BI", "1-5")}
+
+    def __init__(self, root):
+        self.root = root
+        os.makedirs(os.path.join(root, "dev", "char"))
+        for vid, pid, serial, port in self.ADAPTERS.values():
+            usb = os.path.join(root, "devices", "usb1", port)
+            os.makedirs(os.path.join(usb, port + ":1.0", "ttyUSB0", "tty", "ttyUSB0"))
+            for name, value in (("idVendor", vid), ("idProduct", pid), ("serial", serial)):
+                if value:
+                    with open(os.path.join(usb, name), "w") as f:
+                        f.write(value + "\n")
+
+    def point(self, path, adapter):
+        """Make the character device behind path be this adapter."""
+        st = os.stat(path)
+        port = self.ADAPTERS[adapter][3]
+        link = os.path.join(self.root, "dev", "char",
+                            "%d:%d" % (os.major(st.st_rdev), os.minor(st.st_rdev)))
+        tmp = link + ".new"
+        os.symlink(os.path.join(self.root, "devices", "usb1", port, port + ":1.0",
+                                "ttyUSB0", "tty", "ttyUSB0"), tmp)
+        os.replace(tmp, link)
+
+
+def test_identity(tmp):
+    sysfs = FakeSysfs(os.path.join(tmp, "sys"))
+    env = dict(os.environ, VECTIS_SYSFS_ROOT=sysfs.root)
+
+    def reconnect_on(master, name, adapter):
+        """Unplug, let vectis see it, give the same name to adapter."""
+        sysfs.point(name, adapter)
+        os.close(master)
+        check(wait_status(wport, "link", "offline").get("link") == "offline",
+              "identity: link offline after the unplug")
+        master, slave = pty.openpty()
+        tty.setraw(master)
+        same = os.ttyname(slave) == name
+        os.close(slave)
+        check(same, "identity: the new pty has the old name")
+        return master
+
+    # A plain path, as /dev/ttyUSB0: the pty number comes back with the next
+    # pty, like the name of a re-enumerated adapter.
+    for first, other, same_adapter in (("ch340", "ftdi", "ch340"),
+                                       ("ch340", "ch340-next-port", "ch340"),
+                                       ("ftdi", "ch340", "ftdi-moved")):
+        master, slave = pty.openpty()
+        tty.setraw(master)
+        name = os.ttyname(slave)
+        os.close(slave)
+        sysfs.point(name, first)
+        wport = free_port()
+        p = start([VECTIS, "-u", name, "-w", "127.0.0.1:%d" % wport], env=env)
+        check(wait_status(wport, "link", "online").get("link") == "online",
+              "identity: %s online" % first)
+        master = reconnect_on(master, name, other)
+        time.sleep(7)   # over two retry periods
+        check(http(wport, "/status").get("link") == "offline",
+              "identity: %s on the name of %s is not opened" % (other, first))
+        sysfs.point(name, same_adapter)
+        check(wait_status(wport, "link", "online").get("link") == "online",
+              "identity: %s accepted back" % same_adapter)
+        out = stop(p)
+        os.close(master)
+        check("is USB" in out, "identity: the adapter is logged")
+        check(out.count("not opening it") == 1, "identity: the mismatch is logged once")
+
+    # A symlink follows the device, so it is not checked.
+    dev = FakeDevice(os.path.join(tmp, "by-path-port"))
+    sysfs.point(dev.link, "ch340")
+    wport = free_port()
+    p = start([VECTIS, "-u", dev.link, "-w", "127.0.0.1:%d" % wport], env=env)
+    check(wait_status(wport, "link", "online").get("link") == "online",
+          "identity: symlink online")
+    dev.unplug()
+    check(wait_status(wport, "link", "offline").get("link") == "offline",
+          "identity: symlink offline after the unplug")
+    dev.plug()
+    sysfs.point(dev.link, "ftdi")
+    check(wait_status(wport, "link", "online").get("link") == "online",
+          "identity: a symlink is not checked")
+    out = stop(p)
+    check("not opening it" not in out, "identity: no mismatch through a symlink")
+
+
 def test_usb_cli():
     print("== -U command line")
     # vectis has -U unless built with USB=0; --version lists the chips then.
@@ -397,6 +490,7 @@ def main():
         test_server(tmp)
         test_client(tmp)
         test_stdin_eof(tmp)
+        test_identity(tmp)
     test_usb_cli()
     print()
     if failures:
