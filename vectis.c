@@ -2588,14 +2588,19 @@ static void usb_identity(dev_t rdev, char *id, size_t len)
         snprintf(id, len, "%s:%s at %s", vid, pid, strrchr(dir, '/') + 1);
 }
 
-/* True when device may be opened: see the comment above. */
-static int device_identity_ok(const char *device)
+/* True when device may be used: see the comment above.  Called with fd < 0
+ * before the open, and with the new fd after it, because the name can move
+ * between the two during a re-enumeration; an open that lost that race has
+ * already raised the lines, only a stable path rules that out. */
+static int device_identity_ok(const char *device, int fd)
 {
     char id[sizeof(g_dev_id)];
     struct stat st;
 
     if (!g_dev_id[0] || lstat(device, &st) != 0 || !S_ISCHR(st.st_mode))
         return 1;       /* nothing to compare; a missing device fails in open() */
+    if (fd >= 0 && fstat(fd, &st) != 0)
+        return 1;
     usb_identity(st.st_rdev, id, sizeof(id));
     if (strcmp(id, g_dev_id) == 0)
         return 1;
@@ -2982,7 +2987,7 @@ int main(int argc, char **argv)
         } else
 #endif
         if (g_serial_mode) {
-            if (!device_identity_ok(device)) {
+            if (!device_identity_ok(device, -1)) {
                 if (session_retry()) {
                     retry_pause();
                     continue;
@@ -2993,6 +2998,15 @@ int main(int argc, char **argv)
             if (g_fd < 0) {
                 if (!g_link_quiet)
                     log_errno(LOG_ERR, "open(serial)");
+                if (session_retry()) {
+                    retry_pause();
+                    continue;
+                }
+                return 1;
+            }
+            if (!device_identity_ok(device, g_fd)) {
+                close(g_fd);
+                g_fd = -1;
                 if (session_retry()) {
                     retry_pause();
                     continue;

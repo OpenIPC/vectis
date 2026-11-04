@@ -265,7 +265,8 @@ jobs:
           Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
           NOTES
           if [ "$exists" = 1 ]; then
-            # In place, the title last: the permanent links never go away.
+            # In place, the title last: the release stays. A file is away only
+            # while it is replaced; a failure there lasts until a re-run.
             gh release upload latest dist/* --clobber
             # A draft has no tag until it is published.
             if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/latest" >/dev/null 2>err.txt; then
