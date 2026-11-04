@@ -30,7 +30,10 @@
 #include <signal.h>
 #include <getopt.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <termios.h>
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <poll.h>
@@ -102,8 +105,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.9.0"
-#define PROGRAM_RELEASE_DATE "2026-10-17"
+#define PROGRAM_VERSION      "1.9.1"
+#define PROGRAM_RELEASE_DATE "2026-11-04"
 
 #define RECONNECT_DELAY_S 5
 
@@ -157,6 +160,8 @@ static const char *g_ev_kind   = "";   /* "on", "off", "reset" */
 static const char *g_ev_source = "";   /* "web", "keyboard", "tcp", "rfc2217", "link" */
 static long long   g_ev_ms     = 0;
 static int g_link_quiet   = 0;  /* -w: log only the first link failure of an outage */
+static char g_dev_id[256];      /* -u: the USB adapter opened first, "" if none */
+static int g_dev_id_warned = 0; /* the other adapter on the name is reported once */
 
 /* A reset pulse in progress: RTS+DTR were dropped and come back once
  * g_pulse_end_ms is reached (pulse_tick() in the poll loop), so the
@@ -2524,6 +2529,103 @@ static void retry_pause(void)
     sleep_reconnect(RECONNECT_DELAY_S);
 }
 
+/* ---------- USB identity of the -u port ---------- */
+
+/* /dev/ttyUSB0 is only a name: after a re-enumeration the kernel may give it
+ * to another adapter.  The adapter behind the name is identified through
+ * sysfs, by VID:PID and serial number, or by VID:PID and USB port when it
+ * has no serial number (CH340).  A plain path is checked against the
+ * adapter of the first open before every reopen, because the open itself
+ * raises RTS and DTR.  A symlink (by-id, by-path, udev) is not checked: it
+ * already follows the device.  Ports that are not on USB have no identity.
+ * VECTIS_SYSFS_ROOT replaces /sys in the tests. */
+
+static int sysfs_attr(const char *dir, const char *name, char *buf, size_t len)
+{
+    char path[PATH_MAX + 32];
+    ssize_t n;
+    int fd;
+
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    n = read(fd, buf, len - 1);
+    close(fd);
+    if (n <= 0)
+        return -1;
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == ' '))
+        n--;
+    buf[n] = '\0';
+    return 0;
+}
+
+/* Fill id with the identity of the character device rdev, "" if it has none. */
+static void usb_identity(dev_t rdev, char *id, size_t len)
+{
+    const char *root = getenv("VECTIS_SYSFS_ROOT");
+    char link[PATH_MAX], dir[PATH_MAX];
+    char vid[16], pid[16], serial[128];
+    char *slash;
+
+    id[0] = '\0';
+    snprintf(link, sizeof(link), "%s/dev/char/%u:%u", root ? root : "/sys",
+             (unsigned)major(rdev), (unsigned)minor(rdev));
+    if (!realpath(link, dir))
+        return;
+    /* Up from the tty to the USB device, the first level with idVendor. */
+    while (sysfs_attr(dir, "idVendor", vid, sizeof(vid)) != 0) {
+        slash = strrchr(dir, '/');
+        if (!slash || slash == dir)
+            return;
+        *slash = '\0';
+    }
+    if (sysfs_attr(dir, "idProduct", pid, sizeof(pid)) != 0)
+        return;
+    if (sysfs_attr(dir, "serial", serial, sizeof(serial)) == 0 && serial[0])
+        snprintf(id, len, "%s:%s serial %s", vid, pid, serial);
+    else
+        snprintf(id, len, "%s:%s at %s", vid, pid, strrchr(dir, '/') + 1);
+}
+
+/* True when device may be used: see the comment above.  Called with fd < 0
+ * before the open, and with the new fd after it, because the name can move
+ * between the two during a re-enumeration; an open that lost that race has
+ * already raised the lines, only a stable path rules that out. */
+static int device_identity_ok(const char *device, int fd)
+{
+    char id[sizeof(g_dev_id)];
+    struct stat st;
+
+    if (!g_dev_id[0] || lstat(device, &st) != 0 || !S_ISCHR(st.st_mode))
+        return 1;       /* nothing to compare; a missing device fails in open() */
+    if (fd >= 0 && fstat(fd, &st) != 0)
+        return 1;
+    usb_identity(st.st_rdev, id, sizeof(id));
+    if (strcmp(id, g_dev_id) == 0)
+        return 1;
+    if (!g_dev_id_warned) {
+        log_message(LOG_ERR, "%s is now %s, not %s: not opening it",
+                    device, id[0] ? id : "another device", g_dev_id);
+        g_dev_id_warned = 1;
+    }
+    return 0;
+}
+
+/* After an open: remember the adapter of the first one. */
+static void device_identity_note(const char *device, int fd)
+{
+    struct stat st;
+
+    g_dev_id_warned = 0;
+    if (g_dev_id[0] || lstat(device, &st) != 0 || !S_ISCHR(st.st_mode) ||
+        fstat(fd, &st) != 0)
+        return;
+    usb_identity(st.st_rdev, g_dev_id, sizeof(g_dev_id));
+    if (g_dev_id[0])
+        log_message(LOG_INFO, "%s is USB %s", device, g_dev_id);
+}
+
 /* ---------- CLI parser ---------- */
 
 static void usage(const char *prog)
@@ -2885,6 +2987,13 @@ int main(int argc, char **argv)
         } else
 #endif
         if (g_serial_mode) {
+            if (!device_identity_ok(device, -1)) {
+                if (session_retry()) {
+                    retry_pause();
+                    continue;
+                }
+                return 1;
+            }
             g_fd = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK);
             if (g_fd < 0) {
                 if (!g_link_quiet)
@@ -2895,6 +3004,16 @@ int main(int argc, char **argv)
                 }
                 return 1;
             }
+            if (!device_identity_ok(device, g_fd)) {
+                close(g_fd);
+                g_fd = -1;
+                if (session_retry()) {
+                    retry_pause();
+                    continue;
+                }
+                return 1;
+            }
+            device_identity_note(device, g_fd);
             /* Clear O_NONBLOCK so subsequent reads/writes block normally. */
             {
                 int flags = fcntl(g_fd, F_GETFL);

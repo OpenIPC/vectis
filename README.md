@@ -805,6 +805,14 @@ devices coming and going, and from one boot to the next. A daemon started
 with `-u /dev/ttyUSB0` can silently end up on a different board. Bind the
 names to something that does not move instead.
 
+A running vectis gives some protection: after a reconnect it compares the
+adapter behind a plain `-u` path with the one it opened first (by VID:PID
+and serial number, or by VID:PID and USB port without a serial number). If
+it differs, vectis stays offline and logs it once instead of opening the
+port, which would raise RTS and DTR on that adapter. This does not cover
+the first open, which takes whatever has the name, and a symlink is not
+checked, because it already follows the device.
+
 Adapters with a factory serial number (FTDI, CP210x, CH343/CH9102) get a
 stable name in `/dev/serial/by-id/` automatically; use that path with
 `-u` and nothing else is needed. CH340 adapters (`1a86:7522`, `1a86:7523`

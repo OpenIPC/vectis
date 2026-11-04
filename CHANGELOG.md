@@ -6,6 +6,21 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.9.1 — 2026-11-04
+
+`-u` no longer reconnects to another adapter (#74), and a failed publish no longer takes
+`latest` away (#73).
+
+- `-u`: a plain device path is tied to the USB adapter of the first open. After a
+  re-enumeration the kernel may give `/dev/ttyUSB0` to another adapter; vectis opened it,
+  raising RTS and DTR there, while the adapter powering the board stayed closed. Now it
+  stays offline, says so once on stderr and in syslog, and reconnects when the adapter is
+  back. Adapters are compared by VID:PID and serial number, or by VID:PID and USB port
+  when they have no serial number. A symlink (`by-id`, `by-path`, udev) is not checked:
+  it already follows the device. Ports that are not on USB have no identity.
+- Releases: `latest` is updated in place, the title last, and is no longer deleted first.
+  A re-run of a failed publish finishes the job and posts a new version to Telegram once.
+
 ## 1.9.0 — 2026-10-17
 
 A release binary for OpenWrt routers (#49) and a `-U` receive fix (#48).
