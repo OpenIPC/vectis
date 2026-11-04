@@ -44,13 +44,14 @@ jobs:
 
   linux:
     name: Linux ${{ matrix.platform.name }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.platform.runner || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
         platform:
           # run: how the smoke test starts a binary (qemu-user for the
           # cross builds, with the toolchain's libc as the sysroot)
+          # runner: only where ubuntu-latest will not do
           - name: x86_64
             cross: ""
             pkgs: ""
@@ -63,7 +64,9 @@ jobs:
             cross: aarch64-linux-gnu-
             pkgs: gcc-aarch64-linux-gnu qemu-user
             run: qemu-aarch64 -L /usr/aarch64-linux-gnu
+          # Ubuntu 26.04 has no gcc-mipsel-linux-gnu (#69)
           - name: mipsel
+            runner: ubuntu-24.04
             cross: mipsel-linux-gnu-
             pkgs: gcc-mipsel-linux-gnu qemu-user
             run: qemu-mipsel -L /usr/mipsel-linux-gnu
@@ -72,8 +75,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # A stalled mirror fails the job quickly instead of holding it (#71);
+      # the install normally takes about 20 s.
       - name: Install cross-compiler
         if: matrix.platform.pkgs != ''
+        timeout-minutes: 5
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ${{ matrix.platform.pkgs }}
@@ -155,6 +161,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install qemu-user
+        timeout-minutes: 5
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-user
