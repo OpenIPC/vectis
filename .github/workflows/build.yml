@@ -13,8 +13,8 @@
 # a change that keeps the release files as they are through without one.
 # Only the head of master publishes, so a re-run of an older run never
 # rolls "latest" back.
-# Release: one release only, "latest", replaced by every push to master
-# once all builds pass. Its title carries PROGRAM_VERSION ("Vectis 1.8.0"),
+# Release: one release only, "latest", updated in place by every push to
+# master once all builds pass, never deleted. Its title carries PROGRAM_VERSION ("Vectis 1.8.0"),
 # its notes are short; the history is in CHANGELOG.md. No versioned
 # releases or v* tags are kept. A new version (not every rebuild) is
 # announced in the OpenIPC Telegram dev channel.
@@ -182,15 +182,16 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # The one release, "latest": rebuilt from every push to master after all
-  # builds pass, from the static binaries built and tested above.
+  # The one release, "latest": updated from every push to master after all
+  # builds pass, from the static binaries built and tested above. A failure
+  # at any step leaves a release that a re-run of this job finishes (#73).
   release:
     name: Publish "latest"
     needs: [linux, static, mipsel]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # replace the release
+      contents: write   # update the release and its tag
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -238,10 +239,14 @@ jobs:
             echo "::notice::master is at ${head:0:7} now, not ${GITHUB_SHA::7}: not published"
             exit 0
           fi
-          # The release being replaced: its title tells Telegram whether this
-          # is a new version. "Not found" means there is none yet; any other
-          # failure stops here, before anything is deleted or announced.
-          if prev=$(gh release view latest --json name -q .name 2>err.txt); then
+          # The release being updated: its title tells Telegram whether this
+          # is a new version. The title changes last, so after a failure a
+          # re-run still sees the old one and still announces; a draft is a
+          # first publication that failed, so it counts as no title. "Not
+          # found" means there is no release yet; any other failure stops
+          # here, before anything is changed or announced.
+          if prev=$(gh release view latest --json name,isDraft \
+                    -q 'if .isDraft then "" else .name end' 2>err.txt); then
             exists=1
           elif grep -qi 'not found' err.txt; then
             exists=0 prev=""
@@ -259,15 +264,33 @@ jobs:
 
           Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
           NOTES
-          # "latest" is missing only before the first publication
           if [ "$exists" = 1 ]; then
-            gh release delete latest --cleanup-tag --yes
+            # In place, the title last: the permanent links never go away.
+            gh release upload latest dist/* --clobber
+            # A draft has no tag until it is published.
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/latest" >/dev/null 2>err.txt; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" \
+                -f sha="$GITHUB_SHA" -F force=true >/dev/null
+            elif grep -qi 'not found' err.txt; then
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                -f ref=refs/tags/latest -f sha="$GITHUB_SHA" >/dev/null
+            else
+              cat err.txt; echo "::error::cannot read the \"latest\" tag"; exit 1
+            fi
+            gh release edit latest \
+              --draft=false \
+              --latest \
+              --title "Vectis ${VER}" \
+              --target "${GITHUB_SHA}" \
+              --notes-file notes.md
+          else
+            # Only before the first publication.
+            gh release create latest dist/* \
+              --latest \
+              --title "Vectis ${VER}" \
+              --target "${GITHUB_SHA}" \
+              --notes-file notes.md
           fi
-          gh release create latest dist/* \
-            --latest \
-            --title "Vectis ${VER}" \
-            --target "${GITHUB_SHA}" \
-            --notes-file notes.md
 
       # The binaries of a new version go to the OpenIPC Telegram dev channel as files, for the
       # archive and test downloads: one post (sendMediaGroup), a short caption, no text from
