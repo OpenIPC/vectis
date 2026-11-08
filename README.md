@@ -638,10 +638,10 @@ makes the process reopen the link automatically; it requires `-u`.
 ## Web power console (`-w`)
 
 <p align="center">
-  <img src="screenshots/web-power-console.jpg" alt="Vectis web power console: link and RTS+DTR lamps, power gauge, Enable / Disable / Reset buttons" width="720">
+  <img src="screenshots/web-power-console.jpg" alt="Vectis web power console: link and RTS+DTR lamps, state display, Enable / Disable / Reset buttons" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.6.1 running on an OpenIPC Dev Board, serving its <code>/dev/ttyUSB0</code> with <code>-w 8080 -l 2021 -t 300</code>; a second <code>vectis</code> is connected to the <code>-l</code> port.</sub></p>
+<p align="center"><sub>vectis 1.10.0 with <code>-w 8080 -l 2021 -t 300</code>, a pseudo-terminal standing in for the UART; a second <code>vectis</code> is connected to the <code>-l</code> port.</sub></p>
 
 `-w PORT` (or `-w ADDR:PORT` to listen on one IPv4 address only) starts a
 built-in web server alongside the terminal session. It serves a single
@@ -654,8 +654,9 @@ page, styled as a brass-and-rivets control panel with the heading
 | `Disable` | deassert RTS+DTR (device unpowered)                            | lit while power is off                          |
 | `Reset`   | RTS+DTR pulse of `-t` milliseconds, exactly what `Ctrl+P` does | lit, with a spinning gear, while the pulse runs |
 
-A press animates the button, the lamps (link, RTS+DTR) and a gauge
-needle follow the device state, and the page polls that state every
+A press animates the button, the lamps (link, RTS+DTR) and the state
+display follow the device state, the browser tab title shows the same
+state (`Power enabled · Vectis`), and the page polls that state every
 two seconds, so a `Ctrl+P` from the keyboard or a press in another
 browser shows up too. The buttons use the very same transport as the
 terminal session: `ioctl` on the local port in `-u` mode, `SET-CONTROL`
@@ -716,8 +717,10 @@ Telnet client) or `link` (asserted when the port was opened), `seq`
 grows with every event and `ago_ms` says how long ago it happened. The
 page uses it to show a reset that was triggered elsewhere: a `Ctrl+P`
 from the keyboard or from a `vectis -h HOST -p PORT` client makes the
-Reset button light up and the needle swing, and the log line names the
-source. A bare `telnet` sends `Ctrl+P` as data, so nothing happens on
+Reset button light up and the display show `Resetting`, and the log
+line names the source. The last event also stays on the page in a
+`LAST` line such as `reset by web, 12 s ago`, which is hidden while
+there is no event or the link is offline. A bare `telnet` sends `Ctrl+P` as data, so nothing happens on
 the device or on the page in that case. The command URLs answer JSON to
 every client, a browser included, so `/power/reset` opened from a
 bookmark shows the resulting state as text. The page is served only for
