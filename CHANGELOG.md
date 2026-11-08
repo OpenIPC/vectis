@@ -6,6 +6,20 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.10.0 — 2026-11-08
+
+The web console (`-w`) loses the arrow gauge and shows more of the state (#76, #77).
+
+- The arrow gauge is gone: it had only two positions, and the lamp, the state display and
+  the lit button already show the power state. The state display takes the full width.
+- The browser tab title follows the state: `Power enabled · Vectis`, `Power disabled · Vectis`,
+  `Resetting · Vectis`, `Link offline · Vectis`.
+- A permanent `LAST` line shows the last power event from any side, such as
+  `reset by web, 12 s ago`. It is hidden while there is no event or the link is offline.
+- Labels and the footer reach the WCAG AA contrast of 4.5:1.
+- The pressed button no longer greys out while it is disabled, so the Reset glow and gear
+  stay visible during the pulse.
+
 ## 1.9.1 — 2026-11-04
 
 `-u` no longer reconnects to another adapter (#74), and a failed publish no longer takes

@@ -618,10 +618,10 @@ nc 192.168.1.20 2021                        # 原始模式，逐行发送
 ## Web 电源控制台（`-w`）
 
 <p align="center">
-  <img src="screenshots/web-power-console.jpg" alt="vectis Web 电源控制台：link 与 RTS+DTR 指示灯、电源仪表、Enable / Disable / Reset 按钮" width="720">
+  <img src="screenshots/web-power-console.jpg" alt="vectis Web 电源控制台：link 与 RTS+DTR 指示灯、状态显示屏、Enable / Disable / Reset 按钮" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.6.1 运行在 OpenIPC Dev Board 上，以 <code>-w 8080 -l 2021 -t 300</code> 提供其 <code>/dev/ttyUSB0</code>；另一个 <code>vectis</code> 已连接到 <code>-l</code> 端口。</sub></p>
+<p align="center"><sub>vectis 1.10.0，参数为 <code>-w 8080 -l 2021 -t 300</code>，用伪终端代替 UART；另一个 <code>vectis</code> 已连接到 <code>-l</code> 端口。</sub></p>
 
 `-w PORT`（或 `-w ADDR:PORT`，仅在一个 IPv4 地址上监听）会在终端会话
 之外启动一个内置 Web 服务器。它只提供一个页面，
@@ -634,8 +634,9 @@ nc 192.168.1.20 2021                        # 原始模式，逐行发送
 | `Disable` | 释放 RTS+DTR（设备断电）                            | 断电期间点亮                   |
 | `Reset`   | 持续 `-t` 毫秒的 RTS+DTR 脉冲，与 `Ctrl+P` 完全相同 | 脉冲期间点亮，并显示旋转的齿轮 |
 
-按下按钮时会播放动画，指示灯（链路、RTS+DTR）和仪表
-指针跟随设备状态变化，页面每两秒轮询一次该状态，
+按下按钮时会播放动画，指示灯（链路、RTS+DTR）和状态显示屏
+跟随设备状态变化，浏览器标签页标题显示相同的状态
+（`Power enabled · Vectis`），页面每两秒轮询一次该状态，
 因此来自键盘的 `Ctrl+P` 或在另一个浏览器中的按键
 也会显示出来。这些按钮使用与终端会话完全相同的传输方式：
 `-u` 模式下对本地串口执行 `ioctl`，`-h`/`-p` 模式下通过 RFC 2217
@@ -696,8 +697,9 @@ Telnet 客户端的 `SET-CONTROL`）或 `link`（打开串口时拉高），`seq
 随每个事件递增，`ago_ms` 表示事件发生在多久之前。
 页面借此显示在别处触发的复位：来自键盘或来自
 `vectis -h HOST -p PORT` 客户端的 `Ctrl+P` 会使
-Reset 按钮点亮、指针摆动，日志行中会注明
-来源。裸 `telnet` 会把 `Ctrl+P` 当作数据发送，因此这种情况下
+Reset 按钮点亮、显示屏显示 `Resetting`，日志行中会注明
+来源。最近一次事件还会保留在页面的 `LAST` 行中，例如
+`reset by web, 12 s ago`；尚无事件或链路离线时不显示该行。裸 `telnet` 会把 `Ctrl+P` 当作数据发送，因此这种情况下
 设备和页面上都不会有任何反应。命令 URL 对
 所有客户端（包括浏览器）都以 JSON 应答，因此从
 书签打开的 `/power/reset` 会以文本形式显示操作后的状态。页面只在

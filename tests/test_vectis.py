@@ -19,6 +19,7 @@
 
 import json
 import os
+import re
 import pty
 import select
 import signal
@@ -199,6 +200,18 @@ def test_server(tmp):
         check(wait_listen(lport) and wait_listen(wport), "listeners come up")
         st = wait_status(wport, "link", "online")
         check(st.get("link") == "online" and st.get("mode") == "serial", "/status: online, serial")
+
+        # The page: every element its script touches exists, or render() throws
+        # and the page stops updating.
+        with urllib.request.urlopen("http://127.0.0.1:%d/" % wport, timeout=5) as r:
+            page = r.read().decode()
+        ids = set(re.findall(r"(?:\$|bulb)\('([\w-]+)'", page))
+        missing = sorted(i for i in ids if "id='%s'" % i not in page)
+        check(ids and not missing, "web page: script ids exist (missing %r)" % missing)
+        check("needle" not in page and "gauge" not in page, "web page: no arrow gauge")
+        check("document.title=" in page, "web page: the tab title follows the state")
+        check("LAST" in page and ".btn:disabled.engaged{filter:none}" in page,
+              "web page: LAST line, the engaged button stays lit")
 
         # Raw mode: LF and CRLF become CR on the way to the device.
         c = socket.create_connection(("127.0.0.1", lport))
