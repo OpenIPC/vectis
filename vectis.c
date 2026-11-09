@@ -105,8 +105,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.10.0"
-#define PROGRAM_RELEASE_DATE "2026-11-08"
+#define PROGRAM_VERSION      "1.11.0"
+#define PROGRAM_RELEASE_DATE "2026-11-09"
 
 #define RECONNECT_DELAY_S 5
 
@@ -1086,6 +1086,7 @@ static const char web_page[] =
     "<meta charset='utf-8'>\n"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>\n"
     "<title>Vectis Web Server</title>\n"
+    "<link rel='icon' id='icon' type='image/svg+xml' href='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%276.5%27 stroke=%27%238c6a2a%27 stroke-width=%272%27 fill=%27%23b09873%27/%3E%3C/svg%3E'>\n"
     "<style>\n"
     ":root{--panel:#2c2119;--panel2:#3d2d22;--brass:#c9a24d;--brass2:#8c6a2a;--amber:#ffb347;--ember:#ff6a1a;--ink:#e8d9b8;--dim:#b09873;--red:#c8452c;--green:#5ad38f}\n"
     "*{box-sizing:border-box}\n"
@@ -1124,6 +1125,7 @@ static const char web_page[] =
     ".btn .gear{position:absolute;right:10px;top:8px;font-size:16px;line-height:1;opacity:0;transition:opacity .2s}\n"
     ".btn.reset.engaged .gear{opacity:1;animation:spin 1s linear infinite}\n"
     "@keyframes spin{to{transform:rotate(360deg)}}\n"
+    "@media (prefers-reduced-motion:reduce){.bulb.bad,.btn.reset.engaged .ind,.btn.reset.engaged .gear{animation:none}}\n"
     ".log{font-family:'Courier New',monospace;font-size:12px;color:var(--dim);margin-top:18px;min-height:16px;letter-spacing:.08em}\n"
     ".foot{margin-top:18px;font-family:'Courier New',monospace;font-size:11px;color:#958061;letter-spacing:.2em;text-transform:uppercase;text-align:center}\n"
     "</style>\n"
@@ -1153,7 +1155,9 @@ static const char web_page[] =
     "var busy=false,lastSeq=-1;\n"
     "function $(i){return document.getElementById(i)}\n"
     "function bulb(id,c){$(id).className='bulb'+(c?' '+c:'')}\n"
-    "function setState(t,c){var st=$('state');st.textContent=t;st.className='state'+(c?' '+c:'');document.title=t+' \\u00b7 Vectis'}\n"
+    "var LAMP={on:'%235ad38f',off:'%23b09873',reset:'%23ffb347',bad:'%23c8452c'};\n"
+    "function setState(t,c){var st=$('state');st.textContent=t;st.className='state'+(c?' '+c:'');document.title=t+' \\u00b7 Vectis';\n"
+    " $('icon').href='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%276.5%27 stroke=%27%238c6a2a%27 stroke-width=%272%27 fill=%27'+LAMP[c||(t==='Resetting'?'reset':'on')]+'%27/%3E%3C/svg%3E'}\n"
     "function esc(t){return String(t).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}\n"
     "function ago(ms){var s=Math.floor(ms/1000);return s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h'}\n"
     "function last(e){return esc((e.kind==='reset'?'reset':'power '+e.kind)+' by '+e.source+', '+ago(e.ago_ms)+' ago')}\n"

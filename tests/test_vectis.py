@@ -212,6 +212,9 @@ def test_server(tmp):
         check("document.title=" in page, "web page: the tab title follows the state")
         check("LAST" in page and ".btn:disabled.engaged{filter:none}" in page,
               "web page: LAST line, the engaged button stays lit")
+        check("rel='icon'" in page and "LAMP[" in page, "web page: lamp tab icon")
+        check("prefers-reduced-motion:reduce" in page, "web page: reduced motion respected")
+        check('"' not in page, "web page: single quotes only")
 
         # Raw mode: LF and CRLF become CR on the way to the device.
         c = socket.create_connection(("127.0.0.1", lport))
