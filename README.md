@@ -655,14 +655,15 @@ page, styled as a brass-and-rivets control panel with the heading
 | `Reset`   | RTS+DTR pulse of `-t` milliseconds, exactly what `Ctrl+P` does | lit, with a spinning gear, while the pulse runs |
 
 A press animates the button, the lamps (link, RTS+DTR) and the state
-display follow the device state, the browser tab title shows the same
-state (`Power enabled · Vectis`), and the page polls that state every
-two seconds, so a `Ctrl+P` from the keyboard or a press in another
+display follow the device state, the browser tab title and a lamp icon
+in the tab show the same state (`Power enabled · Vectis`, green), and the
+page polls that state every two seconds, so a `Ctrl+P` from the keyboard or a press in another
 browser shows up too. The buttons use the very same transport as the
 terminal session: `ioctl` on the local port in `-u` mode, `SET-CONTROL`
 over RFC 2217 in `-h`/`-p` mode. The terminal session, hotkeys and all
 other behaviour are unchanged and keep working side by side with the
-page.
+page. With `prefers-reduced-motion: reduce` set in the browser or the
+system, the blinking lamp, the Reset indicator and the gear stand still.
 
 With `-w` the web server is listening before the device link is opened,
 and the link is (re)established automatically whenever it fails or drops,

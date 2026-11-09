@@ -6,6 +6,16 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.11.0 — 2026-11-09
+
+The web console (`-w`) gets a lamp tab icon and respects reduced motion (#79).
+
+- The browser tab shows a round lamp in the colour of the state: green with power
+  enabled, grey with power disabled, amber while a reset runs, red with no link. A
+  background tab may update it less often, as browsers slow down its timers.
+- With `prefers-reduced-motion: reduce` the offline lamp no longer blinks, and the Reset
+  indicator and gear stand still; the colour and the state display still show the state.
+
 ## 1.10.0 — 2026-11-08
 
 The web console (`-w`) loses the arrow gauge and shows more of the state (#76, #77).
