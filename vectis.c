@@ -2,7 +2,7 @@
  *
  * Copyright (c) OpenIPC  https://openipc.org  MIT License
  *
- * vectis.c — Vectis: serial console for the OpenIPC UART 38x38 board.
+ * vectis.c — Vectis: serial console for the OpenIPC Vectis 38x38 board.
  *
  * One binary, three roles that run side by side:
  *   - console: a local tty (-u), a USB-UART driven through usbfs (-U, in
@@ -105,8 +105,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.11.0"
-#define PROGRAM_RELEASE_DATE "2026-11-09"
+#define PROGRAM_VERSION      "1.11.1"
+#define PROGRAM_RELEASE_DATE "2026-11-12"
 
 #define RECONNECT_DELAY_S 5
 
@@ -1132,7 +1132,7 @@ static const char web_page[] =
     "</head>\n"
     "<body>\n"
     "<h1>Vectis Web Server</h1>\n"
-    "<div class='sub'>RTS / DTR power control &middot; OpenIPC UART 38x38</div>\n"
+    "<div class='sub'>RTS / DTR power control &middot; OpenIPC Vectis 38x38</div>\n"
     "<div class='panel'>\n"
     "<span class='rivet tl'></span><span class='rivet tr'></span><span class='rivet bl'></span><span class='rivet br'></span>\n"
     "<div class='top'><span class='plate'>Power console</span><span class='plate' id='ver'>vectis</span></div>\n"

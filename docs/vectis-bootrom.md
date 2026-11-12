@@ -3,7 +3,7 @@
 [Back to the README](../README.md)
 
 `vectis-bootrom.c` is the program this repository started with: a UART
-terminal and TCP bridge for the OpenIPC UART 38x38 board with the same
+terminal and TCP bridge for the OpenIPC Vectis 38x38 board with the same
 RTS/DTR reset pulse, later extended with RFC 2217 auto-detection on its
 TCP listener, inetd/inittab integration, and a vendor extension,
 `BOOTROM-CATCH`, that runs the HiSilicon boot-ROM `0x20`-marker /
@@ -47,7 +47,7 @@ In this document `Vectis` and `vectis-bootrom` mean this original binary.
 - RTS and DTR are asserted on startup and deasserted on exit.
 - RTS and DTR use normal asserted/deasserted signaling.
 - The Ctrl+P pulse uses the opposite asserted/deasserted sequence.
-- This tool is designed for rapid debugging and control, including power-related device handling, during integration work with OpenIPC UART 38x38.
+- This tool is designed for rapid debugging and control, including power-related device handling, during integration work with OpenIPC Vectis 38x38.
 - The TCP listener accepts one client at a time; a new connection
   replaces the current client.
 - The TCP listener starts only when `-t` is provided. When `-t` is given

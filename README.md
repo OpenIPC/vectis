@@ -35,7 +35,7 @@ whose kernel has no `ch341` driver and cannot be rebuilt; see "USB mode
 without a kernel driver" below.
 
 <p align="center">
-  <img src="device.jpg" alt="OpenIPC UART 38x38 board" width="640">
+  <img src="device.jpg" alt="OpenIPC Vectis 38x38 board" width="640">
 </p>
 
 `vectis-bootrom.c`, the original UART bridge this program grew out of, is
@@ -206,24 +206,74 @@ label instead of a new version. CI checks this on every pull request
 
 ## Hardware
 
-The OpenIPC UART 38x38 board sits between the debug host and the device
+The OpenIPC Vectis 38x38 board sits between the debug host and the device
 under test: a USB-UART bridge for the device's console, and a power switch
-in the device's supply line, driven by the bridge's RTS and DTR.
+in the device's supply line, driven by the bridge's modem-control lines.
 
-| Part             | Value                                                |
-|------------------|------------------------------------------------------|
-| Power switch     | up to 12 V, up to 300 mA                             |
-| Switch control   | RTS and DTR together: both asserted = device powered |
-| ALWAYS ON jumper | device powered all the time, the switch bypassed     |
+It comes in two variants with the same layout, connectors, pinout and
+ratings. They differ in the bridge chip, and the chip decides which line
+switches the power:
+
+| Variant                     | Chip   | PCB marking       | Power switched by |
+|-----------------------------|--------|-------------------|-------------------|
+| OpenIPC Vectis 38x38 CH340E | CH340E | `OIPC.401.001.01` | RTS               |
+| OpenIPC Vectis 38x38 CH340K | CH340K | `OIPC.401.001.11` | DTR               |
+
+vectis always drives RTS and DTR together, so both variants work the same
+way, with no option to pick the line.
+
+| Parameter          | Value                                                |
+|--------------------|------------------------------------------------------|
+| Host interface     | USB Type-C (X5)                                      |
+| UART level         | 3.3 V                                                |
+| Input voltage (X1) | 12 V DC nominal                                      |
+| Switched voltage   | up to 15 V DC                                        |
+| Switched current   | up to 1 A                                            |
+| Power switch       | in the positive rail (high side)                     |
+| Switch control     | RTS and DTR together: both asserted = device powered |
+
+| Connector | Type              | Purpose                                                 |
+|-----------|-------------------|---------------------------------------------------------|
+| X1        | 2-pin, VIN+ / GND | power input, 12 V nominal                               |
+| X2        | 2-pin, VIN+ / GND | switched power output to the device under test          |
+| X4        | 8-pin header      | debug header: UART, RTS, switched power, ground         |
+| X5        | USB Type-C        | to the debug host                                       |
+| ALWAYS ON | jumper            | removed: output switched; fitted: output always powered |
+| DTR, CTS  | test pads         | the other modem-control lines                           |
+
+<p align="center">
+  <img src="hardware/vectis-38x38-ch340e.png" alt="OpenIPC Vectis 38x38 CH340E, top view" width="420">
+  <img src="hardware/vectis-38x38-ch340k.png" alt="OpenIPC Vectis 38x38 CH340K, top view" width="420">
+  <br>
+  <sub>Top view: CH340E (left) and CH340K (right). The red circle marks pin 1 of X4, the red + the positive pin of X1 and X2.</sub>
+</p>
+
+**X4 debug header**, the same on both variants. Pin 1 is at the end next to
+the output connector X2.
+
+| Pin | Signal | Function                       | Level                    |
+|-----|--------|--------------------------------|--------------------------|
+| 1   | VOUT   | switched power output          | the input supply voltage |
+| 2   | VOUT   | switched power output          | the input supply voltage |
+| 3   | GND    | ground                         | 0 V                      |
+| 4   | GND    | ground                         | 0 V                      |
+| 5   | RTS    | RTS signal                     | 3.3 V                    |
+| 6   | RX     | UART receive (adapter input)   | 3.3 V                    |
+| 7   | GND    | ground                         | 0 V                      |
+| 8   | TX     | UART transmit (adapter output) | 3.3 V                    |
+
+Connect the adapter's TX to the device's RX, the adapter's RX to the
+device's TX, and GND to GND. The device takes its power from X2 or from the
+VOUT pins of X4.
 
 - **Power switch.** The device under test is powered through it: up to
-  12 V and 300 mA. A device that needs more must not be powered through the
+  15 V and 1 A. A device that needs more must not be powered through the
   board.
-- **ALWAYS ON jumper.** With the jumper set the board powers the device
-  under test all the time, so power does not depend on software control.
-  `Ctrl+P`, the web page and `/power/*` then do not switch the device off;
-  vectis does not see the jumper, and `/status` keeps reporting the RTS+DTR
-  state.
+- **ALWAYS ON jumper**, next to X1. With the jumper fitted the board powers
+  the device under test all the time, so power does not depend on software
+  control. `Ctrl+P`, the web page and `/power/*` then do not switch the
+  device off; vectis does not see the jumper, and `/status` keeps reporting
+  the RTS+DTR state.
 
 ## How it fits together
 
@@ -239,7 +289,7 @@ flowchart LR
         V["⚙️ <b>vectis</b><br/>-u /dev/ttyUSB0<br/>-l 2021 · -w 8080"]
     end
 
-    subgraph BOARD["🟩 OpenIPC UART 38x38"]
+    subgraph BOARD["🟩 OpenIPC Vectis 38x38"]
         direction TB
         U["🔌 <b>USB-UART bridge</b>"]
         SW{{"⚡ <b>Power switch</b><br/>RTS + DTR"}}
@@ -299,7 +349,7 @@ sequenceDiagram
     autonumber
     actor Dev as 👩‍💻 Developer<br/>keyboard · browser · -l client
     participant V as ⚙️ vectis
-    participant B as 🟩 UART 38x38
+    participant B as 🟩 Vectis 38x38
     participant C as 📷 IP camera
 
     rect rgba(232, 89, 12, 0.10)
@@ -1021,7 +1071,7 @@ and the `.device` lines.
 ## vectis-bootrom.c: the original UART bridge
 
 `vectis-bootrom.c` is the program this repository started with: a UART
-terminal and TCP bridge for the OpenIPC UART 38x38 board with the same
+terminal and TCP bridge for the OpenIPC Vectis 38x38 board with the same
 RTS/DTR reset pulse, later extended with RFC 2217 auto-detection on its
 TCP listener, inetd/inittab integration, and a vendor extension,
 `BOOTROM-CATCH`, that runs the HiSilicon boot-ROM `0x20`-marker /
