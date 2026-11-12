@@ -222,15 +222,15 @@ switches the power:
 vectis always drives RTS and DTR together, so both variants work the same
 way, with no option to pick the line.
 
-| Parameter          | Value                                                |
-|--------------------|------------------------------------------------------|
-| Host interface     | USB Type-C (X5)                                      |
-| UART level         | 3.3 V                                                |
-| Input voltage (X1) | 12 V DC nominal                                      |
-| Switched voltage   | up to 15 V DC                                        |
-| Switched current   | up to 1 A                                            |
-| Power switch       | in the positive rail (high side)                     |
-| Switch control     | RTS and DTR together: both asserted = device powered |
+| Parameter          | Value                                                      |
+|--------------------|------------------------------------------------------------|
+| Host interface     | USB Type-C (X5)                                            |
+| UART level         | 3.3 V                                                      |
+| Input voltage (X1) | 12 V DC nominal                                            |
+| Switched voltage   | up to 15 V DC                                              |
+| Switched current   | up to 1 A                                                  |
+| Power switch       | in the positive rail (high side)                           |
+| Switch control     | the variant's line (RTS or DTR): asserted = device powered |
 
 | Connector | Type              | Purpose                                                 |
 |-----------|-------------------|---------------------------------------------------------|
