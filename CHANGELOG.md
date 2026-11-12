@@ -6,6 +6,15 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.11.1 — 2026-11-12
+
+The board is now called OpenIPC Vectis 38x38 (#81).
+
+- The web console (`-w`) subtitle names the board as OpenIPC Vectis 38x38.
+- The READMEs describe both variants, CH340E (power switched by RTS) and CH340K (by
+  DTR), with the ratings (up to 15 V and 1 A switched), the connectors, the X4 debug
+  header pinout and top views of both boards.
+
 ## 1.11.0 — 2026-11-09
 
 The web console (`-w`) gets a lamp tab icon and respects reduced motion (#79).

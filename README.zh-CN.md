@@ -10,7 +10,7 @@
 [![Code size](https://img.shields.io/github/languages/code-size/OpenIPC/vectis)](https://github.com/OpenIPC/vectis)
 [![Platform](https://img.shields.io/badge/platform-Linux-brightgreen)](#系统要求)
 
-Vectis 是一款串口控制台，用于在配合 OpenIPC UART 38x38 板开发和集成嵌入式
+Vectis 是一款串口控制台，用于在配合 OpenIPC Vectis 38x38 板开发和集成嵌入式
 系统时进行快速调试和设备控制。一个小巧的二进制文件 `vectis` 同时承担三种角色：
 
 - **控制台** —— 将键盘桥接到串口，既可以是本地设备
@@ -33,7 +33,7 @@ Vectis 是一款串口控制台，用于在配合 OpenIPC UART 38x38 板开发�
 用作调试主机的板子；参见下文“无内核驱动的 USB 模式”。
 
 <p align="center">
-  <img src="device.jpg" alt="OpenIPC UART 38x38 板" width="640">
+  <img src="device.jpg" alt="OpenIPC Vectis 38x38 板" width="640">
 </p>
 
 `vectis-bootrom.c` 是本程序最初由之发展而来的 UART 桥接程序，因其
@@ -196,20 +196,67 @@ MINOR 表示新功能，MAJOR 表示不兼容的变更或大规模更新，仅�
 
 ## 硬件
 
-OpenIPC UART 38x38 板位于调试主机和被测设备之间：一个用于设备控制台的
-USB-UART 桥，以及串在设备供电线路中的电源开关，由桥的 RTS 和 DTR 控制。
+OpenIPC Vectis 38x38 板位于调试主机和被测设备之间：一个用于设备控制台的
+USB-UART 桥，以及串在设备供电线路中的电源开关，由桥的调制解调器控制线控制。
 
-| 部件           | 参数                                   |
-|----------------|----------------------------------------|
-| 电源开关       | 最高 12 V，最大 300 mA                 |
-| 开关控制       | RTS 和 DTR 同时：两者都置位 = 设备通电 |
-| ALWAYS ON 跳线 | 设备始终通电，绕过开关                 |
+该板有两个型号，布局、接口、引脚定义和参数完全相同，区别仅在于桥接芯片，
+而芯片决定由哪条控制线切换电源：
 
-- **电源开关。** 被测设备经由它供电：最高 12 V、300 mA。需要更大功率的设备
+| 型号                        | 芯片   | PCB 标记          | 电源控制线 |
+|-----------------------------|--------|-------------------|------------|
+| OpenIPC Vectis 38x38 CH340E | CH340E | `OIPC.401.001.01` | RTS        |
+| OpenIPC Vectis 38x38 CH340K | CH340K | `OIPC.401.001.11` | DTR        |
+
+vectis 始终同时切换 RTS 和 DTR，因此两个型号的用法完全相同，无需选择控制线的
+选项。
+
+| 参数           | 数值                                            |
+|----------------|-------------------------------------------------|
+| 主机接口       | USB Type-C（X5）                                |
+| UART 电平      | 3.3 V                                           |
+| 输入电压（X1） | 直流 12 V（标称）                               |
+| 开关电压       | 最高直流 15 V                                   |
+| 开关电流       | 最大 1 A                                        |
+| 电源开关       | 位于正极线路（高边）                            |
+| 开关控制       | 型号对应的控制线（RTS 或 DTR）：置位 = 设备通电 |
+
+| 接口      | 类型             | 用途                                     |
+|-----------|------------------|------------------------------------------|
+| X1        | 2 针，VIN+ / GND | 电源输入，标称 12 V                      |
+| X2        | 2 针，VIN+ / GND | 受控电源输出，接被测设备                 |
+| X4        | 8 针排针         | 调试接口：UART、RTS、受控电源、地        |
+| X5        | USB Type-C       | 连接调试主机                             |
+| ALWAYS ON | 跳线             | 拔下：输出受开关控制；插上：输出始终通电 |
+| DTR, CTS  | 测试焊盘         | 其余调制解调器控制线                     |
+
+<p align="center">
+  <img src="hardware/vectis-38x38-ch340e.png" alt="OpenIPC Vectis 38x38 CH340E 顶视图" width="420">
+  <img src="hardware/vectis-38x38-ch340k.png" alt="OpenIPC Vectis 38x38 CH340K 顶视图" width="420">
+  <br>
+  <sub>顶视图：CH340E（左）和 CH340K（右）。红圈标出 X4 的 1 号引脚，红色 + 标出 X1 和 X2 的正极引脚。</sub>
+</p>
+
+**X4 调试接口**，两个型号相同。1 号引脚位于靠近输出接口 X2 的一端。
+
+| 引脚 | 信号 | 功能                    | 电平         |
+|------|------|-------------------------|--------------|
+| 1    | VOUT | 受控电源输出            | 等于输入电压 |
+| 2    | VOUT | 受控电源输出            | 等于输入电压 |
+| 3    | GND  | 地                      | 0 V          |
+| 4    | GND  | 地                      | 0 V          |
+| 5    | RTS  | RTS 信号                | 3.3 V        |
+| 6    | RX   | UART 接收（适配器输入） | 3.3 V        |
+| 7    | GND  | 地                      | 0 V          |
+| 8    | TX   | UART 发送（适配器输出） | 3.3 V        |
+
+适配器的 TX 接设备的 RX，适配器的 RX 接设备的 TX，GND 接 GND。设备从 X2 或
+X4 的 VOUT 引脚取电。
+
+- **电源开关。** 被测设备经由它供电：最高 15 V、1 A。需要更大功率的设备
   不能通过该板供电。
-- **ALWAYS ON 跳线。** 插上跳线后，板会持续为被测设备供电，从而不使用软件
-  控制。此时 `Ctrl+P`、网页和 `/power/*` 不会切断设备电源；vectis 看不到这个
-  跳线，`/status` 仍然报告 RTS+DTR 的状态。
+- **ALWAYS ON 跳线**，位于 X1 旁边。插上跳线后，板会持续为被测设备供电，从而
+  不使用软件控制。此时 `Ctrl+P`、网页和 `/power/*` 不会切断设备电源；vectis
+  看不到这个跳线，`/status` 仍然报告 RTS+DTR 的状态。
 
 ## 整体结构
 
@@ -225,7 +272,7 @@ flowchart LR
         V["⚙️ <b>vectis</b><br/>-u /dev/ttyUSB0<br/>-l 2021 · -w 8080"]
     end
 
-    subgraph BOARD["🟩 OpenIPC UART 38x38"]
+    subgraph BOARD["🟩 OpenIPC Vectis 38x38"]
         direction TB
         U["🔌 <b>USB-UART 桥</b>"]
         SW{{"⚡ <b>电源开关</b><br/>RTS + DTR"}}
@@ -285,7 +332,7 @@ sequenceDiagram
     autonumber
     actor Dev as 👩‍💻 开发者<br/>键盘 · 浏览器 · -l 客户端
     participant V as ⚙️ vectis
-    participant B as 🟩 UART 38x38
+    participant B as 🟩 Vectis 38x38
     participant C as 📷 IP 摄像机
 
     rect rgba(232, 89, 12, 0.10)
@@ -985,7 +1032,7 @@ udev 规则；如果没有这样的规则，请使用
 
 ## vectis-bootrom.c：原始的 UART 桥接程序
 
-`vectis-bootrom.c` 是本仓库最初的程序：一个面向 OpenIPC UART 38x38 板的
+`vectis-bootrom.c` 是本仓库最初的程序：一个面向 OpenIPC Vectis 38x38 板的
 UART 终端和 TCP 桥接程序，具有相同的
 RTS/DTR 复位脉冲，后来又扩展了 TCP 监听端口上的 RFC 2217 自动检测、
 inetd/inittab 集成，以及一个厂商扩展

@@ -214,6 +214,8 @@ def test_server(tmp):
               "web page: LAST line, the engaged button stays lit")
         check("rel='icon'" in page and "LAMP[" in page, "web page: lamp tab icon")
         check("prefers-reduced-motion:reduce" in page, "web page: reduced motion respected")
+        check("OpenIPC Vectis 38x38" in page and "UART 38x38" not in page,
+              "web page: names the OpenIPC Vectis 38x38 board")
         check('"' not in page, "web page: single quotes only")
 
         # Raw mode: LF and CRLF become CR on the way to the device.
