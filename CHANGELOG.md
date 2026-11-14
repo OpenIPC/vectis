@@ -6,6 +6,14 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.11.2 — 2026-11-14
+
+The web console (`-w`) follows the shared brass palette (#83).
+
+- The footer takes its colour from `--foot` (`#a08a69`), which raises its contrast at
+  the top edge of the background from 3.53:1 to 4.04:1.
+- The tab icon lamp has a thin `#6e5320` outline, as on the other brass pages.
+
 ## 1.11.1 — 2026-11-12
 
 The board is now called OpenIPC Vectis 38x38 (#81).

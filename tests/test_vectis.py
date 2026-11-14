@@ -213,6 +213,10 @@ def test_server(tmp):
         check("LAST" in page and ".btn:disabled.engaged{filter:none}" in page,
               "web page: LAST line, the engaged button stays lit")
         check("rel='icon'" in page and "LAMP[" in page, "web page: lamp tab icon")
+        check(page.count("stroke=%27%236e5320%27") == 2 and "stroke-width" not in page,
+              "web page: tab icon stroke #6e5320, width 1 (brass)")
+        check("--foot:#a08a69" in page and "color:var(--foot)" in page and "#958061" not in page,
+              "web page: footer uses --foot #a08a69 (brass)")
         check("prefers-reduced-motion:reduce" in page, "web page: reduced motion respected")
         check("OpenIPC Vectis 38x38" in page and "UART 38x38" not in page,
               "web page: names the OpenIPC Vectis 38x38 board")
