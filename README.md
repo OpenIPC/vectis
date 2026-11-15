@@ -167,14 +167,17 @@ the version (`Vectis X.Y.Z`), and no versioned releases are kept. It holds stati
 musl binaries that run on any Linux of their architecture:
 `vectis-linux-x86_64` for PCs and servers, `vectis-linux-mipsel` for MIPS
 little-endian routers (MediaTek MT7620/MT7621/MT7628 and the like, OpenWrt),
-soft-float, so it runs with or without an FPU. The file names carry no version, so
-these links never change:
+soft-float, so it runs with or without an FPU; and `vectis-android.apk`, the
+Android app (see "The Android app"), signed with the project's key so that a new
+version installs over the old one. The file names carry no version, so these links
+never change:
 
 | What                  | Link                                                                             |
 |-----------------------|----------------------------------------------------------------------------------|
 | release page          | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
+| `vectis-android.apk`  | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk>  |
 
 ```sh
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
@@ -889,6 +892,9 @@ phone with a USB host, without root (Android 5.0 and later, 32- and
 console and the web power console are on those TCP ports of the box,
 as on Linux.
 
+- **Install** [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
+  from the `latest` release (allow installing from this source when
+  Android asks).
 - **First start.** Plug in the adapter (CH340/CH341). Android offers to
   open Vectis for it: tick "Always open Vectis when USB Serial is
   connected" and press OK. Or open the app and press **Allow USB

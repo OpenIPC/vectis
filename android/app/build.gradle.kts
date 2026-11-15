@@ -18,6 +18,13 @@ val vectisVersion: String = run {
 val vectisVersionCode: Int = vectisVersion.split(".").map { it.toInt() }
     .let { (major, minor, patch) -> major * 10000 + minor * 100 + patch }
 
+// Release key from the environment only: VECTIS_KEYSTORE_FILE (the keystore's
+// path), VECTIS_KEYSTORE_PASSWORD, VECTIS_KEY_ALIAS and VECTIS_KEY_PASSWORD, set
+// by CI from its secrets or exported by hand. Without VECTIS_KEYSTORE_FILE the
+// release APK stays unsigned.
+val releaseKeystore: String? =
+    System.getenv("VECTIS_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
+
 // 64-bit devices and 32-bit TV boxes; -PvectisAbis=armeabi-v7a for one ABI
 val vectisAbis: List<String> = ((project.findProperty("vectisAbis") as String?)
     ?: "arm64-v8a,armeabi-v7a").split(",").map { it.trim() }
@@ -57,6 +64,14 @@ android {
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        create("release") {
+            if (releaseKeystore != null) {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("VECTIS_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("VECTIS_KEY_ALIAS")
+                keyPassword = System.getenv("VECTIS_KEY_PASSWORD")
+            }
+        }
     }
     sourceSets {
         getByName("main") { jniLibs.srcDir(nativeOut) }
@@ -67,6 +82,8 @@ android {
     }
     buildTypes {
         release {
+            if (releaseKeystore != null)
+                signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))

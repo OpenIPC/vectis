@@ -159,14 +159,16 @@ python3 tests/test_vectis.py .
 （`Vectis X.Y.Z`），不保留按版本的发布。其中包含基于 musl 的静态二进制文件，
 可在同一架构的任何 Linux 上运行：`vectis-linux-x86_64`
 用于 PC 和服务器，`vectis-linux-mipsel` 用于 MIPS 小端路由器（MediaTek
-MT7620/MT7621/MT7628 等，OpenWrt），软浮点，有无 FPU 均可运行。文件名不含版本号，
-因此以下链接始终不变：
+MT7620/MT7621/MT7628 等，OpenWrt），软浮点，有无 FPU 均可运行；以及
+`vectis-android.apk`，即 Android 应用（见“Android 应用”），使用项目密钥签名，
+新版本可以覆盖安装旧版本。文件名不含版本号，因此以下链接始终不变：
 
 | 内容                  | 链接                                                                             |
 |-----------------------|----------------------------------------------------------------------------------|
 | 发布页面              | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
+| `vectis-android.apk`  | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk>  |
 
 ```sh
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
@@ -847,6 +849,8 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 并以 `vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 2081`
 运行 vectis：控制台和 Web 电源控制台位于盒子的这些 TCP 端口上，与 Linux 相同。
 
+- **安装**：从 `latest` 发布下载 [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
+  （Android 询问时，允许从此来源安装）。
 - **首次启动。** 插入适配器（CH340/CH341）。Android 会提示用 Vectis 打开它：
   勾选 “Always open Vectis when USB Serial is connected” 并按 OK。
   也可以打开应用并按 **Allow USB access**。
