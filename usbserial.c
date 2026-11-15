@@ -35,6 +35,7 @@
 #include <stddef.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/uio.h>
 #include <sys/un.h>
 #include <linux/usbdevice_fs.h>
@@ -55,6 +56,8 @@ const struct usbs_chip *const usbs_chips[] = {
 #define USBS_OUT_CHUNK   256    /* max bytes per synchronous OUT transfer */
 #define USBS_CTRL_TIMEOUT 1000  /* ms per control request */
 #define USBS_RX_SIZE     65536  /* receive backlog */
+#define USBS_FD_TIMEOUT  2000   /* ms for the app's socket (-U fd:@NAME) */
+#define USBS_FD_MAX      4      /* fds one message may bring in (extras closed) */
 
 /* ioctl() takes the request as unsigned long in glibc and uClibc, as int
  * in musl; the usbfs numbers do not fit an int, so convert explicitly. */
@@ -504,15 +507,20 @@ static int fd_fail(int s, int fd, int e, const char *name, const char *what)
 
 /* Connect to the abstract unix socket @name and take the one usbfs fd its
  * owner sends (SCM_RIGHTS) with at least one byte of data.  The owner must
- * run under our uid: the fd decides which device we drive.  VID:PID come
- * from the device descriptor at the start of the fd (usbfs read()).
+ * run under our uid: the fd decides which device we drive.  The connect and
+ * the receive wait at most USBS_FD_TIMEOUT ms, so a stalled app does not
+ * hold up the main loop (listeners, retries, signals).  Every fd that
+ * arrives is either kept (exactly one) or closed.  VID:PID come from the
+ * device descriptor at the start of the fd (usbfs read()).
  * Returns the fd (close-on-exec) or -1 with g_err and errno set. */
 static int fd_from_socket(const char *name, uint16_t *fvid, uint16_t *fpid,
                           const struct usbs_chip **chip)
 {
     struct sockaddr_un a;
     size_t len = strlen(name);
-    union { struct cmsghdr h; char buf[CMSG_SPACE(sizeof(int))]; } ctl;
+    /* Room for a few fds: extra ones must arrive to be closed, not leak. */
+    union { struct cmsghdr h; char buf[CMSG_SPACE(USBS_FD_MAX * sizeof(int))]; } ctl;
+    struct timeval tv = { USBS_FD_TIMEOUT / 1000, (USBS_FD_TIMEOUT % 1000) * 1000 };
     char byte, msg[96];
     struct iovec io = { .iov_base = &byte, .iov_len = 1 };
     struct msghdr m;
@@ -520,7 +528,8 @@ static int fd_from_socket(const char *name, uint16_t *fvid, uint16_t *fpid,
     struct ucred cred;
     socklen_t cl = sizeof cred;
     uint8_t dd[18];
-    int s, fd = -1;
+    int s, fd = -1, nfd = 0, e;
+    ssize_t r;
 
     if (len + 1 > sizeof a.sun_path)
         return fd_fail(-1, -1, ENAMETOOLONG, name, "name too long");
@@ -528,9 +537,12 @@ static int fd_from_socket(const char *name, uint16_t *fvid, uint16_t *fpid,
     a.sun_family = AF_UNIX;
     memcpy(a.sun_path + 1, name, len);          /* sun_path[0] = 0: abstract */
     s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (s < 0 || connect(s, (struct sockaddr *)&a,
-                         (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + len)) != 0) {
-        int e = errno;
+    /* SO_SNDTIMEO bounds a unix-socket connect() (full backlog), SO_RCVTIMEO the recvmsg(). */
+    if (s < 0 || setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0 ||
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0 ||
+        connect(s, (struct sockaddr *)&a,
+                (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + len)) != 0) {
+        e = errno == EAGAIN || errno == EINPROGRESS ? ETIMEDOUT : errno;
         snprintf(msg, sizeof msg, "connect: %s", strerror(e));
         return fd_fail(s, -1, e, name, msg);
     }
@@ -543,14 +555,36 @@ static int fd_from_socket(const char *name, uint16_t *fvid, uint16_t *fpid,
     m.msg_iovlen = 1;
     m.msg_control = ctl.buf;
     m.msg_controllen = sizeof ctl.buf;
-    if (recvmsg(s, &m, MSG_CMSG_CLOEXEC) == 1 && !(m.msg_flags & MSG_CTRUNC))
-        for (c = CMSG_FIRSTHDR(&m); c != NULL; c = CMSG_NXTHDR(&m, c))
-            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS &&
-                c->cmsg_len == CMSG_LEN(sizeof(int)))
-                memcpy(&fd, CMSG_DATA(c), sizeof fd);
+    r = recvmsg(s, &m, MSG_CMSG_CLOEXEC);
+    e = errno;
     close(s);
-    if (fd < 0)
-        return fd_fail(-1, -1, EPROTO, name, "no fd received");
+    if (r < 0) {
+        if (e == EAGAIN || e == EWOULDBLOCK)
+            e = ETIMEDOUT;
+        snprintf(msg, sizeof msg, "receive: %s", strerror(e));
+        return fd_fail(-1, -1, e, name, msg);
+    }
+    /* Whatever was installed is ours to keep or close, even with MSG_CTRUNC. */
+    for (c = CMSG_FIRSTHDR(&m); c != NULL; c = CMSG_NXTHDR(&m, c)) {
+        if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS ||
+            c->cmsg_len < CMSG_LEN(0))
+            continue;
+        for (size_t i = 0; i < (c->cmsg_len - CMSG_LEN(0)) / sizeof(int); i++) {
+            int got;
+            memcpy(&got, CMSG_DATA(c) + i * sizeof(int), sizeof got);
+            if (nfd++ == 0)
+                fd = got;
+            else
+                close(got);
+        }
+    }
+    if (nfd == 0 || r != 1)
+        return fd_fail(-1, fd, EPROTO, name, "no fd received");
+    if (nfd > 1 || (m.msg_flags & MSG_CTRUNC)) {
+        snprintf(msg, sizeof msg, "expected one fd, got %d%s", nfd,
+                 (m.msg_flags & MSG_CTRUNC) ? " and more" : "");
+        return fd_fail(-1, fd, EPROTO, name, msg);
+    }
 
     if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, dd, sizeof dd) != (ssize_t)sizeof dd ||
         dd[0] != sizeof dd || dd[1] != 1)
@@ -570,7 +604,7 @@ int usbs_open(uint16_t vid, uint16_t pid, const char *path)
 {
     char found[32], node[64];
     struct usbdevfs_getdriver gd;
-    const struct usbs_chip *chip;
+    const struct usbs_chip *chip = NULL;
     uint16_t fvid = 0, fpid = 0;
     unsigned ifno;
     int fd;

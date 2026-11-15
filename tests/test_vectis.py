@@ -507,10 +507,12 @@ def test_usb_cli():
 
 class FdServer:
     """The app side of -U fd:@NAME: an abstract unix socket that sends one
-    fd (SCM_RIGHTS) per connection, or with fd None just a byte."""
+    fd (SCM_RIGHTS) per connection, or with fd None just a byte.  copies=2
+    sends the fd twice in one message; stall=True accepts and sends nothing."""
 
-    def __init__(self, name, fd):
-        self.fd, self.accepted = fd, 0
+    def __init__(self, name, fd, copies=1, stall=False):
+        self.fd, self.copies, self.stall, self.accepted = fd, copies, stall, 0
+        self.held = []
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.bind("\0" + name)
         self.sock.listen(4)
@@ -529,8 +531,12 @@ class FdServer:
             except OSError:
                 return
             self.accepted += 1
+            if self.stall:
+                self.held.append(c)
+                continue
             anc = [] if self.fd is None else \
-                [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", self.fd))]
+                [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i" * self.copies,
+                                                                    *[self.fd] * self.copies))]
             try:
                 c.sendmsg([b"\x01"], anc)
             finally:
@@ -540,6 +546,8 @@ class FdServer:
         self.running = False
         self.thread.join()
         self.sock.close()
+        for c in self.held:
+            c.close()
 
 
 def device_descriptor(vid, pid):
@@ -563,8 +571,9 @@ def test_usb_fd(tmp):
     check(r.returncode == 1 and ("fd:@%s: connect:" % name) in r.stderr,
           "-U fd: without the app: connect error")
 
-    def run_with(fd, expect, what):
-        srv = FdServer(name, fd)
+    def run_with(fd, expect, what, **kw):
+        srv = FdServer(name, fd, **kw)
+        t = time.time()
         try:
             r = subprocess.run([VECTIS, "-U", "fd:@" + name], capture_output=True, text=True,
                                stdin=subprocess.DEVNULL, timeout=10)
@@ -572,8 +581,11 @@ def test_usb_fd(tmp):
             srv.close()
         check(r.returncode == 1 and expect in r.stderr and srv.accepted == 1,
               "-U fd: %s (%r)" % (what, r.stderr.strip()[-90:]))
+        return time.time() - t
 
     run_with(None, "no fd received", "a connection without an fd")
+    took = run_with(None, "timed out", "a stalled app times out", stall=True)
+    check(took < 5, "-U fd: the stall ends after about 2 s (%.1f s)" % took)
     files = {}
     for key, data in (("junk", b"not a usbfs fd"), ("other", device_descriptor(0x1234, 0x5678)),
                       ("ch340", device_descriptor(0x1a86, 0x7523) + bytes(9))):
@@ -583,6 +595,8 @@ def test_usb_fd(tmp):
         files[key] = os.open(path, os.O_RDONLY)
     try:
         run_with(files["junk"], "no USB device descriptor", "a non-usbfs fd refused")
+        run_with(files["junk"], "expected one fd, got 2", "two fds in one message refused",
+                 copies=2)
         run_with(files["other"], "1234:5678 is not a supported chip", "an unknown chip refused")
         # The descriptor names a CH340, so the fd gets as far as claiming the
         # interface, which a plain file cannot do: the fd went through.
@@ -607,6 +621,27 @@ def test_usb_fd(tmp):
             log = stop(p)
             srv.close()
         check(log.count("claim interface") == 1, "-U fd: the failure is logged once")
+
+        # Extra fds are closed, not collected: the fd count stays flat over retries.
+        srv = FdServer(name, files["junk"], copies=3)
+        wport = free_port()
+        p = start([VECTIS, "-U", "fd:@" + name, "-w", "127.0.0.1:%d" % wport])
+        try:
+            wait_status(wport, "mode", "usb")
+            end = time.time() + 8
+            while srv.accepted < 2 and time.time() < end:
+                time.sleep(0.1)
+            before, n0 = len(os.listdir("/proc/%d/fd" % p.pid)), srv.accepted
+            end = time.time() + 15
+            while srv.accepted < n0 + 2 and time.time() < end:
+                time.sleep(0.1)
+            after = len(os.listdir("/proc/%d/fd" % p.pid))
+            check(srv.accepted >= n0 + 2 and after <= before,
+                  "-U fd: no fd leak over %d re-opens (%d -> %d open fds)"
+                  % (srv.accepted - n0, before, after))
+        finally:
+            stop(p)
+            srv.close()
     finally:
         for fd in files.values():
             os.close(fd)
