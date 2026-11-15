@@ -501,7 +501,8 @@ USB 模式（`make USB=0` 构建中没有）：
 - `-U SPEC`、`--usb SPEC` —— 通过 usbfs 驱动的 USB-UART；`SPEC` 是适配器的
   USB 路径（`1-1.3.4`，与 `/sys/bus/usb/devices` 中一致）、`usb:VID:PID`
   （找到的第一个此类设备）或 `usb:VID:PID@PATH`；参见下文“无内核驱动的
-  USB 模式”
+  USB 模式”。`fd:@NAME` 则从 Android 应用接收已经打开的适配器，参见该节中的
+  “从 Android 应用使用”
 
 这些模式互斥。
 
@@ -815,6 +816,27 @@ sudo udevadm trigger --action=change /sys/bus/usb/devices/1-1.3.4
 并将该用户加入 `dialout`（`sudo usermod -aG dialout USER`，下次登录后生效）。
 分离内核驱动只需要对该节点有写权限。在 OpenWrt 等没有 udev 的系统上，
 守护进程通常以 root 运行，无需其他设置。
+
+### 从 Android 应用使用（`-U fd:@NAME`）
+
+在 Android 上只有 root 才能打开 `/dev/bus/usb`。应用通过另一种方式获得适配器：
+用户允许访问后，`UsbManager.openDevice()` 交给它一个已经打开的 usbfs 文件描述符。
+`-U fd:@NAME` 接收这个描述符：vectis 连接到抽象 unix 套接字 `@NAME`，
+并在那里收到描述符（`SCM_RIGHTS`，附带至少一个字节的数据）。
+应用以子进程方式运行 vectis，例如从其原生库目录启动：
+
+```sh
+vectis -U fd:@vectis-usb -l 2021 -w 2081
+```
+
+- 套接字的所有者必须与 vectis 以同一 uid 运行。
+- vectis 从设备描述符读取 VID:PID，并像使用 USB 路径时一样选择芯片；
+  `-U` 的其余功能与上文相同。
+- 每次打开都是一个新连接：适配器丢失后 vectis 会重新连接，
+  因此应用在每次连接时都提供该描述符的新副本。
+- `NAME` 长度为 1 到 27 个字符。
+- 与其他场合一样，vectis 会把设备输出复制到 stdout：应用需要读取它，
+  或将其重定向到 `/dev/null`。
 
 ## 一台主机上的多个适配器：固定设备名（udev）
 

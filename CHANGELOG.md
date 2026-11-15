@@ -6,6 +6,19 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.12.0 — 2026-11-15
+
+`-U fd:@NAME` takes an open USB-UART from an Android app (#85).
+
+- On Android only root can open `/dev/bus/usb`; an app gets the adapter from
+  `UsbManager` as an open usbfs descriptor. vectis now receives that descriptor over
+  the abstract unix socket `@NAME` (`SCM_RIGHTS`), reads VID:PID from the device
+  descriptor and drives the chip as with a USB path. The socket's owner must run
+  under the same uid; every re-open after a device loss is a new connection.
+- Checked on an Android 10 TV box (32-bit ARM, no root) with a CH340 loopback: raw
+  and RFC 2217 data from 9600 to 921600 baud, and RTS/DTR from the web console.
+- `/status` shows such a target as `fd:@NAME`.
+
 ## 1.11.2 — 2026-11-14
 
 The web console (`-w`) follows the shared brass palette (#83).

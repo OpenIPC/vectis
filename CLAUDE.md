@@ -21,7 +21,8 @@ The release binaries are static musl builds from `ci/build-static.sh` (x86_64, i
 
 The tests use a pty pair in place of the serial device and cover the `-l` server (raw and
 Telnet/RFC 2217), the `-w` web API, the RFC 2217 client against `-l`, stdin EOF and device
-loss without a busy loop, and the `-U` command line. Add a test there for any behaviour
+loss without a busy loop, the `-U` command line, and `-U fd:@NAME` against a fake
+app socket. Add a test there for any behaviour
 change that can be exercised without hardware.
 
 ## Layout

@@ -10,8 +10,8 @@
 # Telnet/RFC 2217 mode (LF->CR, 0xFF escaping, SET-BAUDRATE, SET-CONTROL,
 # SIGNATURE, BRK), the -w web API, the RFC 2217 client (-h/-p) against
 # the -l server, stdin EOF and device loss without a busy loop, the -u
-# check of the USB adapter on reconnect (a fake sysfs), and the -U command
-# line of the USB builds.
+# check of the USB adapter on reconnect (a fake sysfs), the -U command
+# line of the USB builds, and -U fd:@NAME against a fake app socket.
 #
 # Usage: tests/test_vectis.py [DIR]   (DIR holds vectis and vectis-*; default .)
 # Python 3 standard library only; Linux.
@@ -505,6 +505,113 @@ def test_usb_cli():
     check(log.count("no USB device") == 1, "%s: the outage is logged once" % name)
 
 
+class FdServer:
+    """The app side of -U fd:@NAME: an abstract unix socket that sends one
+    fd (SCM_RIGHTS) per connection, or with fd None just a byte."""
+
+    def __init__(self, name, fd):
+        self.fd, self.accepted = fd, 0
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.bind("\0" + name)
+        self.sock.listen(4)
+        self.sock.settimeout(0.2)
+        self.running = True
+        import threading
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        while self.running:
+            try:
+                c, _ = self.sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            self.accepted += 1
+            anc = [] if self.fd is None else \
+                [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", self.fd))]
+            try:
+                c.sendmsg([b"\x01"], anc)
+            finally:
+                c.close()
+
+    def close(self):
+        self.running = False
+        self.thread.join()
+        self.sock.close()
+
+
+def device_descriptor(vid, pid):
+    # bLength, bDescriptorType, bcdUSB, class/subclass/protocol, bMaxPacketSize0,
+    # idVendor, idProduct, bcdDevice, iManufacturer/iProduct/iSerial, bNumConfigurations
+    return struct.pack("<BBHBBBBHHHBBBB", 18, 1, 0x0110, 0xff, 0, 0, 8, vid, pid, 0x0264,
+                       0, 2, 0, 1)
+
+
+def test_usb_fd(tmp):
+    print("== -U fd:@NAME (an fd from an Android app)")
+    r = subprocess.run([VECTIS, "--version"], capture_output=True, text=True)
+    if "USB chips (-U)" not in r.stdout:
+        return
+    for spec in ("fd:", "fd:@", "fd:name", "fd:@" + "n" * 28):
+        r = subprocess.run([VECTIS, "-U", spec], capture_output=True, text=True)
+        check(r.returncode == 1 and "Invalid -U spec" in r.stderr, "-U %s refused" % spec[:12])
+    name = "vectis-test-%d" % os.getpid()
+    r = subprocess.run([VECTIS, "-U", "fd:@" + name], capture_output=True, text=True,
+                       stdin=subprocess.DEVNULL)
+    check(r.returncode == 1 and ("fd:@%s: connect:" % name) in r.stderr,
+          "-U fd: without the app: connect error")
+
+    def run_with(fd, expect, what):
+        srv = FdServer(name, fd)
+        try:
+            r = subprocess.run([VECTIS, "-U", "fd:@" + name], capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, timeout=10)
+        finally:
+            srv.close()
+        check(r.returncode == 1 and expect in r.stderr and srv.accepted == 1,
+              "-U fd: %s (%r)" % (what, r.stderr.strip()[-90:]))
+
+    run_with(None, "no fd received", "a connection without an fd")
+    files = {}
+    for key, data in (("junk", b"not a usbfs fd"), ("other", device_descriptor(0x1234, 0x5678)),
+                      ("ch340", device_descriptor(0x1a86, 0x7523) + bytes(9))):
+        path = os.path.join(tmp, "usbfs-" + key)
+        with open(path, "wb") as f:
+            f.write(data)
+        files[key] = os.open(path, os.O_RDONLY)
+    try:
+        run_with(files["junk"], "no USB device descriptor", "a non-usbfs fd refused")
+        run_with(files["other"], "1234:5678 is not a supported chip", "an unknown chip refused")
+        # The descriptor names a CH340, so the fd gets as far as claiming the
+        # interface, which a plain file cannot do: the fd went through.
+        run_with(files["ch340"], "fd:@%s: claim interface 0" % name,
+                 "a CH340 fd reaches the interface claim")
+
+        # As a daemon: every re-open is a new connection with a fresh fd.
+        srv = FdServer(name, files["ch340"])
+        wport = free_port()
+        p = start([VECTIS, "-U", "fd:@" + name, "-w", "127.0.0.1:%d" % wport])
+        try:
+            st = wait_status(wport, "mode", "usb")
+            check(st.get("target") == "fd:@" + name and st.get("link") == "offline",
+                  "-U fd: daemon /status target %r, link %r" % (st.get("target"), st.get("link")))
+            end = time.time() + 8
+            while srv.accepted < 2 and time.time() < end:
+                time.sleep(0.1)
+            check(srv.accepted >= 2, "-U fd: daemon asks the app again on re-open (%d)"
+                  % srv.accepted)
+            check(cpu_share(p.pid, 1.0) < 0.05, "-U fd: daemon retries with idle CPU")
+        finally:
+            log = stop(p)
+            srv.close()
+        check(log.count("claim interface") == 1, "-U fd: the failure is logged once")
+    finally:
+        for fd in files.values():
+            os.close(fd)
+
+
 def main():
     if not os.access(VECTIS, os.X_OK):
         sys.exit("no %s; build first (make)" % VECTIS)
@@ -513,6 +620,7 @@ def main():
         test_client(tmp)
         test_stdin_eof(tmp)
         test_identity(tmp)
+        test_usb_fd(tmp)
     test_usb_cli()
     print()
     if failures:

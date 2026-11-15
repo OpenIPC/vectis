@@ -7,6 +7,10 @@
  * bulk IN URBs of one packet each queued all the time and reaped from
  * the main poll loop, bulk OUT in short synchronous chunks.
  *
+ * Instead of a USB path the device can come as an already open usbfs fd
+ * over an abstract unix socket ("fd:@NAME"): that is how an Android app,
+ * which gets the fd from UsbManager, hands the adapter to vectis.
+ *
  * Reading: usbfs reports POLLOUT on its fd when an asynchronous URB has
  * completed, and POLLERR | POLLHUP once the device is gone.  The IN URBs
  * are reaped into a backlog that vectis drains like a tty read.  A write
@@ -28,7 +32,11 @@
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
+#include <stddef.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <sys/un.h>
 #include <linux/usbdevice_fs.h>
 
 #ifdef VECTIS_CHIP_CH34X
@@ -138,6 +146,15 @@ int usbs_parse_spec(const char *spec, uint16_t *vid, uint16_t *pid,
 
     *vid = *pid = 0;
     path[0] = '\0';
+    if (strncmp(spec, "fd:", 3) == 0) {
+        /* The name goes into sun_path after the leading NUL. */
+        if (spec[3] != '@' || spec[4] == '\0' || strlen(spec) >= path_size) {
+            *why = "expected fd:@NAME, an abstract unix socket name of 1 to 27 characters";
+            return -1;
+        }
+        snprintf(path, path_size, "%s", spec);
+        return 0;
+    }
     if (strncmp(spec, "usb:", 4) == 0) {
         if (sscanf(spec + 4, "%4x:%4x%n", &v, &p, &n) != 2 ||
             (spec[4 + n] != '\0' && spec[4 + n] != '@')) {
@@ -473,12 +490,88 @@ static size_t in_packet_size(int fd, unsigned iface, uint8_t ep)
     return 0;
 }
 
+/* Fail an fd_from_socket() step: message to g_err, close what is open. */
+static int fd_fail(int s, int fd, int e, const char *name, const char *what)
+{
+    snprintf(g_err, sizeof g_err, "fd:@%s: %s", name, what);
+    if (s >= 0)
+        close(s);
+    if (fd >= 0)
+        close(fd);
+    errno = e;
+    return -1;
+}
+
+/* Connect to the abstract unix socket @name and take the one usbfs fd its
+ * owner sends (SCM_RIGHTS) with at least one byte of data.  The owner must
+ * run under our uid: the fd decides which device we drive.  VID:PID come
+ * from the device descriptor at the start of the fd (usbfs read()).
+ * Returns the fd (close-on-exec) or -1 with g_err and errno set. */
+static int fd_from_socket(const char *name, uint16_t *fvid, uint16_t *fpid,
+                          const struct usbs_chip **chip)
+{
+    struct sockaddr_un a;
+    size_t len = strlen(name);
+    union { struct cmsghdr h; char buf[CMSG_SPACE(sizeof(int))]; } ctl;
+    char byte, msg[96];
+    struct iovec io = { .iov_base = &byte, .iov_len = 1 };
+    struct msghdr m;
+    struct cmsghdr *c;
+    struct ucred cred;
+    socklen_t cl = sizeof cred;
+    uint8_t dd[18];
+    int s, fd = -1;
+
+    if (len + 1 > sizeof a.sun_path)
+        return fd_fail(-1, -1, ENAMETOOLONG, name, "name too long");
+    memset(&a, 0, sizeof a);
+    a.sun_family = AF_UNIX;
+    memcpy(a.sun_path + 1, name, len);          /* sun_path[0] = 0: abstract */
+    s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (s < 0 || connect(s, (struct sockaddr *)&a,
+                         (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + len)) != 0) {
+        int e = errno;
+        snprintf(msg, sizeof msg, "connect: %s", strerror(e));
+        return fd_fail(s, -1, e, name, msg);
+    }
+    if (getsockopt(s, SOL_SOCKET, SO_PEERCRED, &cred, &cl) != 0 || cred.uid != getuid()) {
+        snprintf(msg, sizeof msg, "the socket's owner is not uid %u", (unsigned)getuid());
+        return fd_fail(s, -1, EPERM, name, msg);
+    }
+    memset(&m, 0, sizeof m);
+    m.msg_iov = &io;
+    m.msg_iovlen = 1;
+    m.msg_control = ctl.buf;
+    m.msg_controllen = sizeof ctl.buf;
+    if (recvmsg(s, &m, MSG_CMSG_CLOEXEC) == 1 && !(m.msg_flags & MSG_CTRUNC))
+        for (c = CMSG_FIRSTHDR(&m); c != NULL; c = CMSG_NXTHDR(&m, c))
+            if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS &&
+                c->cmsg_len == CMSG_LEN(sizeof(int)))
+                memcpy(&fd, CMSG_DATA(c), sizeof fd);
+    close(s);
+    if (fd < 0)
+        return fd_fail(-1, -1, EPROTO, name, "no fd received");
+
+    if (lseek(fd, 0, SEEK_SET) != 0 || read(fd, dd, sizeof dd) != (ssize_t)sizeof dd ||
+        dd[0] != sizeof dd || dd[1] != 1)
+        return fd_fail(-1, fd, EPROTO, name, "the fd has no USB device descriptor (not usbfs)");
+    *fvid = (uint16_t)(dd[8] | dd[9] << 8);
+    *fpid = (uint16_t)(dd[10] | dd[11] << 8);
+    *chip = chip_for(*fvid, *fpid);
+    if (*chip == NULL) {
+        snprintf(msg, sizeof msg, "%04x:%04x is not a supported chip (%s)", *fvid, *fpid,
+                 usbs_chip_names());
+        return fd_fail(-1, fd, ENODEV, name, msg);
+    }
+    return fd;
+}
+
 int usbs_open(uint16_t vid, uint16_t pid, const char *path)
 {
     char found[32], node[64];
     struct usbdevfs_getdriver gd;
     const struct usbs_chip *chip;
-    uint16_t fvid, fpid;
+    uint16_t fvid = 0, fpid = 0;
     unsigned ifno;
     int fd;
 
@@ -496,17 +589,24 @@ int usbs_open(uint16_t vid, uint16_t pid, const char *path)
             return -1;
         }
     }
-    if (find_device(vid, pid, path, found, sizeof found, &fvid, &fpid, &chip,
-                    node, sizeof node) != 0)
-        return -1;
+    if (strncmp(path, "fd:@", 4) == 0) {
+        fd = fd_from_socket(path + 4, &fvid, &fpid, &chip);
+        if (fd < 0)
+            return -1;
+        snprintf(found, sizeof found, "%s", path);
+    } else {
+        if (find_device(vid, pid, path, found, sizeof found, &fvid, &fpid, &chip,
+                        node, sizeof node) != 0)
+            return -1;
 
-    fd = open(node, O_RDWR | O_CLOEXEC);
-    if (fd < 0) {
-        int e = errno;
-        snprintf(g_err, sizeof g_err, "open %s (%s): %s%s", node, found, strerror(e),
-                 e == EACCES ? " (needs a udev rule, see README)" : "");
-        errno = e;
-        return -1;
+        fd = open(node, O_RDWR | O_CLOEXEC);
+        if (fd < 0) {
+            int e = errno;
+            snprintf(g_err, sizeof g_err, "open %s (%s): %s%s", node, found, strerror(e),
+                     e == EACCES ? " (needs a udev rule, see README)" : "");
+            errno = e;
+            return -1;
+        }
     }
 
     /* Take the interface from the kernel driver (ch341 & co.), if any.

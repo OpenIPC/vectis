@@ -59,14 +59,17 @@ extern const struct usbs_chip *const usbs_chips[];
 /* Supported chips as text ("ch34x"), for usage and --version. */
 const char *usbs_chip_names(void);
 
-/* Parse "-U" spec: "1-1.3.4", "usb:1a86:7522" or "usb:1a86:7522@1-1.3.4".
+/* Parse "-U" spec: "1-1.3.4", "usb:1a86:7522", "usb:1a86:7522@1-1.3.4" or
+ * "fd:@NAME" (path is then the spec itself, see usbs_open()).
  * Returns 0, or -1 with a reason in *why. */
 int usbs_parse_spec(const char *spec, uint16_t *vid, uint16_t *pid,
                     char *path, size_t path_size, const char **why);
 
-/* Find the device, take the interface from the kernel driver if one is
- * bound, bring the chip up and start receiving.  The modem lines are not
- * touched.  Returns the usbfs fd for poll() (POLLOUT = URBs to reap,
+/* Find the device (or, with path "fd:@NAME", take an open usbfs fd from
+ * the owner of the abstract unix socket @NAME: an Android app under our
+ * uid, one SCM_RIGHTS fd per connection), take the interface from the
+ * kernel driver if one is bound, bring the chip up and start receiving.
+ * The modem lines are not touched.  Returns the usbfs fd for poll() (POLLOUT = URBs to reap,
  * POLLERR/POLLHUP = device gone), or -1 with the reason in usbs_error()
  * (not logged here: the caller decides, see vectis' quiet retries). */
 int usbs_open(uint16_t vid, uint16_t pid, const char *path);
