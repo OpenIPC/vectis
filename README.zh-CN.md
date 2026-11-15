@@ -860,9 +860,13 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
   在启动时不会为已经插着的适配器授予 USB 访问权限，因此屏幕上会出现
   访问对话框：用遥控器按 OK。没有屏幕的盒子：拔下适配器再插回。
 - **Stop** 会让 vectis 保持停止状态直到按 Start：启动和插入事件不会启动它。
+- 两个端口都在盒子的所有网络接口上监听且无认证，与 Linux 上的 `-l PORT`、
+  `-w PORT` 相同：该网络中的任何人都可以使用控制台并切换电源。
+  请将盒子放在可信网络中。
 
 构建需要 Android SDK、NDK r27 和 Gradle 8：`cd android && gradle
 assembleDebug`；APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
+`gradle testDebugUnitTest` 无需设备即可运行应用逻辑（设置、命令行、日志）的测试。
 `android/build-native.sh` 用 NDK 为应用构建 vectis，生成名为 `libvectis.so`
 的可执行文件。已在 Android 10 电视盒（32 位 ARM，无 root）上用 CH340 验证。
 

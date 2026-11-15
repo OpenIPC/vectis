@@ -75,6 +75,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
     lint {
         warningsAsErrors = true
         abortOnError = true
@@ -82,4 +85,9 @@ android {
         // ChromeOsAbiSupport: phones and TV boxes with ARM USB hosts
         disable += listOf("GradleDependency", "OldTargetApi", "AndroidGradlePluginVersion", "ChromeOsAbiSupport")
     }
+}
+
+dependencies {
+    // Platform classes only: no AppCompat or AndroidX
+    testImplementation("junit:junit:4.13.2")
 }

@@ -23,6 +23,7 @@
     <string name="power_off">OFF (RTS %1$d, DTR %2$d)</string>
     <string name="power_unknown">—</string>
     <string name="stopped">stopped</string>
+    <string name="starting">starting</string>
     <string name="restarting">restarting: %1$s</string>
     <string name="no_address">no network</string>
 
@@ -32,7 +33,7 @@
     <string name="settings_web">Web console TCP port (-w)</string>
     <string name="settings_save">Save</string>
     <string name="settings_cancel">Cancel</string>
-    <string name="settings_bad">Ports 1–65535, different; baud 300–921600</string>
+    <string name="settings_bad">Baud: 300, 1200 … 115200, 230400, 460800, 921600; ports 1–65535, different</string>
     <string name="no_browser">No browser here: open %1$s from another device</string>
 
     <string name="notify_starting">Starting</string>

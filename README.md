@@ -908,9 +908,15 @@ as on Linux.
   the adapter and plug it back in.
 - **Stop** keeps vectis stopped until Start: boot and plug-in events
   leave it alone.
+- Both ports listen on every interface of the box with no
+  authentication, as `-l PORT` and `-w PORT` do on Linux: anyone on that
+  network can use the console and switch the power. Keep the box on a
+  trusted network.
 
 Build with the Android SDK, NDK r27 and Gradle 8: `cd android && gradle
 assembleDebug`; the APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
+`gradle testDebugUnitTest` runs the tests of the app's logic (settings,
+command line, log) without a device.
 `android/build-native.sh` builds vectis for the app with the NDK, as an
 executable named `libvectis.so`. Checked on an Android 10 TV box (32-bit
 ARM, no root) with a CH340.

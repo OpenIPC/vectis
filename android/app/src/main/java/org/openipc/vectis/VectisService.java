@@ -85,6 +85,7 @@ public class VectisService extends Service {
     private UsbDeviceConnection conn;     // guarded by lock: open while we have access
     private Process process;              // guarded by lock
     private boolean wanted;               // guarded by lock: keep vectis running
+    private int generation;               // guarded by lock: which runLoop is the current one
     private LocalServerSocket server;
     private PowerManager.WakeLock wakeLock;
     private volatile String lastExit = "";
@@ -103,6 +104,7 @@ public class VectisService extends Service {
                 closeAdapter();
                 line("app: adapter unplugged");
             } else {
+                askedAccess = false;      // a new plug-in: one more chance to ask
                 openAdapter();
             }
             updateNotification();
@@ -160,6 +162,12 @@ public class VectisService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
+        if (action.equals(ACTION_USB) && !Settings.running(this)) {
+            // An access answer that arrives after Stop: nothing to start
+            if (!isWanted())
+                stopSelf();
+            return START_NOT_STICKY;
+        }
         goForeground(getString(R.string.notify_starting));
         if (action.equals(ACTION_RESTART)) {
             restartVectis();
@@ -185,6 +193,12 @@ public class VectisService extends Service {
     }
 
     // ── state for the screen ──────────────────────────────────────
+
+    private boolean isWanted() {
+        synchronized (lock) {
+            return wanted;
+        }
+    }
 
     boolean isRunning() {
         synchronized (lock) {
@@ -323,10 +337,12 @@ public class VectisService extends Service {
 
     @SuppressLint("WakelockTimeout")   // vectis serves until Stop: no natural timeout
     private void startVectis() {
+        int gen;
         synchronized (lock) {
             if (wanted)
                 return;
             wanted = true;
+            gen = ++generation;
         }
         try {
             server = new LocalServerSocket(SOCKET);
@@ -341,19 +357,19 @@ public class VectisService extends Service {
         new Thread(() -> serve(s), "vectis-fd").start();
         if (wakeLock != null)
             wakeLock.acquire();           // held while vectis serves, released by stopVectis()
-        new Thread(this::runLoop, "vectis-run").start();
+        new Thread(() -> runLoop(gen), "vectis-run").start();
     }
 
-    /** Runs vectis, restarts it while wanted. */
-    private void runLoop() {
+    /** Runs vectis, restarts it while wanted; ends when a newer start took over. */
+    private void runLoop(int gen) {
         while (true) {
             synchronized (lock) {
-                if (!wanted)
+                if (!wanted || gen != generation)
                     break;
             }
-            runOnce();
+            runOnce(gen);
             synchronized (lock) {
-                if (!wanted)
+                if (!wanted || gen != generation)
                     break;
                 try {
                     lock.wait(RESTART_DELAY_MS);
@@ -364,22 +380,28 @@ public class VectisService extends Service {
         }
     }
 
-    private List<String> command() {
+    /**
+     * The vectis command line.  The ports listen on every interface, as
+     * -l PORT and -w PORT do on Linux: the console and the power switch are
+     * meant to be reached from the lab network (README, no authentication).
+     */
+    static List<String> command(String bin, int baud, int console, int web) {
         List<String> cmd = new ArrayList<>();
-        cmd.add(binary(this).getPath());
+        cmd.add(bin);
         cmd.add("-U");
         cmd.add("fd:@" + SOCKET);
         cmd.add("-b");
-        cmd.add(Integer.toString(Settings.baud(this)));
+        cmd.add(Integer.toString(baud));
         cmd.add("-l");
-        cmd.add(Integer.toString(Settings.consolePort(this)));
+        cmd.add(Integer.toString(console));
         cmd.add("-w");
-        cmd.add(Integer.toString(Settings.webPort(this)));
+        cmd.add(Integer.toString(web));
         return cmd;
     }
 
-    private void runOnce() {
-        List<String> cmd = command();
+    private void runOnce(int gen) {
+        List<String> cmd = command(binary(this).getPath(), Settings.baud(this),
+                Settings.consolePort(this), Settings.webPort(this));
         Process p;
         try {
             p = new ProcessBuilder(cmd).start();
@@ -389,7 +411,7 @@ public class VectisService extends Service {
         }
         synchronized (lock) {
             process = p;
-            if (!wanted)
+            if (!wanted || gen != generation)
                 p.destroy();
         }
         line("app: started " + TextUtils.join(" ", cmd));
@@ -412,7 +434,8 @@ public class VectisService extends Service {
             code = -1;
         }
         synchronized (lock) {
-            process = null;
+            if (process == p)
+                process = null;
         }
         lastExit = "vectis exited with code " + code;
         line("app: " + lastExit);

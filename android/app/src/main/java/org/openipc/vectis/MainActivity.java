@@ -59,12 +59,13 @@ public class MainActivity extends Activity {
     private Button start, stop, access, web;
     /** The last /status of vectis, read off the UI thread; null if none. */
     private volatile JSONObject status;
-    private volatile boolean polling;
+    private volatile Object pollToken;
 
     private final BroadcastReceiver permission = new BroadcastReceiver() {
         @Override
         public void onReceive(Context c, Intent i) {
-            if (i.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false))
+            // Not the extra (any app could send this action before 13): what UsbManager says
+            if (Settings.running(c) && hasAccess(c))
                 VectisService.send(c, VectisService.ACTION_START);
             update();
         }
@@ -172,19 +173,19 @@ public class MainActivity extends Activity {
         super.onResume();
         // Access granted meanwhile (the dialog, "use by default"): hand it to the service
         VectisService s = VectisService.instance;
-        UsbDevice d = VectisService.findAdapter(this);
-        if (s != null && d != null && !s.hasAccess() &&
-                ((UsbManager) getSystemService(USB_SERVICE)).hasPermission(d))
+        if (s != null && !s.hasAccess() && Settings.running(this) && hasAccess(this))
             VectisService.send(this, VectisService.ACTION_START);
-        polling = true;
-        new Thread(this::poll, "vectis-status").start();
+        // One poller per resume: an older one (still sleeping) sees its token replaced and ends
+        Object token = new Object();
+        pollToken = token;
+        new Thread(() -> poll(token), "vectis-status").start();
         handler.post(refresh);
     }
 
     @Override
     protected void onPause() {
         handler.removeCallbacks(refresh);
-        polling = false;
+        pollToken = null;
         super.onPause();
     }
 
@@ -203,6 +204,12 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             return "?";
         }
+    }
+
+    /** True if a supported adapter is plugged in and UsbManager lets us open it. */
+    static boolean hasAccess(Context c) {
+        UsbDevice d = VectisService.findAdapter(c);
+        return d != null && ((UsbManager) c.getSystemService(USB_SERVICE)).hasPermission(d);
     }
 
     private void askAccess() {
@@ -251,7 +258,7 @@ public class MainActivity extends Activity {
                 .setView(box)
                 .setPositiveButton(R.string.settings_save, (d, w) -> {
                     int b = number(baud), c = number(console), p = number(webPort);
-                    if (b < 300 || b > 921600 || c < 1 || c > 65535 || p < 1 || p > 65535 || c == p) {
+                    if (!Settings.valid(b, c, p)) {
                         Toast.makeText(this, R.string.settings_bad, Toast.LENGTH_LONG).show();
                         return;
                     }
@@ -272,8 +279,8 @@ public class MainActivity extends Activity {
     }
 
     /** Reads vectis' /status once a second while the screen is shown. */
-    private void poll() {
-        while (polling) {
+    private void poll(Object token) {
+        while (pollToken == token) {
             JSONObject st = null;
             VectisService s = VectisService.instance;
             if (s != null && s.isRunning()) {
@@ -321,6 +328,9 @@ public class MainActivity extends Activity {
         if (s == null) {
             power = getString(R.string.stopped);
             color = R.color.dim;
+        } else if (!s.isRunning() && s.lastExit().isEmpty()) {
+            power = getString(R.string.starting);
+            color = R.color.amber;
         } else if (!s.isRunning()) {
             power = getString(R.string.restarting, s.lastExit());
             color = R.color.red;

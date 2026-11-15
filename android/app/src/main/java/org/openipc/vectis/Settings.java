@@ -14,10 +14,21 @@ final class Settings {
     static final int DEFAULT_BAUD = 115200;
     static final int DEFAULT_CONSOLE = 2021;
     static final int DEFAULT_WEB = 2081;
+    /** The baud rates vectis accepts (baud_table in vectis.c). */
+    static final int[] BAUDS = {300, 1200, 2400, 4800, 9600, 19200, 38400, 57600,
+                                115200, 230400, 460800, 921600};
     private static final String BAUD = "baud", CONSOLE = "console_port", WEB = "web_port",
             BOOT = "start_on_boot", RUNNING = "running";
 
     private Settings() {}
+
+    /** True if vectis takes these: a rate of BAUDS, two different ports 1..65535. */
+    static boolean valid(int baud, int console, int web) {
+        boolean known = false;
+        for (int b : BAUDS)
+            known |= b == baud;
+        return known && console >= 1 && console <= 65535 && web >= 1 && web <= 65535 && console != web;
+    }
 
     private static SharedPreferences prefs(Context c) {
         return c.getSharedPreferences("vectis", Context.MODE_PRIVATE);
