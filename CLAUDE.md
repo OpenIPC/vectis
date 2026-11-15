@@ -93,7 +93,9 @@ Easy to break and not obvious from one function — read the surrounding block c
   enforces it (`version.yml`). The `no-release` label lets through a change that leaves
   the release files as they are. Docs, tests and the rest of `.github/` need no bump.
 - Every push to `master` that passes all builds replaces the single `latest` release
-  (`vectis-linux-x86_64`, `vectis-linux-mipsel`, no version in the file names); no `v*`
-  tags. A new version is also posted to the OpenIPC Telegram dev channel.
+  (`vectis-linux-x86_64`, `vectis-linux-mipsel`, `vectis-android.apk`, no version in the
+  file names); no `v*` tags. The APK is signed with the project's release key (repository
+  secrets `VECTIS_KEYSTORE_*`; the `android-release` job checks the certificate's
+  SHA-256). A new version is also posted to the OpenIPC Telegram dev channel.
 - Keep the three READMEs (`README.md`, `README.ru.md`, `README.zh-CN.md`) in step when
   changing user-visible behaviour or options; `usage()` in `vectis.c` is the option reference.

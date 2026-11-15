@@ -6,6 +6,19 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.13.0 — 2026-11-15
+
+The Android app is released: `vectis-android.apk` in `latest` (#89).
+
+- The app (#87, from `android/`) runs vectis on an Android TV box or phone with a USB host,
+  without root (Android 5.0 and later, 32- and 64-bit ARM). A foreground service owns the
+  CH340/CH341 adapter, hands it to vectis with `-U fd:@NAME`, and serves the console and
+  the web power console on TCP ports 2021 and 2081. It starts on boot and keeps the ports
+  up across unplugs. The status screen shows the adapter, power and addresses.
+- CI builds a debug APK with unit tests and lint on every run. On `master` it builds the
+  release APK, signed with the project's key and checked against its certificate. The
+  APK is published with the Linux binaries and posted to Telegram with them.
+
 ## 1.12.0 — 2026-11-15
 
 `-U fd:@NAME` takes an open USB-UART from an Android app (#85).

@@ -170,14 +170,17 @@ CI пересобирает его при каждом push в `master`, ког�
 статические бинарные файлы на musl, которые работают на любом Linux своей
 архитектуры: `vectis-linux-x86_64` для ПК и серверов,
 `vectis-linux-mipsel` для роутеров MIPS little-endian (MediaTek MT7620/MT7621/MT7628
-и подобные, OpenWrt) — soft-float, работает с FPU и без него. В именах файлов нет
-версии, поэтому эти ссылки не меняются:
+и подобные, OpenWrt) — soft-float, работает с FPU и без него; и `vectis-android.apk` —
+Android-приложение (см. «Android-приложение»), подписанное ключом проекта, чтобы новая
+версия ставилась поверх старой. В именах файлов нет версии, поэтому эти ссылки не
+меняются:
 
 | Что                   | Ссылка                                                                           |
 |-----------------------|----------------------------------------------------------------------------------|
 | страница релиза       | <https://github.com/OpenIPC/vectis/releases/latest>                              |
 | `vectis-linux-x86_64` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64> |
 | `vectis-linux-mipsel` | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-mipsel> |
+| `vectis-android.apk`  | <https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk>  |
 
 ```sh
 curl -fsSLO https://github.com/OpenIPC/vectis/releases/latest/download/vectis-linux-x86_64 &&
@@ -891,6 +894,9 @@ ARM). Служба переднего плана владеет адаптеро
 `vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 2081`: консоль
 и веб-консоль питания — на этих TCP-портах приставки, как на Linux.
 
+- **Установка** — [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
+  из релиза `latest` (когда Android спросит, разрешите установку из этого
+  источника).
 - **Первый запуск.** Подключите адаптер (CH340/CH341). Android предложит
   открывать для него Vectis: отметьте «Always open Vectis when USB Serial
   is connected» и нажмите OK. Или откройте приложение и нажмите **Allow

@@ -6,7 +6,9 @@
 # job), check that `make USB=0` still builds, and run the regression tests
 # on x86_64; plus the static musl builds the release ships: x86_64
 # (ci/build-static.sh) and soft-float mipsel for OpenWrt routers
-# (ci/build-mipsel.sh).
+# (ci/build-mipsel.sh); and the Android app (android/): a debug APK with its
+# unit tests and lint on every run, the release APK signed with the
+# project's key on master.
 # On pull requests, version.yml runs .github/check-version.sh: a change to
 # the code or the build (this workflow included) comes with a new
 # PROGRAM_VERSION and its CHANGELOG.md section; the no-release label lets
@@ -182,13 +184,137 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # The Android app (android/): NDK build of vectis (android/build-native.sh),
+  # unit tests, lint without warnings, a debug APK (the fixed debug key of the
+  # repository). The release APK is the android-release job, on master only.
+  android:
+    name: Android app (APK)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: NDK r27c
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Build, test and lint
+        run: |
+          cd android
+          gradle --no-daemon assembleDebug testDebugUnitTest lintDebug
+          cp app/build/outputs/apk/debug/app-debug.apk vectis-android-debug.apk
+
+      - name: Upload the debug APK
+        uses: actions/upload-artifact@v5
+        with:
+          name: vectis-android-debug
+          path: android/vectis-android-debug.apk
+          if-no-files-found: error
+
+  # The release APK, signed with the project's release key (repository
+  # secrets). Only pushes to master reach it; a fork has no key and
+  # publishes the Linux binaries alone. The signer has to be the project's
+  # certificate, or users could not update the app.
+  android-release:
+    name: Android app (release APK)
+    needs: android
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    outputs:
+      signed: ${{ steps.build.outputs.signed }}
+    env:
+      CERT_SHA256: cc3d24b01d9e509c9d97c4dbbe67de86458ac7edd32e57b5517bad93d7024e5c
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: NDK r27c
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Build and sign
+        id: build
+        env:
+          KEYSTORE_BASE64: ${{ secrets.VECTIS_KEYSTORE_BASE64 }}
+          VECTIS_KEYSTORE_PASSWORD: ${{ secrets.VECTIS_KEYSTORE_PASSWORD }}
+          VECTIS_KEY_ALIAS: ${{ secrets.VECTIS_KEY_ALIAS }}
+          VECTIS_KEY_PASSWORD: ${{ secrets.VECTIS_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::notice::no release key here (a fork): no release APK"
+            echo "signed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/keys"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keys/vectis-release.jks"
+          export VECTIS_KEYSTORE_FILE="$RUNNER_TEMP/keys/vectis-release.jks"
+          (cd android && gradle --no-daemon assembleRelease)
+          rm -rf "$RUNNER_TEMP/keys"
+          cp android/app/build/outputs/apk/release/app-release.apk vectis-android.apk
+          # the signer of an APK: the newest build-tools whose apksigner runs here
+          signer_of() {
+            for bt in $(ls -d "$ANDROID_HOME"/build-tools/* | sort -rV); do
+              if out=$("$bt/apksigner" verify --print-certs "$1" 2>&1); then
+                # whole lines only: "Signer #1 certificate ...", "Signer (minSdkVersion=N...) certificate ..."
+                # or "V2 Signer: certificate ..." (build-tools 37), 64 hex digits; one signer only
+                d=$(echo "$out" | sed -nE 's/^(Signer #[0-9]+|Signer \([^)]*\)|V[0-9]+ Signer:) certificate SHA-256 digest: ([0-9a-f]{64})$/\2/p' | sort -u)
+                [ "$(echo "$d" | grep -c .)" -le 1 ] || { echo "$bt/apksigner: more than one signer" >&2; echo "$out" >&2; echo; return 0; }
+                [ -n "$d" ] || { echo "$bt/apksigner printed no signer:" >&2; echo "$out" >&2; }
+                echo "$d"; return 0
+              fi
+              echo "$bt/apksigner: $out" | head -3 >&2
+            done
+            return 1
+          }
+          signer=$(signer_of vectis-android.apk) || { echo "::error::apksigner could not check the APK"; exit 1; }
+          [ "$signer" = "$CERT_SHA256" ] ||
+            { echo "::error::signed by $signer, not the project's certificate $CERT_SHA256"; exit 1; }
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the release APK
+        if: steps.build.outputs.signed == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: vectis-android-release
+          path: vectis-android.apk
+          if-no-files-found: error
+
   # The one release, "latest": updated from every push to master after all
-  # builds pass, from the static binaries built and tested above. A failure
-  # at any step leaves a release that a re-run of this job finishes (#73).
+  # builds pass, from the static binaries built and tested above and the
+  # signed APK. A failure at any step leaves a release that a re-run of this
+  # job finishes (#73).
   release:
     name: Publish "latest"
-    needs: [linux, static, mipsel]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [linux, static, mipsel, android, android-release]
+    # android-release without a key (a fork): the Linux binaries alone
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/master' &&
+      needs.linux.result == 'success' && needs.static.result == 'success' &&
+      needs.mipsel.result == 'success' && needs.android.result == 'success' &&
+      needs.android-release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write   # update the release and its tag
@@ -202,7 +328,17 @@ jobs:
           pattern: vectis-*-static
           path: artifacts
 
+      - name: Download the Android app
+        if: needs.android-release.outputs.signed == 'true'
+        uses: actions/download-artifact@v5
+        with:
+          name: vectis-android-release
+          path: artifacts/android
+
       - name: Check the files
+        env:
+          SIGNED: ${{ needs.android-release.outputs.signed }}
+          CERT_SHA256: cc3d24b01d9e509c9d97c4dbbe67de86458ac7edd32e57b5517bad93d7024e5c
         run: |
           ver=$(sed -n 's/^#define PROGRAM_VERSION *"\(.*\)"/\1/p' vectis.c)
           [ -n "$ver" ] || { echo "::error::no PROGRAM_VERSION in vectis.c"; exit 1; }
@@ -215,6 +351,31 @@ jobs:
           ls -l dist
           file dist/vectis-linux-mipsel | grep -q 'MIPS.*statically linked' ||
             { echo "::error::vectis-linux-mipsel is not a static MIPS binary"; exit 1; }
+          if [ "$SIGNED" = true ]; then
+            cp artifacts/android/vectis-android.apk dist/
+            # the signer of an APK: the newest build-tools whose apksigner runs here
+            signer_of() {
+              for bt in $(ls -d "$ANDROID_HOME"/build-tools/* | sort -rV); do
+                if out=$("$bt/apksigner" verify --print-certs "$1" 2>&1); then
+                  # whole lines only: "Signer #1 certificate ...", "Signer (minSdkVersion=N...) certificate ..."
+                  # or "V2 Signer: certificate ..." (build-tools 37), 64 hex digits; one signer only
+                  d=$(echo "$out" | sed -nE 's/^(Signer #[0-9]+|Signer \([^)]*\)|V[0-9]+ Signer:) certificate SHA-256 digest: ([0-9a-f]{64})$/\2/p' | sort -u)
+                  [ "$(echo "$d" | grep -c .)" -le 1 ] || { echo "$bt/apksigner: more than one signer" >&2; echo "$out" >&2; echo; return 0; }
+                  [ -n "$d" ] || { echo "$bt/apksigner printed no signer:" >&2; echo "$out" >&2; }
+                  echo "$d"; return 0
+                fi
+                echo "$bt/apksigner: $out" | head -3 >&2
+              done
+              return 1
+            }
+            signer=$(signer_of dist/vectis-android.apk) || { echo "::error::apksigner could not check the APK"; exit 1; }
+            [ "$signer" = "$CERT_SHA256" ] ||
+              { echo "::error::vectis-android.apk is not signed with the project's certificate"; exit 1; }
+            BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+            "$BT/aapt" dump badging dist/vectis-android.apk | grep -q "versionName='$ver'" ||
+              { echo "::error::the APK is not version $ver"; exit 1; }
+          fi
+          ls -l dist
           chmod 755 dist/vectis-linux-x86_64
           # first line: "<argv[0]> <version>"
           got=$(dist/vectis-linux-x86_64 --version | head -1 | awk '{print $NF}')
@@ -257,10 +418,11 @@ jobs:
           [ "$prev" = "Vectis ${VER}" ] || echo "new=true" >> "$GITHUB_OUTPUT"
 
           cat > notes.md <<NOTES
-          Vectis ${VER} (${GITHUB_SHA::7}): static Linux binaries (musl), no dependencies.
+          Vectis ${VER} (${GITHUB_SHA::7}): static Linux binaries (musl), no dependencies, and the Android app.
 
           - \`vectis-linux-x86_64\` — serial console, RFC 2217 client/server, web power console (\`-u\`, \`-h/-p\`, \`-l\`, \`-w\`) and \`-U\`: CH340/CH341 adapters driven through usbfs on hosts without a kernel driver
           - \`vectis-linux-mipsel\` — the same for MIPS little-endian routers (MediaTek MT7620/MT7621/MT7628, OpenWrt): soft-float, runs with or without an FPU
+          - \`vectis-android.apk\` — the Android app (5.0 and later, 32- and 64-bit ARM): vectis on a TV box or phone with a USB host, without root
 
           Changes: [CHANGELOG.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/master/CHANGELOG.md); usage: [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#readme).
           NOTES
@@ -305,9 +467,10 @@ jobs:
           if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHANNEL" ]; then
             echo "::warning::Telegram secrets are not available, binaries not posted"; exit 0
           fi
-          caption=$(printf 'Vectis %s for Linux\nCommit: %s\nTime: %s\n\n%s' "$VER" "${GITHUB_SHA::7}" \
+          caption=$(printf 'Vectis %s for Linux and Android\nCommit: %s\nTime: %s\n\n%s' "$VER" "${GITHUB_SHA::7}" \
             "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/latest")
-          files=(dist/vectis-linux-*)
+          files=(dist/vectis-linux-* dist/vectis-android.apk)
+          [ -f dist/vectis-android.apk ] || files=(dist/vectis-linux-*)
           media='[]' form=()
           for i in "${!files[@]}"; do
             item=$(jq -cn --arg m "attach://f$i" '{type: "document", media: $m}')
