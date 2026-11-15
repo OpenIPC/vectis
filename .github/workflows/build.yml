@@ -293,12 +293,9 @@ jobs:
   release:
     name: Publish "latest"
     needs: [linux, static, mipsel, android, android-release]
-    # android-release without a key (a fork): the Linux binaries alone
-    if: >-
-      always() && github.event_name == 'push' && github.ref == 'refs/heads/master' &&
-      needs.linux.result == 'success' && needs.static.result == 'success' &&
-      needs.mipsel.result == 'success' && needs.android.result == 'success' &&
-      needs.android-release.result == 'success'
+    # All of them must pass (and a cancelled run stops here). android-release
+    # passes without a key too (a fork): then the Linux binaries alone.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: write   # update the release and its tag
@@ -401,9 +398,13 @@ jobs:
             # while it is replaced; a failure there lasts until a re-run.
             gh release upload latest dist/* --clobber
             # no signed APK this time: an older one must not stay downloadable
-            if [ ! -f dist/vectis-android.apk ] &&
-               gh release view latest --json assets -q '.assets[].name' | grep -qx vectis-android.apk; then
-              gh release delete-asset latest vectis-android.apk -y
+            # (a failed lookup fails the step rather than leave it in doubt)
+            if [ ! -f dist/vectis-android.apk ]; then
+              assets=$(gh release view latest --json assets -q '.assets[].name') ||
+                { echo "::error::cannot list the assets of \"latest\""; exit 1; }
+              if printf '%s\n' "$assets" | grep -qx vectis-android.apk; then
+                gh release delete-asset latest vectis-android.apk -y
+              fi
             fi
             # A draft has no tag until it is published.
             if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/latest" >/dev/null 2>err.txt; then
