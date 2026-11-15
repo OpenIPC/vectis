@@ -91,7 +91,8 @@ public class VectisService extends Service {
     private LocalServerSocket server;
     private PowerManager.WakeLock wakeLock;
     private volatile String lastExit = "";
-    private boolean askedAccess;          // the access dialog was shown in this run
+    private boolean askedAccess;          // guarded by this: the access dialog was shown in this run
+    private int settingsSeq;              // guarded by lock: bumped by every settings change
 
     private final BroadcastReceiver usbEvents = new BroadcastReceiver() {
         @Override
@@ -106,7 +107,11 @@ public class VectisService extends Service {
                 closeAdapter();
                 line("app: adapter unplugged");
             } else {
-                askedAccess = false;      // a new plug-in: one more chance to ask
+                if (d == null || !supported(d))
+                    return;               // a keyboard, a flash drive: not ours
+                synchronized (VectisService.this) {
+                    askedAccess = false;  // our adapter plugged in: one more chance to ask
+                }
                 openAdapter();
             }
             updateNotification();
@@ -196,7 +201,8 @@ public class VectisService extends Service {
 
     // ── state for the screen ──────────────────────────────────────
 
-    private boolean isWanted() {
+    /** True while vectis should be running (Start pressed or started on boot). */
+    boolean isWanted() {
         synchronized (lock) {
             return wanted;
         }
@@ -227,8 +233,13 @@ public class VectisService extends Service {
 
     // ── the adapter ───────────────────────────────────────────────
 
-    /** Finds the adapter and opens it if we have access; safe to call again. */
-    void openAdapter() {
+    /**
+     * Finds the adapter and opens it if we have access; safe to call again.
+     * Synchronized as a whole: it runs on the main thread (plug-in events) and
+     * on the fd thread (reopen()), and two openDevice() at once would leave one
+     * connection open with nobody to close it.
+     */
+    synchronized void openAdapter() {
         UsbManager um = (UsbManager) getSystemService(USB_SERVICE);
         UsbDevice d = findAdapter(this);
         synchronized (lock) {
@@ -420,6 +431,10 @@ public class VectisService extends Service {
     }
 
     private void runOnce(int gen) {
+        int seq;
+        synchronized (lock) {
+            seq = settingsSeq;
+        }
         List<String> cmd = command(binary(this).getPath(), Settings.baud(this),
                 Settings.consolePort(this), Settings.webPort(this));
         Process p;
@@ -431,7 +446,8 @@ public class VectisService extends Service {
         }
         synchronized (lock) {
             process = p;
-            if (!wanted || gen != generation)
+            // Stopped, a newer run loop, or settings saved while it was starting
+            if (!wanted || gen != generation || seq != settingsSeq)
                 p.destroy();
         }
         line("app: started " + TextUtils.join(" ", cmd));
@@ -477,16 +493,20 @@ public class VectisService extends Service {
     /** Stops vectis and starts it again with the current settings. */
     private void restartVectis() {
         Process p;
+        boolean running;
         synchronized (lock) {
+            settingsSeq++;                // a child started with older settings ends itself (runOnce)
             p = process;
+            running = wanted;
         }
-        if (p == null) {
+        if (!running) {
             openAdapter();
             startVectis();
             return;
         }
         line("app: restarting vectis with the new settings");
-        p.destroy();                      // runLoop starts it again
+        if (p != null)
+            p.destroy();                  // runLoop starts it again
         synchronized (lock) {
             lock.notifyAll();
         }

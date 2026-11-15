@@ -359,7 +359,7 @@ public class MainActivity extends Activity {
         display.setText(t.toString().trim());
         display.setTextColor(Brass.color(this, color == R.color.dim ? R.color.dim : R.color.ink));
         lamp.setBackground(Brass.lamp(this, color));
-        start.setEnabled(s == null);
+        start.setEnabled(s == null || !s.isWanted());
         stop.setEnabled(s != null);
         access.setVisibility(d != null && (s == null || !s.hasAccess()) ? View.VISIBLE : View.GONE);
         web.setEnabled(s != null && s.isRunning());

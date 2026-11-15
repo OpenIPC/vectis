@@ -28,6 +28,7 @@ val nativeOut = layout.buildDirectory.dir("jniLibs")
 val buildNative by tasks.registering(Exec::class) {
     inputs.files(rootProject.files("../vectis.c", "../usbserial.c", "../usbserial.h", "../ch34x.c"))
     inputs.file(rootProject.file("build-native.sh"))
+    inputs.property("abis", vectisAbis)   // another ABI list must rebuild
     outputs.dir(nativeOut)
     commandLine(listOf("sh", rootProject.file("build-native.sh").path,
                        nativeOut.get().asFile.path) + vectisAbis)
