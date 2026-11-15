@@ -215,6 +215,7 @@ jobs:
         run: |
           cd android
           gradle --no-daemon assembleDebug testDebugUnitTest lintDebug
+          sh test-abis.sh               # -PvectisAbis: bad lists stop the build (#91)
           cp app/build/outputs/apk/debug/app-debug.apk vectis-android-debug.apk
 
       - name: Upload the debug APK
