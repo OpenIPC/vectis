@@ -22,12 +22,16 @@ final class Settings {
 
     private Settings() {}
 
-    /** True if vectis takes these: a rate of BAUDS, two different ports 1..65535. */
+    /** Ports below this need root to listen on. */
+    static final int MIN_PORT = 1024;
+
+    /** True if vectis can run with these: a rate of BAUDS, two different ports 1024..65535. */
     static boolean valid(int baud, int console, int web) {
         boolean known = false;
         for (int b : BAUDS)
             known |= b == baud;
-        return known && console >= 1 && console <= 65535 && web >= 1 && web <= 65535 && console != web;
+        return known && console >= MIN_PORT && console <= 65535 && web >= MIN_PORT && web <= 65535
+                && console != web;
     }
 
     private static SharedPreferences prefs(Context c) {

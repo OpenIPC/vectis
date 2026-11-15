@@ -896,7 +896,7 @@ as on Linux.
 - **The screen** shows the adapter, power (RTS+DTR) with a lamp, the
   box's addresses with the console and web ports, and the buttons
   Start, Stop, Open web console (in the box's browser) and Settings
-  (baud rate and the two ports).
+  (baud rate and the two ports, 1024 and up: lower ones need root).
 - **Unplugging** leaves vectis and its ports running. When the adapter
   is back, the service opens it again and vectis picks it up on its
   next retry. Stopping the app or vectis leaves RTS/DTR as they are, as
@@ -913,8 +913,8 @@ as on Linux.
   network can use the console and switch the power. Keep the box on a
   trusted network.
 
-Build with the Android SDK, NDK r27 and Gradle 8: `cd android && gradle
-assembleDebug`; the APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
+Build on Linux or macOS with the Android SDK, NDK r27 (`ANDROID_NDK_HOME`)
+and Gradle 8: `cd android && gradle assembleDebug`; the APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
 `gradle testDebugUnitTest` runs the tests of the app's logic (settings,
 command line, log) without a device.
 `android/build-native.sh` builds vectis for the app with the NDK, as an

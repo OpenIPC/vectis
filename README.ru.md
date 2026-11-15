@@ -897,7 +897,8 @@ ARM). Служба переднего плана владеет адаптеро
   USB access**.
 - **На экране** — адаптер, питание (RTS+DTR) с лампой, адреса приставки
   с портами консоли и веба и кнопки Start, Stop, Open web console (в
-  браузере приставки) и Settings (скорость и два порта).
+  браузере приставки) и Settings (скорость и два порта, от 1024: ниже
+  нужен root).
 - **Если вынуть адаптер**, vectis и его порты продолжают работать. Когда
   адаптер вернётся, служба откроет его снова, и vectis подхватит его при
   следующей попытке. Остановка приложения или vectis оставляет RTS/DTR
@@ -913,8 +914,8 @@ ARM). Служба переднего плана владеет адаптеро
   `-l PORT` и `-w PORT` на Linux: любой в этой сети может пользоваться
   консолью и переключать питание. Держите приставку в доверенной сети.
 
-Сборка — Android SDK, NDK r27 и Gradle 8: `cd android && gradle
-assembleDebug`; APK — `android/app/build/outputs/apk/debug/app-debug.apk`.
+Сборка — на Linux или macOS, Android SDK, NDK r27 (`ANDROID_NDK_HOME`) и
+Gradle 8: `cd android && gradle assembleDebug`; APK — `android/app/build/outputs/apk/debug/app-debug.apk`.
 `gradle testDebugUnitTest` запускает тесты логики приложения (настройки,
 командная строка, журнал) без устройства.
 `android/build-native.sh` собирает vectis для приложения через NDK как

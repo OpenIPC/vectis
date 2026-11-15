@@ -852,7 +852,7 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
   也可以打开应用并按 **Allow USB access**。
 - **界面**显示适配器、带指示灯的电源状态（RTS+DTR）、盒子的地址及控制台和
   Web 端口，以及按钮 Start、Stop、Open web console（在盒子的浏览器中打开）
-  和 Settings（波特率和两个端口）。
+  和 Settings（波特率和两个端口，1024 及以上：更低的端口需要 root）。
 - **拔出适配器**时 vectis 及其端口继续运行。适配器插回后，服务重新打开它，
   vectis 在下一次重试时接管。停止应用或 vectis 时 RTS/DTR 保持不变，
   与 Linux 上的 `-U` 相同。
@@ -864,8 +864,8 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
   `-w PORT` 相同：该网络中的任何人都可以使用控制台并切换电源。
   请将盒子放在可信网络中。
 
-构建需要 Android SDK、NDK r27 和 Gradle 8：`cd android && gradle
-assembleDebug`；APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
+在 Linux 或 macOS 上构建，需要 Android SDK、NDK r27（`ANDROID_NDK_HOME`）
+和 Gradle 8：`cd android && gradle assembleDebug`；APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
 `gradle testDebugUnitTest` 无需设备即可运行应用逻辑（设置、命令行、日志）的测试。
 `android/build-native.sh` 用 NDK 为应用构建 vectis，生成名为 `libvectis.so`
 的可执行文件。已在 Android 10 电视盒（32 位 ARM，无 root）上用 CH340 验证。

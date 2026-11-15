@@ -15,7 +15,8 @@
 #   - The Makefile's flags (-Wall -Wextra -Wpedantic -Os, sections) with -Werror,
 #     -U support with the CH34x family; ELF segments aligned to 16 KB pages, as
 #     Android 15 devices with 16 KB pages need.
-#   - Needs ANDROID_NDK_HOME (set in the compot/android image).
+#   - Needs ANDROID_NDK_HOME (the NDK r27 directory) and a Linux or macOS
+#     build host (on Windows: WSL).
 #
 
 set -eu
@@ -25,7 +26,13 @@ shift
 [ $# -gt 0 ] || set -- arm64-v8a armeabi-v7a
 API=21
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-TC=${ANDROID_NDK_HOME:?ANDROID_NDK_HOME is not set}/toolchains/llvm/prebuilt/linux-x86_64/bin
+# The NDK's prebuilt host folder: linux-x86_64 or darwin-x86_64 (on Windows use WSL)
+case $(uname -s) in
+Darwin) HOST=darwin-x86_64 ;;
+*)      HOST=linux-x86_64 ;;
+esac
+TC=${ANDROID_NDK_HOME:?ANDROID_NDK_HOME is not set}/toolchains/llvm/prebuilt/$HOST/bin
+[ -d "$TC" ] || { echo "build-native.sh: no NDK toolchain in $TC" >&2; exit 1; }
 
 for abi in "$@"; do
 	case $abi in

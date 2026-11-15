@@ -74,7 +74,9 @@ public class VectisService extends Service {
     private static final int RESTART_DELAY_MS = 3000;
     private static final int STOP_TIMEOUT_MS = 3000;
     /** VID:PID pairs vectis drives (ch34x.c, res/xml/device_filter.xml). */
-    private static final int[][] IDS = { {0x1a86, 0x7523}, {0x1a86, 0x7522}, {0x1a86, 0x5523} };
+    private static final int[][] IDS = {
+        {0x1a86, 0x5523}, {0x1a86, 0x7522}, {0x1a86, 0x7523}, {0x2184, 0x0057}, {0x4348, 0x5523}, {0x9986, 0x7523},
+    };
 
     /** The running service, for the activity; null if none. */
     static volatile VectisService instance;
@@ -255,6 +257,19 @@ public class VectisService extends Service {
     }
 
     /**
+     * vectis asks for the adapter while we hold none: if one is plugged in and
+     * we have access (an earlier openDevice() failed, say), open it now.
+     * Never asks for access: that is left to starts and plug-in events.
+     */
+    private boolean reopen() {
+        UsbDevice d = findAdapter(this);
+        if (d == null || !((UsbManager) getSystemService(USB_SERVICE)).hasPermission(d))
+            return false;
+        openAdapter();
+        return true;
+    }
+
+    /**
      * Without access, ask once per service start.  Android 10 grants access
      * to the "use by default" app only on a plug-in event, and an adapter
      * plugged in before boot gets none, so after a reboot the system dialog
@@ -303,6 +318,11 @@ public class VectisService extends Service {
                 UsbDevice d;
                 synchronized (lock) {
                     d = conn != null ? device : null;
+                }
+                if (d == null && reopen()) {
+                    synchronized (lock) {
+                        d = conn != null ? device : null;
+                    }
                 }
                 if (d == null)
                     continue;             // no adapter: vectis retries

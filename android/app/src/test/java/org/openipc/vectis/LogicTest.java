@@ -26,8 +26,10 @@ public class LogicTest {
 
     @Test
     public void settingsNeedTwoDifferentPorts() {
-        assertTrue(Settings.valid(115200, 1, 65535));
+        assertTrue(Settings.valid(115200, 1024, 65535));
         assertFalse(Settings.valid(115200, 0, 2081));
+        assertFalse(Settings.valid(115200, 23, 2081));       // needs root on Android
+        assertFalse(Settings.valid(115200, 2021, 80));
         assertFalse(Settings.valid(115200, 2021, 65536));
         assertFalse(Settings.valid(115200, 2021, 2021));
         assertTrue(Settings.valid(Settings.DEFAULT_BAUD, Settings.DEFAULT_CONSOLE, Settings.DEFAULT_WEB));
