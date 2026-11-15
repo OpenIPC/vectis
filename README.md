@@ -524,7 +524,9 @@ USB mode (not in a `make USB=0` build):
 - `-U SPEC`, `--usb SPEC` — USB-UART driven through usbfs; `SPEC` is the
   adapter's USB path (`1-1.3.4`, as in `/sys/bus/usb/devices`),
   `usb:VID:PID` (the first such device) or `usb:VID:PID@PATH`; see
-  "USB mode without a kernel driver" below
+  "USB mode without a kernel driver" below. `fd:@NAME` takes an already
+  open adapter from an Android app instead, see "From an Android app"
+  there
 
 The modes are mutually exclusive.
 
@@ -850,6 +852,30 @@ and add the user to `dialout` (`sudo usermod -aG dialout USER`, effective
 at the next login). Detaching the kernel driver needs no more than write
 access to the node. On OpenWrt and similar systems without udev the
 daemon usually runs as root and needs nothing more.
+
+### From an Android app (`-U fd:@NAME`)
+
+On Android only root can open `/dev/bus/usb`. An app gets the adapter
+from `UsbManager.openDevice()` instead, as an already open usbfs file
+descriptor, once the user allows access. `-U fd:@NAME` takes that
+descriptor: vectis connects to the abstract unix socket `@NAME` and
+receives the descriptor there (`SCM_RIGHTS`, with at least one byte of
+data). The app runs vectis as a child process, for example from its
+native library directory:
+
+```sh
+vectis -U fd:@vectis-usb -l 2021 -w 2081
+```
+
+- The socket's owner must run under the same uid as vectis.
+- vectis reads VID:PID from the device descriptor and picks the chip as
+  with a USB path; the rest of `-U` works as above.
+- Every open is a new connection: after the adapter is lost, vectis
+  connects again, so the app hands out a fresh copy of the descriptor
+  on each connection.
+- `NAME` is 1 to 27 characters.
+- vectis copies device output to stdout, as it does anywhere: the app
+  reads it or sends it to `/dev/null`.
 
 ## Several adapters on one host: stable device names (udev)
 

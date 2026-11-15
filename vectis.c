@@ -105,8 +105,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.11.2"
-#define PROGRAM_RELEASE_DATE "2026-11-14"
+#define PROGRAM_VERSION      "1.12.0"
+#define PROGRAM_RELEASE_DATE "2026-11-15"
 
 #define RECONNECT_DELAY_S 5
 
@@ -2645,6 +2645,8 @@ static void usage(const char *prog)
         "  -U SPEC         USB-UART driven through usbfs; SPEC is a USB path\n"
         "                  (1-1.3.4, see /sys/bus/usb/devices), usb:VID:PID or\n"
         "                  usb:VID:PID@PATH.  RTS/DTR stay as they are on exit.\n"
+        "                  fd:@NAME takes an open usbfs fd from the abstract\n"
+        "                  unix socket @NAME (an Android app, same uid).\n"
         "\n",
         usbs_chip_names());
 #endif
@@ -2917,7 +2919,8 @@ int main(int argc, char **argv)
     g_serial_mode = (device != NULL || usb_spec != NULL);
     if (g_usb)
         snprintf(g_web_target, sizeof g_web_target, "%s%s",
-                 strncmp(usb_spec, "usb:", 4) == 0 ? "" : "usb:", usb_spec);
+                 strncmp(usb_spec, "usb:", 4) == 0 || strncmp(usb_spec, "fd:", 3) == 0
+                     ? "" : "usb:", usb_spec);
     else if (g_serial_mode)
         snprintf(g_web_target, sizeof g_web_target, "%s", device);
     else
