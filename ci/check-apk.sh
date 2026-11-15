@@ -44,7 +44,8 @@ fi
 echo "$apk: signed by the project's certificate"
 
 if [ -n "$ver" ]; then
-	"$checked/aapt" dump badging "$apk" | grep -q "versionName='$ver'" ||
+	# a fixed string: the dots of 1.13.0 must not match any character
+	"$checked/aapt" dump badging "$apk" | grep -qF "versionName='$ver'" ||
 		{ echo "::error::$apk is not version $ver"; exit 1; }
 	echo "$apk: version $ver"
 fi
