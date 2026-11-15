@@ -40,6 +40,10 @@ change that can be exercised without hardware.
   1.3.x) with the HiSilicon BOOTROM-CATCH extension, kept for reference and built by CI.
   Its own constants use the `TN_*` / `COMPORT_*` prefixes; `vectis.c` uses `IAC` / `CPC_*`.
   See `docs/vectis-bootrom.md`.
+- `android/` → the Android app (`org.openipc.vectis`): a foreground service owns the
+  USB adapter (UsbManager) and runs vectis, built by `android/build-native.sh` as
+  `libvectis.so`, with `-U fd:@org.openipc.vectis.usb`; a fresh `openDevice()` per
+  connection. Version from `PROGRAM_VERSION`. Build: `cd android && gradle assembleDebug`.
 - `tests/test_vectis.py`, `ci/`, `.github/workflows/{build,version}.yml`,
   `.github/check-version.sh`.
 

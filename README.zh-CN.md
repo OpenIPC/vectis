@@ -832,11 +832,39 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 - 套接字的所有者必须与 vectis 以同一 uid 运行。
 - vectis 从设备描述符读取 VID:PID，并像使用 USB 路径时一样选择芯片；
   `-U` 的其余功能与上文相同。
-- 每次打开都是一个新连接：适配器丢失后 vectis 会重新连接，
-  因此应用在每次连接时都提供该描述符的新副本。
+- 每次打开都是一个新连接：适配器丢失后 vectis 会重新连接。
+  应用在每次连接时重新打开设备（`UsbManager.openDevice()`），
+  发送后立即关闭自己的副本。不得交出先前的 vectis 用过的描述符的副本：
+  usbfs 会把该进程未完成的传输保留在已打开的文件中，下一个 vectis 会收到它们。
 - `NAME` 长度为 1 到 27 个字符。
 - 与其他场合一样，vectis 会把设备输出复制到 stdout：应用需要读取它，
   或将其重定向到 `/dev/null`。
+
+### Android 应用（`android/`）
+
+`android/` 中的应用在带 USB host 的 Android 电视盒或手机上实现上述功能，
+无需 root（Android 5.0 及以上，32 位和 64 位 ARM）。前台服务持有适配器，
+并以 `vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 2081`
+运行 vectis：控制台和 Web 电源控制台位于盒子的这些 TCP 端口上，与 Linux 相同。
+
+- **首次启动。** 插入适配器（CH340/CH341）。Android 会提示用 Vectis 打开它：
+  勾选 “Always open Vectis when USB Serial is connected” 并按 OK。
+  也可以打开应用并按 **Allow USB access**。
+- **界面**显示适配器、带指示灯的电源状态（RTS+DTR）、盒子的地址及控制台和
+  Web 端口，以及按钮 Start、Stop、Open web console（在盒子的浏览器中打开）
+  和 Settings（波特率和两个端口）。
+- **拔出适配器**时 vectis 及其端口继续运行。适配器插回后，服务重新打开它，
+  vectis 在下一次重试时接管。停止应用或 vectis 时 RTS/DTR 保持不变，
+  与 Linux 上的 `-U` 相同。
+- **重启后**服务会自动启动（“Start on boot”，默认开启）。Android 10
+  在启动时不会为已经插着的适配器授予 USB 访问权限，因此屏幕上会出现
+  访问对话框：用遥控器按 OK。没有屏幕的盒子：拔下适配器再插回。
+- **Stop** 会让 vectis 保持停止状态直到按 Start：启动和插入事件不会启动它。
+
+构建需要 Android SDK、NDK r27 和 Gradle 8：`cd android && gradle
+assembleDebug`；APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
+`android/build-native.sh` 用 NDK 为应用构建 vectis，生成名为 `libvectis.so`
+的可执行文件。已在 Android 10 电视盒（32 位 ARM，无 root）上用 CH340 验证。
 
 ## 一台主机上的多个适配器：固定设备名（udev）
 

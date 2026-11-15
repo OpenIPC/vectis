@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Copyright (c) OpenIPC  https://openipc.org  MIT License
+
+    device_filter.xml — the USB-UART adapters vectis drives (ch34x.c), in
+    decimal: 0x1a86 = 6790; 0x7523 CH340, 0x7522 CH340K, 0x5523 CH341 serial
+-->
+<resources>
+    <usb-device vendor-id="6790" product-id="29987" />
+    <usb-device vendor-id="6790" product-id="29986" />
+    <usb-device vendor-id="6790" product-id="21795" />
+</resources>

@@ -871,11 +871,49 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 - vectis reads VID:PID from the device descriptor and picks the chip as
   with a USB path; the rest of `-U` works as above.
 - Every open is a new connection: after the adapter is lost, vectis
-  connects again, so the app hands out a fresh copy of the descriptor
-  on each connection.
+  connects again. The app opens the device anew for each connection
+  (`UsbManager.openDevice()`) and closes its own copy once it is sent.
+  It must not hand out a copy of a descriptor an earlier vectis used:
+  usbfs keeps that process's unfinished transfers in the open file, and
+  the next vectis would get them back.
 - `NAME` is 1 to 27 characters.
 - vectis copies device output to stdout, as it does anywhere: the app
   reads it or sends it to `/dev/null`.
+
+### The Android app (`android/`)
+
+`android/` holds an app that does the above on an Android TV box or a
+phone with a USB host, without root (Android 5.0 and later, 32- and
+64-bit ARM). A foreground service owns the adapter and runs vectis as
+`vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 2081`: the
+console and the web power console are on those TCP ports of the box,
+as on Linux.
+
+- **First start.** Plug in the adapter (CH340/CH341). Android offers to
+  open Vectis for it: tick "Always open Vectis when USB Serial is
+  connected" and press OK. Or open the app and press **Allow USB
+  access**.
+- **The screen** shows the adapter, power (RTS+DTR) with a lamp, the
+  box's addresses with the console and web ports, and the buttons
+  Start, Stop, Open web console (in the box's browser) and Settings
+  (baud rate and the two ports).
+- **Unplugging** leaves vectis and its ports running. When the adapter
+  is back, the service opens it again and vectis picks it up on its
+  next retry. Stopping the app or vectis leaves RTS/DTR as they are, as
+  `-U` does on Linux.
+- **After a reboot** the service starts by itself ("Start on boot", on
+  by default). Android 10 does not grant USB access at boot to an
+  adapter that was already plugged in, so the access dialog comes up on
+  the screen: press OK on the remote. On a box without a screen, unplug
+  the adapter and plug it back in.
+- **Stop** keeps vectis stopped until Start: boot and plug-in events
+  leave it alone.
+
+Build with the Android SDK, NDK r27 and Gradle 8: `cd android && gradle
+assembleDebug`; the APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
+`android/build-native.sh` builds vectis for the app with the NDK, as an
+executable named `libvectis.so`. Checked on an Android 10 TV box (32-bit
+ARM, no root) with a CH340.
 
 ## Several adapters on one host: stable device names (udev)
 

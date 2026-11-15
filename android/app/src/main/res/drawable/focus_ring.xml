@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Copyright (c) OpenIPC  https://openipc.org  MIT License
+
+    focus_ring.xml — the D-pad focus of a check box: the amber frame of a focused brass
+    button (brass_button.xml), nothing otherwise
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape><corners android:radius="8dp" /><stroke android:width="3dp" android:color="@color/amber" /></shape>
+    </item>
+    <item android:drawable="@android:color/transparent" />
+</selector>

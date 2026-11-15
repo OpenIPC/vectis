@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Copyright (c) OpenIPC  https://openipc.org  MIT License
+
+    network_security_config.xml — plain HTTP only to vectis' own web server on
+    this device (/status for the screen); everything else keeps the default
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>
