@@ -6,6 +6,14 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.13.1 — 2026-11-15
+
+- Android: `-PvectisAbis` must be a non-empty list of the ABIs `android/build-native.sh` builds
+  (arm64-v8a, armeabi-v7a, x86_64), otherwise the build stops with that list (#91); an empty
+  entry (`arm64-v8a,,x86_64`) is an error too. An empty value used to pack every ABI of the NDK
+  into the APK; the default `arm64-v8a,armeabi-v7a` is unchanged. `android/test-abis.sh` (run by
+  CI) checks it.
+
 ## 1.13.0 — 2026-11-15
 
 The Android app is released: `vectis-android.apk` in `latest` (#89).

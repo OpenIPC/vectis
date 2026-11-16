@@ -27,7 +27,15 @@ val releaseKeystore: String? =
 
 // 64-bit devices and 32-bit TV boxes; -PvectisAbis=armeabi-v7a for one ABI
 val vectisAbis: List<String> = ((project.findProperty("vectisAbis") as String?)
-    ?: "arm64-v8a,armeabi-v7a").split(",").map { it.trim() }
+    ?: "arm64-v8a,armeabi-v7a").split(",").map { it.trim() }.also { abis ->
+    // an empty list would leave abiFilters unset and build-native.sh would build its own
+    // default, so the APK would not match the list; an empty entry ("a,,b") is an error too
+    // (#91; android/test-abis.sh)
+    val known = setOf("arm64-v8a", "armeabi-v7a", "x86_64")   // those of build-native.sh
+    require(abis.isNotEmpty() && abis.all { it in known }) {
+        "-PvectisAbis=${abis.joinToString(",")}: one or more of ${known.joinToString(",")}"
+    }
+}
 
 // vectis itself: the C sources of the repository root, built by the NDK as an
 // executable named libvectis.so (android/build-native.sh), packaged as a native library
