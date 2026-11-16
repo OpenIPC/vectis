@@ -61,7 +61,9 @@ android {
         versionCode = vectisVersionCode
         versionName = vectisVersion
         ndk { abiFilters += vectisAbis }
-        resourceConfigurations += listOf("en")
+        // The app's own strings are English only; keep the libraries' translations
+        // just for the README languages (#93)
+        resourceConfigurations += listOf("en", "ru", "zh-rCN")
     }
     signingConfigs {
         // A fixed debug key in the repository (not a secret, as every debug
