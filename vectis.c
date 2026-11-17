@@ -1728,7 +1728,8 @@ static int web_auth_ok(const char *hdr, size_t len)
  *
  * Output is queued per terminal and sent as the socket takes it, so a
  * slow browser never holds up the poll loop: a terminal that falls
- * WT_OUT_MAX behind is dropped instead.  The history is kept only with
+ * WT_OUT_MAX behind is dropped instead, and one that sends nothing for
+ * WT_IDLE_MS, not even a pong to our pings, is closed.  The history is kept only with
  * -w.  The handshake goes through the same checks as any request (the
  * password, when there is one), and a browser's must come from this
  * server's own page (web_origin_ok()). */
@@ -1739,6 +1740,9 @@ static int web_auth_ok(const char *hdr, size_t len)
 #define WT_OUT_MAX    (WT_HIST_SIZE + 32 * 1024)  /* queued per terminal */
 #define WT_IN_MAX     4096                        /* input buffer; data streams through */
 #define WT_GUID       "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#define WT_PING_MS    10000   /* a terminal silent this long gets a ping */
+#define WT_IDLE_MS    30000   /* and is closed if still silent: a browser
+                               * answers every ping, a vanished one never */
 
 struct wt_client {
     int     fd;
@@ -1747,6 +1751,8 @@ struct wt_client {
     uint64_t left;         /* its payload bytes still to come */
     uint64_t pos;          /* its payload bytes seen (for the mask) */
     uint8_t mask[4];       /* its masking key */
+    long long rx_ms;       /* when the browser last sent anything */
+    long long ping_ms;     /* when we last pinged it */
     char    peer[INET_ADDRSTRLEN];
     size_t  in_len;
     size_t  out_off, out_len;
@@ -1945,6 +1951,7 @@ static void wt_read(struct wt_client *c)
         return;
     }
     c->in_len += (size_t)n;
+    c->rx_ms = now_ms();
 
     while (c->fd >= 0 && c->in_len > 0) {
         uint8_t *p = c->in;
@@ -2072,10 +2079,12 @@ static void wt_open(struct web_client *wc, const char *key)
     c->frag_text = 0;
     c->fwd = 0;
     c->left = c->pos = 0;
+    c->rx_ms = c->ping_ms = now_ms();
     c->in_len = 0;
     c->out_off = c->out_len = 0;
     if (setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) != 0)
         log_errno(LOG_WARNING, "setsockopt(TCP_NODELAY)");
+    (void)setsockopt(c->fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);   /* backstop */
     memcpy(c->out, resp, (size_t)rl);
     c->out_len = (size_t)rl;
     if (g_wt_hist_len > 0) {
@@ -2627,6 +2636,21 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
             wt_flush(t);
         if (t->fd >= 0 && (re & (POLLIN | POLLHUP | POLLERR)))
             wt_read(t);
+    }
+    /* A browser that vanished without a FIN (sleep, Wi-Fi, a dropped
+     * tunnel) would hold its slot for good while the device is quiet:
+     * ping a silent terminal, close one that does not answer. */
+    for (int i = 0; i < WT_MAX_CLIENTS; i++) {
+        struct wt_client *t = &g_wt[i];
+        if (t->fd < 0)
+            continue;
+        if (now - t->rx_ms > WT_IDLE_MS)
+            wt_close(t, "no answer to ping");
+        else if (now - t->rx_ms > WT_PING_MS && now - t->ping_ms > WT_PING_MS) {
+            t->ping_ms = now;
+            if (wt_frame(t, 0x9, NULL, 0, NULL, 0) == 0)
+                wt_flush(t);
+        }
     }
 #endif
 }

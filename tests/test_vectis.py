@@ -33,6 +33,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tty
 import urllib.error
@@ -169,6 +170,7 @@ class Ws:
             (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
         self.accept_ok = ("Sec-WebSocket-Accept: %s" % want) in self.head
         self.buf = b""
+        self.autopong = True
 
     def send(self, payload, opcode=2, fin=True):
         mask = os.urandom(4)
@@ -195,6 +197,8 @@ class Ws:
                 if f is None:
                     break
                 out.append(f)
+                if f[0] == 9 and self.autopong:
+                    self.send(f[1], opcode=10)      # as a browser does
                 if f[0] == 2:
                     data += f[1]
                 if until is not None and (until in data or f[0] == 8):
@@ -674,6 +678,32 @@ def test_web_terminal(tmp):
           "the log names opened, dropped and refused terminals")
 
 
+def test_web_terminal_idle(tmp, results):
+    """Runs in a thread beside the other tests (it waits ~35 s): a terminal
+    that vanished without a FIN is closed, one that answers pings stays."""
+    dev = FakeDevice(os.path.join(tmp, "dev-idle"))
+    wport = free_port()
+    p, log = start_quiet([VECTIS, "-u", dev.link, "-w", "127.0.0.1:%d" % wport, "-n"],
+                         os.path.join(tmp, "idle.log"))
+    try:
+        if not wait_listen(wport) or wait_status(wport, "link", "online").get("terminals") is None:
+            return
+        gone = Ws(wport)                    # never reads, never answers: a vanished browser
+        polite = Ws(wport)
+        pings, end = 0, time.time() + 35
+        while time.time() < end:
+            pings += sum(1 for op, _ in polite.frames(1.0) if op == 9)
+        st = http(wport, "/status")
+        results.append((st.get("terminals") == 1 and pings >= 2,
+                        "idle terminals: a silent one closed after ~30 s, one answering "
+                        "%d pings stays (%r open)" % (pings, st.get("terminals"))))
+        gone.close()
+        polite.close()
+    finally:
+        text = stop_quiet(p, log)
+    results.append(("no answer to ping" in text, "the log names the closed idle terminal"))
+
+
 def test_web_password(tmp):
     print("== web password (-W, VECTIS_WEB_PASSWORD)")
     dev = FakeDevice(os.path.join(tmp, "dev-pw"))
@@ -1021,11 +1051,18 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_server(tmp)
         test_client(tmp)
+        idle_results = []
+        idle = threading.Thread(target=test_web_terminal_idle, args=(tmp, idle_results))
+        idle.start()
         test_web_terminal(tmp)
         test_web_password(tmp)
         test_stdin_eof(tmp)
         test_identity(tmp)
         test_usb_fd(tmp)
+        idle.join()
+        print("== web terminal idle (ran beside the others)")
+        for ok, what in idle_results:
+            check(ok, what)
     test_usb_cli()
     print()
     if failures:

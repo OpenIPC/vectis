@@ -825,8 +825,9 @@ leaves it out.
   any other byte. Reset with the button above.
 - A browser that stops reading (a stalled network) is dropped after
   about 96 KB of output queued for it, so it never holds up the device
-  or the others. The page reconnects by itself, as it does after a
-  restart of `vectis`.
+  or the others. One that has vanished (a laptop asleep, a dropped
+  tunnel) is closed after 30 s without an answer to `vectis`'s pings. The
+  page reconnects by itself, as it does after a restart of `vectis`.
 - Up to 8 terminals at a time; they do not take the slots of the other
   requests.
 - A browser opens the terminal only from this server's own page, so a
