@@ -6,6 +6,23 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.14.0 — 2026-11-17
+
+The `-w` page gets a UART terminal and an optional password (#95).
+
+- The page shows a terminal on the same UART under the power panel: xterm.js 5.5.0 built into
+  the binary (gzipped, about 70 KB; the browser needs no internet), on the WebSocket
+  `/ws/terminal`. On connect it gets the last 64 KB of device output, then everything live.
+  Everyone with the page open may type, as with `screen -x`; the bytes go to the device as
+  they are (no session keys: reset with the button). Up to 8 terminals; one that stops
+  reading is dropped and never holds up the device. Works in every mode (`-u`, `-U`,
+  `-h/-p`) and on Android, which runs the same binary. `/status` gains `terminals`.
+- `-W PASSWORD` or `VECTIS_WEB_PASSWORD` (`-W` wins) closes the whole `-w` port (page,
+  `/status`, `/power/*`, terminal) behind HTTP Basic with any user name; unset or empty, the
+  page stays open as before. `-l` has no password.
+- `make WEBTERM=0` builds vectis without the terminal (no `/ws/terminal`, no xterm.js); CI
+  builds and tests it, and checks that `webterm_assets.h` matches `web/xterm/`.
+
 ## 1.13.1 — 2026-11-15
 
 - Android: `-PvectisAbis` must be a non-empty list of the ABIs `android/build-native.sh` builds

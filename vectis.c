@@ -9,7 +9,8 @@
  *     builds with USB_CHIPS, see usbserial.h) or an RFC 2217 server
  *     (-h/-p), with the RTS+DTR reset pulse on Ctrl+P and a break on Ctrl+B;
  *   - server:  -l serves the local port over TCP (Telnet/RFC 2217, raw);
- *   - web:     -w serves a power-control page and a small JSON API.
+ *   - web:     -w serves a power-control page with a UART terminal
+ *     (WebSocket, built-in xterm.js) and a small JSON API.
  *
  * vectis-bootrom.c is the original UART bridge (with the HiSilicon
  * BOOTROM-CATCH extension) this program grew out of; see README.md.
@@ -23,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <errno.h>
@@ -48,6 +50,12 @@
 
 #ifdef VECTIS_USB
 #include "usbserial.h"
+#endif
+
+/* The UART terminal of the -w page (/ws/terminal and the built-in
+ * xterm.js); `make WEBTERM=0` passes -DVECTIS_NO_WEBTERM and leaves it out. */
+#ifndef VECTIS_NO_WEBTERM
+#define VECTIS_WEBTERM
 #endif
 
 /* ----- Telnet codes ----- */
@@ -105,8 +113,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.13.1"
-#define PROGRAM_RELEASE_DATE "2026-11-15"
+#define PROGRAM_VERSION      "1.14.0"
+#define PROGRAM_RELEASE_DATE "2026-11-17"
 
 #define RECONNECT_DELAY_S 5
 
@@ -173,6 +181,7 @@ static const char *g_pulse_source = "";
 static int set_serial_signal_state(int signal_flag, int active);
 static void web_shutdown(void);
 static void srv_shutdown(void);
+static void wt_broadcast(const uint8_t *data, size_t len);
 static void pulse_finish(int restore);
 
 /* Telnet parser state */
@@ -782,6 +791,9 @@ static int process_incoming(const uint8_t *buf, size_t n)
 {
     uint8_t out[256];
     size_t  out_pos = 0;
+    static uint8_t data[READ_BUF_SIZE];   /* the payload, for the web terminal */
+    size_t  data_len = 0;
+    int     rc;
 
     for (size_t i = 0; i < n; i++) {
         uint8_t b = buf[i];
@@ -792,6 +804,8 @@ static int process_incoming(const uint8_t *buf, size_t n)
                     return -1;
                 g_tn_state = TS_IAC;
             } else {
+                if (data_len < sizeof data)
+                    data[data_len++] = b;
                 if (add_to_output_buf(out, &out_pos, sizeof(out), b) != 0)
                     return -1;
             }
@@ -800,6 +814,8 @@ static int process_incoming(const uint8_t *buf, size_t n)
         case TS_IAC:
             if (b == IAC) {
                 /* Escaped 0xFF becomes data. */
+                if (data_len < sizeof data)
+                    data[data_len++] = b;
                 if (add_to_output_buf(out, &out_pos, sizeof(out), b) != 0)
                     return -1;
                 g_tn_state = TS_DATA;
@@ -855,7 +871,9 @@ static int process_incoming(const uint8_t *buf, size_t n)
             break;
         }
     }
-    return flush_stdout_buf(out, &out_pos);
+    rc = flush_stdout_buf(out, &out_pos);
+    wt_broadcast(data, data_len);
+    return rc;
 }
 
 /* ---------- Power control (RTS/DTR) ---------- */
@@ -1043,15 +1061,28 @@ static int on_stdin_eof(void)
  * whoever the client is.  The page itself is served only for a bare "/":
  * any other path, and "/" with a query string, is not the page.
  *
+ *   GET  /ws/terminal    -> WebSocket: the UART terminal (see "Web terminal")
+ *   GET  /xterm-*.js|css -> xterm.js for the page, gzipped (WEBTERM builds)
+ *
  * The buttons act on the very same transport the terminal session uses,
  * so the web page and the keyboard drive the device side by side.
  * Requests are answered synchronously and the connection is closed after
  * each reply; a client that stalls is dropped after WEB_CLIENT_TIMEOUT_MS.
- * There is no authentication: treat the port like the -l listener and
- * bind it to a trusted interface (-w 127.0.0.1:PORT). */
+ *
+ * A password (-W, or VECTIS_WEB_PASSWORD) is optional.  Without one the
+ * page and the terminal are open to whoever reaches the port; with one,
+ * every request needs HTTP Basic with that password and any user name,
+ * and is answered 401 otherwise.  It keeps a lab page from being used by
+ * mistake, not out of reach of an attacker: plain HTTP, and -l has no
+ * password at all.  Bind the port to a trusted interface. */
 
+#ifdef VECTIS_WEBTERM
+#define WT_MAX_CLIENTS         8
+#else
+#define WT_MAX_CLIENTS         0
+#endif
 #define WEB_MAX_CLIENTS        8
-#define WEB_NPOLL              (1 + WEB_MAX_CLIENTS)  /* poll slots: listener + clients */
+#define WEB_NPOLL              (1 + WEB_MAX_CLIENTS + WT_MAX_CLIENTS)  /* listener, requests, terminals */
 #define WEB_REQ_MAX            4096   /* request (headers + body) we are willing to buffer */
 #define WEB_CLIENT_TIMEOUT_MS  5000   /* drop a client that never completes its request */
 #define WEB_SEND_TIMEOUT_MS    3000   /* give up on a client that will not read the reply */
@@ -1071,8 +1102,21 @@ static int  g_srv_fd;               /* -l client socket, defined with the listen
 static char g_srv_peer[INET_ADDRSTRLEN];
 static struct web_client g_web_clients[WEB_MAX_CLIENTS];
 static char g_web_target[300] = "";  /* device path or host:port shown on the page */
+static char g_web_password[256] = "";  /* -W / VECTIS_WEB_PASSWORD; "" = no password */
+#ifdef VECTIS_WEBTERM
+static void wt_init(void);
+static void wt_shutdown(void);
+#endif
 
 #define WEB_TEXT(s) (s), (sizeof(s) - 1)
+
+#ifdef VECTIS_WEBTERM
+#include "webterm_assets.h"   /* wt_js_gz, wt_css_gz: web/gen-assets.sh */
+/* Versioned paths: the browser may keep them (max-age), a new xterm.js
+ * gets new names. */
+#define WT_ASSET_JS  "/xterm-5.5.0.js"
+#define WT_ASSET_CSS "/xterm-5.5.0.css"
+#endif
 
 /* The page: HTML, CSS and JS in one document, written with single quotes
  * only so it embeds as plain string lines (one source line per HTML line,
@@ -1128,11 +1172,25 @@ static const char web_page[] =
     "@media (prefers-reduced-motion:reduce){.bulb.bad,.btn.reset.engaged .ind,.btn.reset.engaged .gear{animation:none}}\n"
     ".log{font-family:'Courier New',monospace;font-size:12px;color:var(--dim);margin-top:18px;min-height:16px;letter-spacing:.08em}\n"
     ".foot{margin-top:18px;font-family:'Courier New',monospace;font-size:11px;color:var(--foot);letter-spacing:.2em;text-transform:uppercase;text-align:center}\n"
+#ifdef VECTIS_WEBTERM
+    ".panel.term{width:min(1100px,100%);margin-top:24px}\n"
+    ".plate.on{background:linear-gradient(180deg,#bfe9cf,#4f9c6e)}\n"
+    ".plate.bad{background:linear-gradient(180deg,#f0b7a8,#a8442c)}\n"
+    ".screen{margin-top:18px;height:min(62vh,640px);padding:8px;border:2px solid #574123;border-radius:8px;background:#120d0a;box-shadow:inset 0 0 20px rgba(0,0,0,.8)}\n"
+    "#term{height:100%}\n"
+#endif
     "</style>\n"
+#ifdef VECTIS_WEBTERM
+    "<link rel='stylesheet' href='" WT_ASSET_CSS "'>\n"
+#endif
     "</head>\n"
     "<body>\n"
     "<h1>Vectis Web Server</h1>\n"
+#ifdef VECTIS_WEBTERM
+    "<div class='sub'>RTS / DTR power control &middot; UART terminal &middot; OpenIPC Vectis 38x38</div>\n"
+#else
     "<div class='sub'>RTS / DTR power control &middot; OpenIPC Vectis 38x38</div>\n"
+#endif
     "<div class='panel'>\n"
     "<span class='rivet tl'></span><span class='rivet tr'></span><span class='rivet bl'></span><span class='rivet br'></span>\n"
     "<div class='top'><span class='plate'>Power console</span><span class='plate' id='ver'>vectis</span></div>\n"
@@ -1150,10 +1208,20 @@ static const char web_page[] =
     "</div>\n"
     "<div class='log' id='log'>&nbsp;</div>\n"
     "</div>\n"
+#ifdef VECTIS_WEBTERM
+    "<div class='panel term'>\n"
+    "<span class='rivet tl'></span><span class='rivet tr'></span><span class='rivet bl'></span><span class='rivet br'></span>\n"
+    "<div class='top'><span class='plate'>UART terminal</span><span class='plate' id='t-state'>Connecting</span></div>\n"
+    "<div class='screen'><div id='term'></div></div>\n"
+    "</div>\n"
+#endif
     "<div class='foot'>Vectis &middot; OpenIPC &middot; MIT License</div>\n"
     "<script>\n"
     "var busy=false,lastSeq=-1;\n"
     "function $(i){return document.getElementById(i)}\n"
+    /* Absolute URLs: a page opened as http://user:pass@host/ may not
+     * fetch() a relative path (it would carry the credentials). */
+    "function url(p){return location.origin+p}\n"
     "function bulb(id,c){$(id).className='bulb'+(c?' '+c:'')}\n"
     "var LAMP={on:'%235ad38f',off:'%23b09873',reset:'%23ffb347',bad:'%23c8452c'};\n"
     "function setState(t,c){var st=$('state');st.textContent=t;st.className='state'+(c?' '+c:'');document.title=t+' \\u00b7 Vectis';\n"
@@ -1187,7 +1255,7 @@ static const char web_page[] =
     " setTimeout(function(){b.classList.remove('engaged');if(!busy)poll()},900);\n"
     "}\n"
     "function offline(){render({link:'offline',power:'off',rts:-1,dtr:-1,target:'?',mode:'?',reset_ms:'?',version:'?'})}\n"
-    "function poll(){if(busy)return;fetch('/status',{cache:'no-store'}).then(function(r){return r.json()}).then(render).catch(offline)}\n"
+    "function poll(){if(busy)return;fetch(url('/status'),{cache:'no-store'}).then(function(r){return r.json()}).then(render).catch(offline)}\n"
     "function finish(btn){busy=false;setTimeout(function(){btn.classList.remove('pressed')},180);if(btn.id==='b-reset')btn.classList.remove('engaged')}\n"
     "function act(btn){\n"
     " if(busy)return;busy=true;\n"
@@ -1198,13 +1266,42 @@ static const char web_page[] =
     " if(id==='b-reset'){btn.classList.add('engaged');setState('Resetting')}\n"
     " $('log').textContent='> '+label+' ... engaging';\n"
     " var t0=Date.now(),hold=function(f){setTimeout(f,id==='b-reset'?Math.max(0,900-(Date.now()-t0)):0)};\n"
-    " fetch(path,{method:'POST'}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})}).then(function(x){hold(function(){\n"
+    " fetch(url(path),{method:'POST'}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})}).then(function(x){hold(function(){\n"
     "  finish(btn);\n"
     "  if(x.ok){if(x.j.event){lastSeq=x.j.event.seq}render(x.j);$('log').textContent='> '+label+' ... done'}else{$('log').textContent='> '+label+' ... refused: '+(x.j.error||'error');poll()}\n"
     " })}).catch(function(){hold(function(){finish(btn);$('log').textContent='> '+label+' ... no answer from server';offline()})});\n"
     "}\n"
     "setInterval(poll,2000);poll();\n"
     "</script>\n"
+#ifdef VECTIS_WEBTERM
+    /* Everyone connected sees the output and may type; the bytes go to
+     * the UART as they are (Ctrl+P is not a reset here, the button is).
+     * On every (re)connect the server first sends the last 64 KB. */
+    "<script src='" WT_ASSET_JS "'></script>\n"
+    "<script>\n"
+    "(function(){\n"
+    " var st=$('t-state');\n"
+    " function tstate(t,c){st.textContent=t;st.className='plate'+(c?' '+c:'')}\n"
+    " if(!window.Terminal||!window.FitAddon){tstate('No terminal','bad');return}\n"
+    " var term=new Terminal({cursorBlink:true,convertEol:true,fontSize:13,scrollback:5000,\n"
+    "  theme:{background:'#120d0a',foreground:'#e8d9b8',cursor:'#ffb347',cursorAccent:'#120d0a',selectionBackground:'rgba(201,162,77,.4)'}});\n"
+    " var fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open($('term'));fit.fit();\n"
+    " var ws=null,enc=new TextEncoder();\n"
+    " function send(b){if(ws&&ws.readyState===1)ws.send(b)}\n"
+    " function connect(){\n"
+    "  ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/terminal');\n"
+    "  ws.binaryType='arraybuffer';\n"
+    "  ws.onopen=function(){term.reset();tstate('Connected','on')};\n"
+    "  ws.onmessage=function(e){if(typeof e.data!=='string')term.write(new Uint8Array(e.data))};\n"
+    "  ws.onclose=function(){tstate('Reconnecting','bad');setTimeout(connect,2000)};\n"
+    " }\n"
+    " term.onData(function(d){send(enc.encode(d))});\n"
+    " term.onBinary(function(d){var b=new Uint8Array(d.length);for(var i=0;i<d.length;i++)b[i]=d.charCodeAt(i)&255;send(b)});\n"
+    " addEventListener('resize',function(){fit.fit()});\n"
+    " connect();\n"
+    "})();\n"
+    "</script>\n"
+#endif
     "</body>\n"
     "</html>\n";
 #pragma GCC diagnostic pop
@@ -1224,6 +1321,9 @@ static void web_shutdown(void)
 {
     for (int i = 0; i < WEB_MAX_CLIENTS; i++)
         web_client_close(&g_web_clients[i]);
+#ifdef VECTIS_WEBTERM
+    wt_shutdown();
+#endif
     if (g_web_listen_fd >= 0) {
         close(g_web_listen_fd);
         g_web_listen_fd = -1;
@@ -1304,6 +1404,9 @@ static int web_listen(const char *addr, int port)
         g_web_clients[i].pending = 0;
         g_web_clients[i].rd_closed = 0;
     }
+#ifdef VECTIS_WEBTERM
+    wt_init();
+#endif
     g_web_listen_fd = fd;
     log_message(LOG_INFO, "Web server ready on http://%s:%d/", addr[0] ? addr : "0.0.0.0", port);
     return 0;
@@ -1347,32 +1450,611 @@ static int tcp_send_all(int fd, const char *data, size_t len)
     return 0;
 }
 
+/* Send a reply: the head, then the body as it is (no copy).  `extra` is
+ * NULL or more header lines, each ending in "\r\n"; `cache` the
+ * Cache-Control value. */
+static void web_reply_ex(struct web_client *c, int code, const char *reason,
+                         const char *ctype, const char *extra, const char *cache,
+                         const void *body, size_t body_len, int head_only)
+{
+    char head[512];
+    int hl = snprintf(head, sizeof head,
+                      "HTTP/1.1 %d %s\r\n"
+                      "Content-Type: %s\r\n"
+                      "Content-Length: %zu\r\n"
+                      "Cache-Control: %s\r\n"
+                      "%s"
+                      "Connection: close\r\n"
+                      "\r\n",
+                      code, reason, ctype, body_len, cache, extra ? extra : "");
+
+    if (hl < 0 || (size_t)hl >= sizeof head)
+        return;
+    if (tcp_send_all(c->fd, head, (size_t)hl) != 0)
+        return;
+    if (!head_only && body_len > 0)
+        (void)tcp_send_all(c->fd, body, body_len);
+}
+
 static void web_reply(struct web_client *c, int code, const char *reason,
                       const char *ctype, const char *body, size_t body_len,
                       int head_only)
 {
-    static char out[sizeof(web_page) + 1024];
-    int hl = snprintf(out, sizeof out,
-                      "HTTP/1.1 %d %s\r\n"
-                      "Content-Type: %s\r\n"
-                      "Content-Length: %zu\r\n"
-                      "Cache-Control: no-store\r\n"
-                      "Connection: close\r\n"
-                      "\r\n",
-                      code, reason, ctype, body_len);
-    size_t total;
-
-    if (hl < 0 || (size_t)hl >= sizeof out)
-        return;
-    total = (size_t)hl;
-    if (!head_only && body_len > 0) {
-        if (body_len > sizeof out - total)
-            body_len = sizeof out - total;
-        memcpy(out + total, body, body_len);
-        total += body_len;
-    }
-    (void)tcp_send_all(c->fd, out, total);
+    web_reply_ex(c, code, reason, ctype, NULL, "no-store", body, body_len, head_only);
 }
+
+/* ---------- SHA-1 and base64 (WebSocket handshake, Basic auth) ---------- */
+
+struct sha1_ctx {
+    uint32_t h[5];
+    uint64_t len;          /* bytes so far */
+    uint8_t  blk[64];
+    size_t   n;            /* bytes in blk */
+};
+
+static uint32_t rol32(uint32_t v, int k)
+{
+    return (v << k) | (v >> (32 - k));
+}
+
+static void sha1_block(struct sha1_ctx *s, const uint8_t *p)
+{
+    uint32_t w[80], a, b, c, d, e;
+
+    for (int i = 0; i < 16; i++)
+        w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 |
+               (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
+    for (int i = 16; i < 80; i++)
+        w[i] = rol32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    a = s->h[0]; b = s->h[1]; c = s->h[2]; d = s->h[3]; e = s->h[4];
+    for (int i = 0; i < 80; i++) {
+        uint32_t f, k, t;
+        if (i < 20)      { f = (b & c) | (~b & d);           k = 0x5A827999; }
+        else if (i < 40) { f = b ^ c ^ d;                    k = 0x6ED9EBA1; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d);  k = 0x8F1BBCDC; }
+        else             { f = b ^ c ^ d;                    k = 0xCA62C1D6; }
+        t = rol32(a, 5) + f + e + k + w[i];
+        e = d; d = c; c = rol32(b, 30); b = a; a = t;
+    }
+    s->h[0] += a; s->h[1] += b; s->h[2] += c; s->h[3] += d; s->h[4] += e;
+}
+
+static void sha1_init(struct sha1_ctx *s)
+{
+    s->h[0] = 0x67452301; s->h[1] = 0xEFCDAB89; s->h[2] = 0x98BADCFE;
+    s->h[3] = 0x10325476; s->h[4] = 0xC3D2E1F0;
+    s->len = 0;
+    s->n = 0;
+}
+
+static void sha1_update(struct sha1_ctx *s, const void *data, size_t len)
+{
+    const uint8_t *p = data;
+
+    s->len += len;
+    while (len > 0) {
+        size_t k = 64 - s->n < len ? 64 - s->n : len;
+        memcpy(s->blk + s->n, p, k);
+        s->n += k;
+        p += k;
+        len -= k;
+        if (s->n == 64) {
+            sha1_block(s, s->blk);
+            s->n = 0;
+        }
+    }
+}
+
+static void sha1_final(struct sha1_ctx *s, uint8_t out[20])
+{
+    uint64_t bits = s->len * 8;
+    uint8_t pad = 0x80, zero = 0, lenb[8];
+
+    sha1_update(s, &pad, 1);
+    while (s->n != 56)
+        sha1_update(s, &zero, 1);
+    for (int i = 0; i < 8; i++)
+        lenb[i] = (uint8_t)(bits >> (56 - 8 * i));
+    sha1_update(s, lenb, 8);
+    for (int i = 0; i < 20; i++)
+        out[i] = (uint8_t)(s->h[i / 4] >> (24 - 8 * (i % 4)));
+}
+
+static const char b64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+#ifdef VECTIS_WEBTERM
+/* Encode len bytes; out needs 4 * ((len + 2) / 3) + 1 bytes. */
+static void b64_encode(const uint8_t *in, size_t len, char *out)
+{
+    size_t o = 0;
+
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        if (i + 1 < len) v |= (uint32_t)in[i + 1] << 8;
+        if (i + 2 < len) v |= in[i + 2];
+        out[o++] = b64_chars[(v >> 18) & 63];
+        out[o++] = b64_chars[(v >> 12) & 63];
+        out[o++] = i + 1 < len ? b64_chars[(v >> 6) & 63] : '=';
+        out[o++] = i + 2 < len ? b64_chars[v & 63] : '=';
+    }
+    out[o] = '\0';
+}
+#endif
+
+/* Decode base64 up to the first character outside the alphabet (padding,
+ * space, CR).  Returns the number of bytes written, -1 if they do not
+ * fit in cap. */
+static int b64_decode(const char *in, uint8_t *out, size_t cap)
+{
+    uint32_t v = 0;
+    int bits = 0;
+    size_t o = 0;
+
+    for (; *in != '\0'; in++) {
+        const char *k = strchr(b64_chars, *in);
+        if (k == NULL)
+            break;
+        v = (v << 6) | (uint32_t)(k - b64_chars);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (o >= cap)
+                return -1;
+            out[o++] = (uint8_t)(v >> bits);
+        }
+    }
+    return (int)o;
+}
+
+/* The value of header `name` in the request head (hdr .. hdr+len), copied
+ * into out without leading blanks or the line end.  Returns 0 if found. */
+static int http_header(const char *hdr, size_t len, const char *name,
+                       char *out, size_t cap)
+{
+    size_t nl = strlen(name);
+
+    for (size_t i = 0; i + nl + 1 < len; i++) {
+        if (hdr[i] != '\n' || strncasecmp(hdr + i + 1, name, nl) != 0 ||
+            hdr[i + 1 + nl] != ':')
+            continue;
+        const char *v = hdr + i + 2 + nl, *end = hdr + len;
+        size_t o = 0;
+        while (v < end && (*v == ' ' || *v == '\t'))
+            v++;
+        while (v < end && *v != '\r' && *v != '\n' && o + 1 < cap)
+            out[o++] = *v++;
+        out[o] = '\0';
+        return 0;
+    }
+    return -1;
+}
+
+/* True when the request may go on: no password is set, or its
+ * "Authorization: Basic" carries it (any user name).  The two sides are
+ * compared as SHA-1 digests, in constant time. */
+static int web_auth_ok(const char *hdr, size_t len)
+{
+    char val[512];
+    uint8_t dec[384], want[20], got[20];
+    struct sha1_ctx s;
+    const uint8_t *pw;
+    uint8_t *colon;
+    int n, diff = 0;
+
+    if (g_web_password[0] == '\0')
+        return 1;
+    if (http_header(hdr, len, "Authorization", val, sizeof val) != 0 ||
+        strncasecmp(val, "Basic ", 6) != 0)
+        return 0;
+    n = b64_decode(val + 6 + strspn(val + 6, " "), dec, sizeof dec);
+    if (n < 0)
+        return 0;
+    colon = memchr(dec, ':', (size_t)n);
+    if (colon == NULL)
+        return 0;
+    pw = colon + 1;
+    sha1_init(&s);
+    sha1_update(&s, pw, (size_t)(dec + n - pw));
+    sha1_final(&s, got);
+    sha1_init(&s);
+    sha1_update(&s, g_web_password, strlen(g_web_password));
+    sha1_final(&s, want);
+    for (int i = 0; i < 20; i++)
+        diff |= got[i] ^ want[i];
+    return diff == 0;
+}
+
+/* ---------- Web terminal (/ws/terminal) ---------- */
+
+/* The page's UART terminal: xterm.js in the browser, a WebSocket (RFC
+ * 6455) to vectis.  Everything the device sends goes to every terminal,
+ * alongside stdout and the -l client; everything a terminal types goes to
+ * the device as it is (no session keys: Ctrl+P is a byte here, resetting
+ * is the page's button).  Several terminals may be open and all of them
+ * may type, as with screen -x.
+ *
+ *   server -> browser: binary frames, the device's bytes; right after
+ *                      the handshake the last WT_HIST_SIZE bytes, so a
+ *                      boot that began before the page was opened shows
+ *   browser -> server: binary frames, the bytes to send; text frames are
+ *                      control messages and ignored (xterm pages send
+ *                      {"resize":...}, a UART has no window size);
+ *                      ping, pong and close as the RFC says
+ *
+ * Output is queued per terminal and sent as the socket takes it, so a
+ * slow browser never holds up the poll loop: a terminal that falls
+ * WT_OUT_MAX behind is dropped instead.  The history is kept only with
+ * -w.  The handshake goes through the same checks as any request (the
+ * password, when there is one). */
+
+#ifdef VECTIS_WEBTERM
+
+#define WT_HIST_SIZE  (64 * 1024)                 /* sent to a new terminal */
+#define WT_OUT_MAX    (WT_HIST_SIZE + 32 * 1024)  /* queued per terminal */
+#define WT_IN_MAX     4096                        /* largest frame taken */
+#define WT_GUID       "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+struct wt_client {
+    int     fd;
+    int     frag_text;     /* a fragmented text frame is being continued */
+    char    peer[INET_ADDRSTRLEN];
+    size_t  in_len;
+    size_t  out_off, out_len;
+    uint8_t in[WT_IN_MAX];
+    uint8_t out[WT_OUT_MAX];
+};
+
+static struct wt_client g_wt[WT_MAX_CLIENTS];
+static uint8_t g_wt_hist[WT_HIST_SIZE];          /* ring of device output */
+static size_t  g_wt_hist_start, g_wt_hist_len;
+
+static int wt_count(void)
+{
+    int n = 0;
+
+    for (int i = 0; i < WT_MAX_CLIENTS; i++)
+        if (g_wt[i].fd >= 0)
+            n++;
+    return n;
+}
+
+static void wt_init(void)
+{
+    for (int i = 0; i < WT_MAX_CLIENTS; i++)
+        g_wt[i].fd = -1;
+}
+
+static void wt_shutdown(void)
+{
+    for (int i = 0; i < WT_MAX_CLIENTS; i++) {
+        if (g_wt[i].fd >= 0) {
+            close(g_wt[i].fd);
+            g_wt[i].fd = -1;
+        }
+    }
+}
+
+static void wt_close(struct wt_client *c, const char *why)
+{
+    if (c->fd < 0)
+        return;
+    close(c->fd);
+    c->fd = -1;
+    c->in_len = 0;
+    c->out_off = c->out_len = 0;
+    log_message(LOG_INFO, "[web] %s: terminal closed (%s), %d open",
+                c->peer, why, wt_count());
+}
+
+/* Send what the socket takes now; the rest waits for POLLOUT. */
+static void wt_flush(struct wt_client *c)
+{
+    while (c->fd >= 0 && c->out_len > 0) {
+        ssize_t k = send(c->fd, c->out + c->out_off, c->out_len,
+                         MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (k < 0) {
+            if (errno == EINTR)
+                continue;
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+                wt_close(c, "send failed");
+            return;
+        }
+        c->out_off += (size_t)k;
+        c->out_len -= (size_t)k;
+    }
+    c->out_off = 0;
+}
+
+/* Queue a server frame (never masked) whose payload is d1 followed by
+ * d2.  A terminal with no room left for it is dropped: -1. */
+static int wt_frame(struct wt_client *c, uint8_t opcode,
+                    const void *d1, size_t l1, const void *d2, size_t l2)
+{
+    uint8_t h[10];
+    size_t hl, len = l1 + l2;
+
+    h[0] = (uint8_t)(0x80 | opcode);          /* FIN */
+    if (len < 126) {
+        h[1] = (uint8_t)len;
+        hl = 2;
+    } else if (len <= 0xFFFF) {
+        h[1] = 126;
+        h[2] = (uint8_t)(len >> 8);
+        h[3] = (uint8_t)len;
+        hl = 4;
+    } else {
+        h[1] = 127;
+        for (int i = 0; i < 8; i++)
+            h[2 + i] = (uint8_t)((uint64_t)len >> (56 - 8 * i));
+        hl = 10;
+    }
+    if (c->out_off + c->out_len + hl + len > WT_OUT_MAX) {
+        memmove(c->out, c->out + c->out_off, c->out_len);
+        c->out_off = 0;
+    }
+    if (c->out_len + hl + len > WT_OUT_MAX) {
+        wt_close(c, "too slow, dropped");
+        return -1;
+    }
+    memcpy(c->out + c->out_off + c->out_len, h, hl);
+    c->out_len += hl;
+    if (l1 > 0)
+        memcpy(c->out + c->out_off + c->out_len, d1, l1);
+    c->out_len += l1;
+    if (l2 > 0)
+        memcpy(c->out + c->out_off + c->out_len, d2, l2);
+    c->out_len += l2;
+    return 0;
+}
+
+/* Close with a status code: the close frame is sent if the socket takes
+ * it now, the connection is dropped either way. */
+static void wt_fail(struct wt_client *c, uint16_t code, const char *why)
+{
+    uint8_t p[2] = { (uint8_t)(code >> 8), (uint8_t)code };
+
+    if (wt_frame(c, 0x8, p, sizeof p, NULL, 0) == 0)
+        wt_flush(c);
+    wt_close(c, why);
+}
+
+static void wt_hist_add(const uint8_t *d, size_t n)
+{
+    if (n > WT_HIST_SIZE) {
+        d += n - WT_HIST_SIZE;
+        n = WT_HIST_SIZE;
+    }
+    while (n > 0) {
+        size_t end = (g_wt_hist_start + g_wt_hist_len) % WT_HIST_SIZE;
+        size_t k = WT_HIST_SIZE - end < n ? WT_HIST_SIZE - end : n;
+        memcpy(g_wt_hist + end, d, k);
+        d += k;
+        n -= k;
+        g_wt_hist_len += k;
+        if (g_wt_hist_len > WT_HIST_SIZE) {   /* the oldest bytes were overwritten */
+            g_wt_hist_start = (g_wt_hist_start + g_wt_hist_len - WT_HIST_SIZE) % WT_HIST_SIZE;
+            g_wt_hist_len = WT_HIST_SIZE;
+        }
+    }
+}
+
+/* Device bytes: into the history and out to every terminal. */
+static void wt_broadcast(const uint8_t *data, size_t len)
+{
+    if (len == 0 || g_web_listen_fd < 0)
+        return;
+    wt_hist_add(data, len);
+    for (int i = 0; i < WT_MAX_CLIENTS; i++) {
+        struct wt_client *c = &g_wt[i];
+        if (c->fd >= 0 && wt_frame(c, 0x2, data, len, NULL, 0) == 0)
+            wt_flush(c);
+    }
+}
+
+/* Terminal bytes for the device; dropped while the link is down.  In
+ * RFC 2217 mode 0xFF is escaped, as for the keyboard. */
+static void wt_to_link(const uint8_t *d, size_t n)
+{
+    static uint8_t esc[2 * WT_IN_MAX];
+
+    if (n == 0 || g_fd < 0)
+        return;
+    if (!g_serial_mode) {
+        size_t o = 0;
+        for (size_t i = 0; i < n; i++) {
+            esc[o++] = d[i];
+            if (d[i] == IAC)
+                esc[o++] = IAC;
+        }
+        d = esc;
+        n = o;
+    }
+    if (link_write(d, n) < 0)
+        log_errno(LOG_WARNING, "[web] write(%s)", g_serial_mode ? "serial" : "socket");
+}
+
+/* Take every complete frame out of the input buffer. */
+static void wt_read(struct wt_client *c)
+{
+    ssize_t n = recv(c->fd, c->in + c->in_len, WT_IN_MAX - c->in_len, MSG_DONTWAIT);
+
+    if (n < 0) {
+        if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)
+            wt_close(c, "read failed");
+        return;
+    }
+    if (n == 0) {
+        wt_close(c, "disconnected");
+        return;
+    }
+    c->in_len += (size_t)n;
+
+    while (c->fd >= 0 && c->in_len >= 2) {
+        uint8_t *p = c->in, *mask, *pl;
+        int fin = (p[0] & 0x80) != 0;
+        uint8_t op = p[0] & 0x0F;
+        uint64_t len = p[1] & 0x7F;
+        size_t hl = 2;
+
+        if (!(p[1] & 0x80)) {               /* a browser always masks */
+            wt_fail(c, 1002, "unmasked frame");
+            return;
+        }
+        if (len == 126) {
+            if (c->in_len < 4)
+                break;
+            len = (uint64_t)p[2] << 8 | p[3];
+            hl = 4;
+        } else if (len == 127) {
+            if (c->in_len < 10)
+                break;
+            len = 0;
+            for (int i = 0; i < 8; i++)
+                len = len << 8 | p[2 + i];
+            hl = 10;
+        }
+        hl += 4;                            /* the masking key */
+        if (len > WT_IN_MAX - hl) {
+            wt_fail(c, 1009, "frame too large");
+            return;
+        }
+        if (c->in_len < hl + len)
+            break;                          /* wait for the rest */
+        mask = p + hl - 4;
+        pl = p + hl;
+        for (size_t i = 0; i < len; i++)
+            pl[i] ^= mask[i & 3];
+
+        switch (op) {
+        case 0x0:                           /* continuation */
+            if (!c->frag_text)
+                wt_to_link(pl, (size_t)len);
+            break;
+        case 0x1:                           /* text: control, ignored */
+            c->frag_text = !fin;
+            break;
+        case 0x2:                           /* binary: keys for the device */
+            c->frag_text = 0;
+            wt_to_link(pl, (size_t)len);
+            break;
+        case 0x8:                           /* close: answer with its code */
+            if (wt_frame(c, 0x8, pl, len >= 2 ? 2 : 0, NULL, 0) == 0)
+                wt_flush(c);
+            wt_close(c, "closed by the browser");
+            return;
+        case 0x9:                           /* ping */
+            (void)wt_frame(c, 0xA, pl, (size_t)len, NULL, 0);
+            break;
+        case 0xA:                           /* pong */
+            break;
+        default:
+            wt_fail(c, 1002, "unknown frame");
+            return;
+        }
+        if (c->fd < 0)
+            return;
+        memmove(c->in, c->in + hl + len, c->in_len - hl - (size_t)len);
+        c->in_len -= hl + (size_t)len;
+    }
+    if (c->fd >= 0 && c->in_len == WT_IN_MAX) {
+        wt_fail(c, 1009, "frame too large");
+        return;
+    }
+    wt_flush(c);
+}
+
+/* A request for /ws/terminal that passed the checks: answer 101, move
+ * its socket to a terminal slot (the web slot is freed) and send the
+ * history first. */
+static void wt_open(struct web_client *wc, const char *key)
+{
+    struct sha1_ctx s;
+    uint8_t digest[20];
+    char accept[32], resp[256];
+    struct wt_client *c = NULL;
+    int one = 1, rl;
+
+    for (int i = 0; i < WT_MAX_CLIENTS; i++) {
+        if (g_wt[i].fd < 0) {
+            c = &g_wt[i];
+            break;
+        }
+    }
+    if (c == NULL) {
+        web_reply(wc, 503, "Service Unavailable", "application/json",
+                  WEB_TEXT("{\"error\":\"too many terminals open\"}"), 0);
+        return;
+    }
+    sha1_init(&s);
+    sha1_update(&s, key, strlen(key));
+    sha1_update(&s, WT_GUID, sizeof WT_GUID - 1);
+    sha1_final(&s, digest);
+    b64_encode(digest, sizeof digest, accept);
+    rl = snprintf(resp, sizeof resp,
+                  "HTTP/1.1 101 Switching Protocols\r\n"
+                  "Upgrade: websocket\r\n"
+                  "Connection: Upgrade\r\n"
+                  "Sec-WebSocket-Accept: %s\r\n"
+                  "\r\n", accept);
+
+    c->fd = wc->fd;
+    wc->fd = -1;
+    memcpy(c->peer, wc->peer, sizeof c->peer);
+    c->frag_text = 0;
+    c->in_len = 0;
+    c->out_off = c->out_len = 0;
+    if (setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) != 0)
+        log_errno(LOG_WARNING, "setsockopt(TCP_NODELAY)");
+    memcpy(c->out, resp, (size_t)rl);
+    c->out_len = (size_t)rl;
+    if (g_wt_hist_len > 0) {
+        size_t first = WT_HIST_SIZE - g_wt_hist_start;
+        if (first > g_wt_hist_len)
+            first = g_wt_hist_len;
+        (void)wt_frame(c, 0x2, g_wt_hist + g_wt_hist_start, first,
+                       g_wt_hist, g_wt_hist_len - first);
+    }
+    log_message(LOG_INFO, "[web] %s: terminal opened, %d open", c->peer, wt_count());
+    wt_flush(c);
+}
+
+/* GET /ws/terminal: check the upgrade request, then hand it to wt_open(). */
+static void web_terminal(struct web_client *c, size_t hdr_len, int is_get)
+{
+    char up[64], key[64], ver[16];
+
+    if (!is_get) {
+        web_reply(c, 405, "Method Not Allowed", "text/plain", WEB_TEXT("GET only\n"), 0);
+        return;
+    }
+    if (http_header(c->buf, hdr_len, "Upgrade", up, sizeof up) != 0 ||
+        strcasestr(up, "websocket") == NULL ||
+        http_header(c->buf, hdr_len, "Sec-WebSocket-Key", key, sizeof key) != 0 ||
+        key[0] == '\0') {
+        web_reply(c, 400, "Bad Request", "text/plain",
+                  WEB_TEXT("a WebSocket upgrade is expected here\n"), 0);
+        return;
+    }
+    if (http_header(c->buf, hdr_len, "Sec-WebSocket-Version", ver, sizeof ver) != 0 ||
+        strcmp(ver, "13") != 0) {
+        web_reply_ex(c, 426, "Upgrade Required", "text/plain",
+                     "Sec-WebSocket-Version: 13\r\n", "no-store",
+                     WEB_TEXT("WebSocket version 13 only\n"), 0);
+        return;
+    }
+    wt_open(c, key);
+}
+
+#else /* !VECTIS_WEBTERM */
+
+static void wt_broadcast(const uint8_t *data, size_t len)
+{
+    (void)data;
+    (void)len;
+}
+
+#endif /* VECTIS_WEBTERM */
 
 static void json_escape(const char *in, char *out, size_t cap)
 {
@@ -1414,8 +2096,13 @@ static size_t web_status_json(char *out, size_t cap)
             dtr = (st & TIOCM_DTR) ? 1 : 0;
         }
     }
-    char event[128];
+    char event[128], terminals[16];
 
+#ifdef VECTIS_WEBTERM
+    snprintf(terminals, sizeof terminals, "%d", wt_count());
+#else
+    snprintf(terminals, sizeof terminals, "null");   /* built with WEBTERM=0 */
+#endif
     if (g_ev_seq == 0)
         snprintf(event, sizeof event, "null");
     else
@@ -1425,14 +2112,15 @@ static size_t web_status_json(char *out, size_t cap)
     n = snprintf(out, cap,
                  "{\"link\":\"%s\",\"mode\":\"%s\",\"target\":\"%s\","
                  "\"power\":\"%s\",\"rts\":%d,\"dtr\":%d,"
-                 "\"reset_ms\":%d,\"tcp_client\":%s%s%s,\"event\":%s,\"version\":\"%s\"}",
+                 "\"reset_ms\":%d,\"tcp_client\":%s%s%s,\"event\":%s,\"terminals\":%s,"
+                 "\"version\":\"%s\"}",
                  g_fd >= 0 ? "online" : "offline",
                  g_usb ? "usb" : g_serial_mode ? "serial" : "rfc2217",
                  target, g_power_on ? "on" : "off", rts, dtr,
                  g_reset_ms,
                  g_srv_fd >= 0 ? "\"" : "null", g_srv_fd >= 0 ? g_srv_peer : "",
                  g_srv_fd >= 0 ? "\"" : "",
-                 event, PROGRAM_VERSION);
+                 event, terminals, PROGRAM_VERSION);
     if (n < 0)
         return 0;
     return (size_t)n < cap ? (size_t)n : cap - 1;
@@ -1524,7 +2212,7 @@ static void web_answer_pending(void)
     }
 }
 
-static void web_process_request(struct web_client *c)
+static void web_process_request(struct web_client *c, size_t hdr_len)
 {
     char method[8], path[256], json[2304];
     char *q;
@@ -1543,6 +2231,12 @@ static void web_process_request(struct web_client *c)
     is_head = strcmp(method, "HEAD") == 0;
     is_post = strcmp(method, "POST") == 0;
 
+    if (!web_auth_ok(c->buf, hdr_len)) {
+        web_reply_ex(c, 401, "Unauthorized", "text/plain",
+                     "WWW-Authenticate: Basic realm=\"vectis\", charset=\"UTF-8\"\r\n",
+                     "no-store", WEB_TEXT("password required\n"), is_head);
+        return;
+    }
     if (strcmp(path, "/") == 0 && q == NULL) {
         /* The page: a bare "/" only, nothing appended. */
         if (!is_get && !is_head) {
@@ -1571,6 +2265,25 @@ static void web_process_request(struct web_client *c)
         web_power_action(c, path + 7);
         return;
     }
+#ifdef VECTIS_WEBTERM
+    if (strcmp(path, "/ws/terminal") == 0) {
+        web_terminal(c, hdr_len, is_get);
+        return;
+    }
+    if (strcmp(path, WT_ASSET_JS) == 0 || strcmp(path, WT_ASSET_CSS) == 0) {
+        int js = strcmp(path, WT_ASSET_JS) == 0;
+        if (!is_get && !is_head) {
+            web_reply(c, 405, "Method Not Allowed", "text/plain", WEB_TEXT("GET only\n"), 0);
+            return;
+        }
+        web_reply_ex(c, 200, "OK",
+                     js ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8",
+                     "Content-Encoding: gzip\r\n", "max-age=86400",
+                     js ? (const void *)wt_js_gz : (const void *)wt_css_gz,
+                     js ? sizeof wt_js_gz : sizeof wt_css_gz, is_head);
+        return;
+    }
+#endif
     web_reply(c, 404, "Not Found", "text/plain", WEB_TEXT("not found\n"), 0);
 }
 
@@ -1629,7 +2342,7 @@ static void web_client_read(struct web_client *c)
     if (c->len < hdr_len + body_len)
         return;  /* wait for the body */
 
-    web_process_request(c);
+    web_process_request(c, hdr_len);
     if (!c->pending)
         web_client_close(c);
 }
@@ -1709,6 +2422,14 @@ static int web_fill_pollfds(struct pollfd *p)
             p[1 + i].events = g_web_clients[i].rd_closed ? 0 : (POLLIN | POLLRDHUP);
         p[1 + i].revents = 0;
     }
+#ifdef VECTIS_WEBTERM
+    for (int i = 0; i < WT_MAX_CLIENTS; i++) {
+        struct pollfd *t = &p[1 + WEB_MAX_CLIENTS + i];
+        t->fd      = g_wt[i].fd;
+        t->events  = (short)(POLLIN | (g_wt[i].out_len > 0 ? POLLOUT : 0));
+        t->revents = 0;
+    }
+#endif
     return WEB_NPOLL;
 }
 
@@ -1740,6 +2461,22 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
         if (c->fd >= 0 && !c->pending && now - c->started_ms > WEB_CLIENT_TIMEOUT_MS)
             web_client_close(c);
     }
+#ifdef VECTIS_WEBTERM
+    for (int i = 0; i < WT_MAX_CLIENTS; i++) {
+        struct wt_client *t = &g_wt[i];
+        short re = p[1 + WEB_MAX_CLIENTS + i].revents;
+        if (t->fd < 0 || p[1 + WEB_MAX_CLIENTS + i].fd != t->fd)
+            continue;  /* empty slot, or opened only just now */
+        if (re & POLLNVAL) {
+            wt_close(t, "socket invalid");
+            continue;
+        }
+        if (re & POLLOUT)
+            wt_flush(t);
+        if (t->fd >= 0 && (re & (POLLIN | POLLHUP | POLLERR)))
+            wt_read(t);
+    }
+#endif
 }
 
 /* ---------- TCP listener (-l): serve the local UART to one client ---------- */
@@ -2664,9 +3401,17 @@ static void usage(const char *prog)
         "  -l [ADDR:]PORT  serve the local port (-u, -U) to one TCP client at a time:\n"
         "                  telnet, another vectis -h HOST -p PORT, pyserial\n"
         "                  rfc2217://, or raw nc/socat (Ctrl+P = reset pulse)\n"
-        "  -w [ADDR:]PORT  built-in web page with Power Enable/Disable/Reset buttons;\n"
+        "  -w [ADDR:]PORT  built-in web page with Power Enable/Disable/Reset buttons\n"
+#ifdef VECTIS_WEBTERM
+        "                  and a UART terminal everyone on the page can type in;\n"
+#else
+        "                  (this build has no web terminal: WEBTERM=0);\n"
+#endif
         "                  scripts: curl HOST:PORT/status | /power/enable|disable|reset\n"
         "                  With -l or -w the device link is (re)opened in the background.\n"
+        "  -W PASSWORD     password of the -w page (HTTP Basic, any user name);\n"
+        "                  also VECTIS_WEB_PASSWORD, -W wins.  Unset or empty: open.\n"
+        "                  -l has no password.\n"
         "  -v, --version   print version and release date\n"
         "  --help, -?      this help\n"
         "\n"
@@ -2713,6 +3458,8 @@ int main(int argc, char **argv)
     int web_port = 0;
     char lsn_addr[64] = "";
     int lsn_port = 0;
+    const char *web_password = getenv("VECTIS_WEB_PASSWORD");
+    int web_password_arg = 0;
     const struct option long_opts[] = {
         { "help",      no_argument,       &want_help,   1 },
         { "version",   no_argument,       &want_version, 1 },
@@ -2728,6 +3475,7 @@ int main(int argc, char **argv)
         { "reconnect", no_argument,       NULL,        'r' },
         { "no-crlf",   no_argument,       NULL,        'n' },
         { "web",       required_argument, NULL,        'w' },
+        { "web-password", required_argument, NULL,     'W' },
         { "listen",    required_argument, NULL,        'l' },
         { 0, 0, 0, 0 }
     };
@@ -2735,7 +3483,7 @@ int main(int argc, char **argv)
     openlog(g_progname, LOG_PID | LOG_NDELAY, LOG_DAEMON);
     atexit(closelog);
     int opt;
-    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:U:t:w:l:nrv?", long_opts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "h:p:b:d:s:y:u:U:t:w:W:l:nrv?", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'h': host = optarg; break;
         case 'p': {
@@ -2810,6 +3558,10 @@ int main(int argc, char **argv)
                 log_message(LOG_ERR, "Invalid -w spec: %s (use PORT or ADDR:PORT)", optarg);
                 return 1;
             }
+            break;
+        case 'W':
+            web_password = optarg;   /* wins over VECTIS_WEB_PASSWORD */
+            web_password_arg = 1;
             break;
         case 'l':
             if (parse_bind(optarg, lsn_addr, sizeof lsn_addr, &lsn_port) != 0) {
@@ -2926,6 +3678,19 @@ int main(int argc, char **argv)
     else
         snprintf(g_web_target, sizeof g_web_target, "%s:%s", host, port);
 
+    if (web_password != NULL) {
+        if (strlen(web_password) >= sizeof g_web_password) {
+            log_message(LOG_ERR, "The web password is too long (%zu characters at most)",
+                        sizeof g_web_password - 1);
+            return 1;
+        }
+        if (web_password_arg && web_port == 0) {
+            log_message(LOG_ERR, "-W sets the password of the -w page: give -w too");
+            return 1;
+        }
+        snprintf(g_web_password, sizeof g_web_password, "%s", web_password);
+    }
+
     if (lsn_port > 0 && !g_serial_mode) {
         log_message(LOG_ERR, "-l serves a local port: combine it with -u DEVICE or -U, not -h/-p");
         return 1;
@@ -2937,6 +3702,10 @@ int main(int argc, char **argv)
         return 1;
     if (web_port > 0 && web_listen(web_addr, web_port) != 0)
         return 1;
+    if (web_port > 0)
+        log_message(LOG_INFO, "Web page %s", g_web_password[0]
+                     ? "protected by a password (HTTP Basic, any user name)"
+                     : "open, no password (-W or VECTIS_WEB_PASSWORD sets one)");
 
     /* Switch stdin to raw mode only when running interactively.
      * When stdin is a pipe or file, skip raw mode so the tool can
@@ -3144,6 +3913,7 @@ int main(int argc, char **argv)
                 }
                 n = usbs_read(buf, sizeof buf);
                 if (n > 0) {
+                    wt_broadcast(buf, n);    /* web terminals, if any */
                     srv_send_uart(buf, n);   /* -l client, if any */
                     if (process_serial_incoming(buf, n) != 0) {
                         log_errno(LOG_ERR, "stdout");
@@ -3177,6 +3947,7 @@ int main(int argc, char **argv)
                     break;
                 }
                 if (g_serial_mode) {
+                    wt_broadcast(buf, (size_t)n);    /* web terminals, if any */
                     srv_send_uart(buf, (size_t)n);   /* -l client, if any */
                     if (process_serial_incoming(buf, (size_t)n) != 0) {
                         log_errno(LOG_ERR, "stdout");

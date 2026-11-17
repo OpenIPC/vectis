@@ -8,7 +8,9 @@
 # through a symlink (so a "replug" can point it at a new pty), the test
 # plays the target on the master.  Covered: the -l server in raw and
 # Telnet/RFC 2217 mode (LF->CR, 0xFF escaping, SET-BAUDRATE, SET-CONTROL,
-# SIGNATURE, BRK), the -w web API, the RFC 2217 client (-h/-p) against
+# SIGNATURE, BRK), the -w web API, the web terminal (WebSocket, history,
+# several typists, a stalled browser) and the web password, the RFC 2217
+# client (-h/-p) against
 # the -l server, stdin EOF and device loss without a busy loop, the -u
 # check of the USB adapter on reconnect (a fake sysfs), the -U command
 # line of the USB builds, and -U fd:@NAME against a fake app socket.
@@ -17,6 +19,9 @@
 # Python 3 standard library only; Linux.
 #
 
+import base64
+import gzip
+import hashlib
 import json
 import os
 import re
@@ -30,6 +35,7 @@ import sys
 import tempfile
 import time
 import tty
+import urllib.error
 import urllib.request
 
 BIN_DIR = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
@@ -137,6 +143,106 @@ def http(port, path):
         return json.loads(r.read().decode())
 
 
+class Ws:
+    """A minimal WebSocket client (RFC 6455) for /ws/terminal."""
+
+    def __init__(self, port, auth=None, read=True):
+        self.sock = socket.create_connection(("127.0.0.1", port), 5)
+        key = base64.b64encode(os.urandom(16)).decode()
+        req = ("GET /ws/terminal HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+               "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+               "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n" % key)
+        if auth is not None:
+            req += "Authorization: Basic %s\r\n" % base64.b64encode(auth.encode()).decode()
+        self.sock.sendall((req + "\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = self.sock.recv(1)
+            if not chunk:
+                break
+            head += chunk
+        self.head = head.decode(errors="replace")
+        self.status = int(self.head.split(" ")[1]) if self.head.startswith("HTTP/") else 0
+        want = base64.b64encode(hashlib.sha1(
+            (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+        self.accept_ok = ("Sec-WebSocket-Accept: %s" % want) in self.head
+        self.buf = b""
+
+    def send(self, payload, opcode=2, fin=True):
+        mask = os.urandom(4)
+        n = len(payload)
+        h = bytes([(0x80 if fin else 0) | opcode])
+        if n < 126:
+            h += bytes([0x80 | n])
+        elif n < 65536:
+            h += bytes([0x80 | 126]) + struct.pack(">H", n)
+        else:
+            h += bytes([0x80 | 127]) + struct.pack(">Q", n)
+        body = bytes(b ^ mask[i & 3] for i, b in enumerate(payload))
+        self.sock.sendall(h + mask + body)
+
+    def frames(self, timeout=2.0, until=None):
+        """(opcode, payload) of the frames that arrive within timeout."""
+        out = []
+        data = b""
+        end = time.time() + timeout
+        self.sock.settimeout(0.05)
+        while time.time() < end:
+            while True:
+                f = self._parse()
+                if f is None:
+                    break
+                out.append(f)
+                if f[0] == 2:
+                    data += f[1]
+                if until is not None and (until in data or f[0] == 8):
+                    return out
+            try:
+                chunk = self.sock.recv(65536)
+            except socket.timeout:
+                continue
+            if not chunk:
+                break
+            self.buf += chunk
+        return out
+
+    def data(self, timeout=2.0, until=None):
+        return b"".join(p for op, p in self.frames(timeout, until) if op == 2)
+
+    def _parse(self):
+        b = self.buf
+        if len(b) < 2:
+            return None
+        n, hl = b[1] & 0x7F, 2
+        if n == 126:
+            if len(b) < 4:
+                return None
+            n, hl = struct.unpack(">H", b[2:4])[0], 4
+        elif n == 127:
+            if len(b) < 10:
+                return None
+            n, hl = struct.unpack(">Q", b[2:10])[0], 10
+        if len(b) < hl + n:
+            return None
+        self.buf = b[hl + n:]
+        return (b[0] & 0x0F, b[hl:hl + n])
+
+    def close(self):
+        self.sock.close()
+
+
+def http_raw(port, path, auth=None):
+    """(status, headers, body) of a GET, without raising on 4xx."""
+    req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path))
+    if auth is not None:
+        req.add_header("Authorization", "Basic " + base64.b64encode(auth.encode()).decode())
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
 def cpu_seconds(pid):
     with open("/proc/%d/stat" % pid) as f:
         fields = f.read().rsplit(")", 1)[1].split()
@@ -221,6 +327,8 @@ def test_server(tmp):
         check("OpenIPC Vectis 38x38" in page and "UART 38x38" not in page,
               "web page: names the OpenIPC Vectis 38x38 board")
         check('"' not in page, "web page: single quotes only")
+        check("fetch('/" not in page and "fetch(path" not in page and "location.origin" in page,
+              "web page: fetch() with absolute URLs (a page opened as http://user:pass@host/)")
 
         # Raw mode: LF and CRLF become CR on the way to the device.
         c = socket.create_connection(("127.0.0.1", lport))
@@ -343,6 +451,22 @@ def test_client(tmp):
         out = stop(cli)
         cli = None
         check("ok" in out, "device output reaches the client")
+
+        # The web terminal of an RFC 2217 client: 0xFF escaped on the way.
+        wport = free_port()
+        cli = start([VECTIS, "-h", "127.0.0.1", "-p", str(lport), "-n",
+                     "-w", "127.0.0.1:%d" % wport])
+        st = wait_status(wport, "link", "online")
+        if st.get("terminals") is not None:
+            ws = Ws(wport)
+            ws.data(0.5)
+            ws.send(b"t\xffu\r")
+            got = dev.read(1.5, until=b"\r")
+            check(got == b"t\xffu\r", "client's web terminal -> device, 0xFF intact (%r)" % got)
+            dev.write(b"v\xffw\n")
+            got = ws.data(2.0, until=b"w\n")
+            check(got == b"v\xffw\n", "device -> client's web terminal, 0xFF once (%r)" % got)
+            ws.close()
     finally:
         if cli is not None:
             stop(cli)
@@ -365,6 +489,212 @@ def test_stdin_eof(tmp):
     finally:
         out = stop(p)
     check("reply" in out, "device output still forwarded after stdin EOF")
+
+
+def start_quiet(args, logpath, **kw):
+    """vectis with stdout thrown away (large device output must not fill a
+    pipe nobody reads) and stderr in a file."""
+    log = open(logpath, "w+b")
+    return subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=log, **kw), log
+
+
+def stop_quiet(p, log):
+    if p.poll() is None:
+        p.send_signal(signal.SIGTERM)
+        try:
+            p.wait(5)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+    log.seek(0)
+    text = log.read().decode(errors="replace")
+    log.close()
+    return text
+
+
+def test_web_terminal(tmp):
+    print("== web terminal (/ws/terminal)")
+    dev = FakeDevice(os.path.join(tmp, "dev-wt"))
+    wport = free_port()
+    p, log = start_quiet([VECTIS, "-u", dev.link, "-w", "127.0.0.1:%d" % wport, "-n"],
+                         os.path.join(tmp, "wt.log"))
+    text = ""
+    try:
+        check(wait_listen(wport), "web up")
+        st = wait_status(wport, "link", "online")
+        page = http_raw(wport, "/")[2].decode()
+        if st.get("terminals", 0) is None:
+            # make WEBTERM=0: nothing of the terminal is there.
+            ws = Ws(wport)
+            check(ws.status == 404, "WEBTERM=0: no /ws/terminal (%d)" % ws.status)
+            ws.close()
+            check(http_raw(wport, "/xterm-5.5.0.js")[0] == 404, "WEBTERM=0: no xterm.js")
+            check("xterm" not in page and "terminal" not in page.lower(),
+                  "WEBTERM=0: the page has no terminal")
+            return
+        check(st.get("terminals") == 0, "/status: terminals 0")
+        check("/xterm-5.5.0.js" in page and "/xterm-5.5.0.css" in page and "/ws/terminal" in page,
+              "web page: loads the built-in xterm.js, opens /ws/terminal")
+        check("cdn" not in page.lower(), "web page: nothing from a CDN")
+        for asset, head, ctype in (("/xterm-5.5.0.js", b"!function", "text/javascript"),
+                                   ("/xterm-5.5.0.css", b"/**", "text/css")):
+            code, hdr, body = http_raw(wport, asset)
+            ok = code == 200 and hdr.get("Content-Encoding") == "gzip" and \
+                (hdr.get("Content-Type") or "").startswith(ctype)
+            try:
+                plain = gzip.decompress(body)
+            except OSError:
+                plain = b""
+            check(ok and plain.startswith(head) and len(plain) > 1000,
+                  "%s: gzip, %s, %d bytes unpacked" % (asset, ctype, len(plain)))
+        js = gzip.decompress(http_raw(wport, "/xterm-5.5.0.js")[2])
+        check(b"FitAddon" in js and b"sourceMappingURL" not in js,
+              "xterm.js carries the fit addon, no source map link")
+
+        dev.write(b"U-Boot 2016.11\r\n")
+        time.sleep(0.3)
+        a = Ws(wport)
+        check(a.status == 101 and a.accept_ok, "handshake: 101 with the right Sec-WebSocket-Accept")
+        got = a.data(2.0, until=b"2016.11\r\n")
+        check(got == b"U-Boot 2016.11\r\n", "history: output from before the page opened (%r)" % got)
+        check(http(wport, "/status").get("terminals") == 1, "/status: terminals 1")
+        dev.write(b"login: ")
+        got = a.data(2.0, until=b"login: ")
+        check(got == b"login: ", "live output reaches the terminal (%r)" % got)
+        a.send(b"root\r")
+        got = dev.read(1.0, until=b"\r")
+        check(got == b"root\r", "typed bytes reach the device as they are (%r)" % got)
+        seq = (http(wport, "/status").get("event") or {}).get("seq")
+        a.send(b"\x10\x02\xff\n")
+        got = dev.read(1.0, until=b"\n")
+        check(got == b"\x10\x02\xff\n", "Ctrl+P, Ctrl+B, 0xFF, LF pass as bytes (%r)" % got)
+        check((http(wport, "/status").get("event") or {}).get("seq") == seq,
+              "Ctrl+P from the terminal is no reset")
+
+        b = Ws(wport)
+        b.data(1.0)                                # its history
+        dev.write(b"both\n")
+        check(a.data(2.0, until=b"both\n") == b"both\n" and b.data(2.0, until=b"both\n") == b"both\n",
+              "two terminals: both see the output")
+        b.send(b"from-b\r")
+        got = dev.read(1.0, until=b"\r")
+        check(got == b"from-b\r", "two terminals: the second one types too (%r)" % got)
+        a.send(b'{"resize":{"cols":120,"rows":40}}', opcode=1)
+        got = dev.read(0.5)
+        check(got == b"", "text frames (resize) do not reach the device (%r)" % got)
+        a.send(b"fr", fin=False)
+        a.send(b"ag\r", opcode=0)
+        got = dev.read(1.0, until=b"\r")
+        check(got == b"frag\r", "fragmented binary frame reassembled (%r)" % got)
+        a.send(b"pp", opcode=9)
+        fr = a.frames(1.0, until=None)
+        check((10, b"pp") in fr, "ping answered with pong")
+        b.send(struct.pack(">H", 1000), opcode=8)
+        fr = b.frames(1.0, until=b"")
+        check(any(op == 8 for op, _ in fr), "close answered with close")
+        b.close()
+        a.close()
+        time.sleep(0.3)
+        check(http(wport, "/status").get("terminals") == 0, "/status: terminals back to 0")
+
+        # The history keeps the last 64 KB.
+        big = bytes((i * 131 + i // 256) & 0xFF for i in range(100000))
+        for i in range(0, len(big), 4096):
+            dev.write(big[i:i + 4096])
+        time.sleep(0.5)
+        c = Ws(wport)
+        got = c.data(3.0, until=big[-64:])
+        check(len(got) == 65536 and got == big[-65536:],
+              "history: the last 65536 bytes, in order (%d bytes)" % len(got))
+        c.close()
+
+        # A terminal that does not read is dropped; the rest is not held up.
+        stalled = socket.socket()
+        stalled.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        stalled.connect(("127.0.0.1", wport))
+        key = base64.b64encode(os.urandom(16)).decode()
+        stalled.sendall(("GET /ws/terminal HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+                         "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+                         "Sec-WebSocket-Version: 13\r\n\r\n" % key).encode())
+        time.sleep(0.3)
+        chunk = b"x" * 4095 + b"\n"
+        t0 = time.time()
+        for _ in range(512):                       # 2 MB
+            dev.write(chunk)
+        took = time.time() - t0
+        end = time.time() + 5
+        while time.time() < end and http(wport, "/status").get("terminals") != 0:
+            time.sleep(0.1)
+        check(http(wport, "/status").get("terminals") == 0,
+              "a stalled terminal is dropped (2 MB in %.2f s)" % took)
+        stalled.close()
+        d = Ws(wport)
+        d.data(1.0)
+        dev.write(b"still here\n")
+        check(d.data(2.0, until=b"here\n").endswith(b"still here\n"), "a new terminal works after that")
+        share = cpu_share(p.pid, 1.0)
+        check(share < 0.05, "terminal open, idle CPU (%.1f%%)" % (share * 100))
+        d.close()
+    finally:
+        text = stop_quiet(p, log)
+    check("terminal opened" in text and "too slow, dropped" in text,
+          "the log names opened and dropped terminals")
+
+
+def test_web_password(tmp):
+    print("== web password (-W, VECTIS_WEB_PASSWORD)")
+    dev = FakeDevice(os.path.join(tmp, "dev-pw"))
+    env = dict(os.environ, VECTIS_WEB_PASSWORD="env:pw")
+
+    def run(extra, env):
+        wport = free_port()
+        p, log = start_quiet([VECTIS, "-u", dev.link, "-w", "127.0.0.1:%d" % wport, "-n"] + extra,
+                             os.path.join(tmp, "pw.log"), env=env)
+        check(wait_listen(wport), "web up")
+        return p, log, wport
+
+    p, log, wport = run([], env)
+    try:
+        code, hdr, _ = http_raw(wport, "/")
+        check(code == 401 and 'Basic realm="vectis"' in (hdr.get("WWW-Authenticate") or ""),
+              "no password: 401 with WWW-Authenticate Basic")
+        check(http_raw(wport, "/status")[0] == 401 and http_raw(wport, "/power/reset")[0] == 401,
+              "no password: /status and /power/* closed too")
+        check(http_raw(wport, "/", "admin:wrong")[0] == 401, "wrong password: 401")
+        check(http_raw(wport, "/", "admin:env:pw")[0] == 200, "VECTIS_WEB_PASSWORD, user admin: 200")
+        check(http_raw(wport, "/status", ":env:pw")[0] == 200, "empty user name: 200")
+        check(http_raw(wport, "/", "x:env:p")[0] == 401 and http_raw(wport, "/", "x:env:pw2")[0] == 401,
+              "a prefix or a longer password is refused")
+        if json.loads(http_raw(wport, "/status", ":env:pw")[2]).get("terminals") is not None:
+            ws = Ws(wport)
+            check(ws.status == 401, "terminal without the password: 401 (%d)" % ws.status)
+            ws.close()
+            ws = Ws(wport, auth="u:env:pw")
+            check(ws.status == 101, "terminal with the password: 101 (%d)" % ws.status)
+            ws.close()
+    finally:
+        text = stop_quiet(p, log)
+    check("protected by a password" in text and "env:pw" not in text,
+          "the log says the page is protected, not the password")
+
+    p, log, wport = run(["-W", "arg"], env)
+    try:
+        check(http_raw(wport, "/", ":env:pw")[0] == 401 and http_raw(wport, "/", ":arg")[0] == 200,
+              "-W wins over VECTIS_WEB_PASSWORD")
+    finally:
+        stop_quiet(p, log)
+
+    p, log, wport = run([], dict(os.environ, VECTIS_WEB_PASSWORD=""))
+    try:
+        check(http_raw(wport, "/")[0] == 200, "empty VECTIS_WEB_PASSWORD: open")
+    finally:
+        text = stop_quiet(p, log)
+    check("open, no password" in text, "the log says the page is open")
+
+    r = subprocess.run([VECTIS, "-u", dev.link, "-W", "x"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
+    check(r.returncode == 1 and b"give -w too" in r.stdout, "-W without -w: refused")
 
 
 class FakeSysfs:
@@ -653,6 +983,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_server(tmp)
         test_client(tmp)
+        test_web_terminal(tmp)
+        test_web_password(tmp)
         test_stdin_eof(tmp)
         test_identity(tmp)
         test_usb_fd(tmp)
