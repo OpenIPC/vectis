@@ -11,6 +11,8 @@
 #
 #   make                    vectis with -U (USB_CHIPS = ch34x: CH340/CH341)
 #   make USB=0              vectis without -U (tty and RFC 2217 only)
+#   make WEBTERM=0          vectis without the web terminal on the -w page
+#                           (no /ws/terminal, no built-in xterm.js)
 #
 # vectis-bootrom.c is the original
 # UART bridge with the HiSilicon BOOTROM-CATCH extension; it is kept for
@@ -24,6 +26,16 @@ CC      ?= cc
 # USB-UART chip families for -U, all linked into vectis.
 USB       ?= 1
 USB_CHIPS ?= ch34x
+
+# The UART terminal of the -w page: xterm.js (webterm_assets.h, made by
+# web/gen-assets.sh from web/xterm/) and the WebSocket /ws/terminal.
+WEBTERM ?= 1
+
+ifeq ($(WEBTERM),1)
+WEBTERM_DEPS  := webterm_assets.h
+else
+WEBTERM_FLAGS := -DVECTIS_NO_WEBTERM
+endif
 
 ifeq ($(USB),1)
 USB_SRC   := usbserial.c $(addsuffix .c,$(USB_CHIPS))
@@ -46,16 +58,16 @@ endif
 
 all: $(TARGET)
 
-# The USB settings decide what goes into vectis, so a change of USB or
-# USB_CHIPS rebuilds it without `make clean`: .build-config is rewritten
+# The USB and WEBTERM settings decide what goes into vectis, so a change of
+# USB, USB_CHIPS or WEBTERM rebuilds it without `make clean`: .build-config is rewritten
 # only when they differ from the last build.
-BUILD_CONFIG := USB=$(USB) USB_CHIPS=$(USB_CHIPS)
+BUILD_CONFIG := USB=$(USB) USB_CHIPS=$(USB_CHIPS) WEBTERM=$(WEBTERM)
 .build-config: FORCE
 	@echo '$(BUILD_CONFIG)' | cmp -s - $@ || echo '$(BUILD_CONFIG)' > $@
 
 # USB=1: -DVECTIS_USB -DVECTIS_CHIP_<CHIP> for every chip, vectis.c usbserial.c <chip>.c
-$(TARGET): vectis.c $(USB_DEPS) .build-config
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(USB_FLAGS) -o $@ vectis.c $(USB_SRC) $(LDFLAGS)
+$(TARGET): vectis.c $(USB_DEPS) $(WEBTERM_DEPS) .build-config
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(USB_FLAGS) $(WEBTERM_FLAGS) -o $@ vectis.c $(USB_SRC) $(LDFLAGS)
 	@if [ "$(DEBUG)" = "0" ]; then $(STRIP) $@; fi
 
 # Optional, not built by `make all`.

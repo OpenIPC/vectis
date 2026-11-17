@@ -2,8 +2,8 @@
 #
 # Copyright (c) OpenIPC  https://openipc.org  MIT License
 #
-# build-native.sh — build vectis (vectis.c, usbserial.c, ch34x.c) with the NDK
-# for the Android app
+# build-native.sh — build vectis (vectis.c, usbserial.c, ch34x.c and the web
+# terminal's webterm_assets.h) with the NDK for the Android app
 #
 # Usage:
 #   android/build-native.sh OUT_DIR [ABI...]    (default ABIs: arm64-v8a armeabi-v7a)

@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```sh
 make                          # vectis with -U (USB_CHIPS = ch34x), -Os, stripped
 make USB=0                    # vectis without -U (tty and RFC 2217 only)
+make WEBTERM=0                # vectis without the web terminal (/ws/terminal, xterm.js)
 make DEBUG=1                  # -g -O0, no strip
 make vectis-bootrom           # the original bridge, not part of `make all`
 make clean                    # run it when switching CC: make compares timestamps only
@@ -15,12 +16,13 @@ python3 tests/test_vectis.py .   # regression tests, Python 3 stdlib only, no ha
 
 C99/GNU99, libc + Linux headers only, no libusb. `-Wall -Wextra -Wpedantic` is the
 quality gate: CI fails on any `warning:` in the build log, for x86_64, arm, aarch64 and
-mipsel, with and without `USB=0`. Cross builds: `make CC=<prefix>gcc STRIP=<prefix>strip`.
+mipsel, with and without `USB=0` and `WEBTERM=0`. Cross builds: `make CC=<prefix>gcc STRIP=<prefix>strip`.
 The release binaries are static musl builds from `ci/build-static.sh` (x86_64, in
 `alpine:3.22`) and `ci/build-mipsel.sh` (soft-float MIPS32r2, OpenWrt toolchain).
 
 The tests use a pty pair in place of the serial device and cover the `-l` server (raw and
-Telnet/RFC 2217), the `-w` web API, the RFC 2217 client against `-l`, stdin EOF and device
+Telnet/RFC 2217), the `-w` web API, the web terminal (WebSocket) and password, the
+RFC 2217 client against `-l`, stdin EOF and device
 loss without a busy loop, the `-U` command line, and `-U fd:@NAME` against a fake
 app socket. Add a test there for any behaviour
 change that can be exercised without hardware.
@@ -29,8 +31,13 @@ change that can be exercised without hardware.
 
 - `vectis.c` → **`vectis`**, the one shipped binary. Three roles side by side:
   console (local tty `-u`, USB-UART via usbfs `-U`, or RFC 2217 client `-h/-p`),
-  TCP server for the local port (`-l`), web power console with a JSON API (`-w`).
+  TCP server for the local port (`-l`), web power console with a JSON API and a UART
+  terminal (`-w`: WebSocket `/ws/terminal`, optional password `-W`/`VECTIS_WEB_PASSWORD`).
   It is the former `vectis-cli`; the name `vectis-cli` and the file `vectis-cli.c` are gone.
+- `web/xterm/` → xterm.js and its fit addon (MIT, pinned versions, `web/xterm/README.md`).
+  `sh web/gen-assets.sh` turns them into **`webterm_assets.h`** (gzipped C arrays), which is
+  committed so every build (make, the NDK, plain cc) has it; CI checks the two agree.
+  `make WEBTERM=0` (`-DVECTIS_NO_WEBTERM`) leaves the terminal out.
 - `usbserial.c` / `usbserial.h` → the `-U` transport: usbfs device lookup, interface
   claim, bulk URBs, receive backlog. Compiled in only with `-DVECTIS_USB` (`USB=1`).
 - `ch34x.c` → the CH340/CH341 chip family. One file per family, listed in `USB_CHIPS`;
@@ -82,12 +89,18 @@ Easy to break and not obvious from one function — read the surrounding block c
    client over > ~25 ms RTT misses the ~100 ms download-mode window. The request is
    variable length, the reply a fixed prefix plus appended counters; keep it compatible
    in both directions. The wire format is in the comment above `COMPORT_BOOTROM_CATCH`.
+7. **The web terminal never blocks the poll loop.** Device output reaches it through
+   `wt_broadcast()` wherever it reaches stdout and the `-l` client (both serial paths and
+   `process_incoming()`); each terminal has its own queue, sent non-blocking, and one that
+   falls `WT_OUT_MAX` behind is dropped. Input is verbatim: no session keys, `Ctrl+P` is a
+   byte (the page's button resets). The password (`-W`) guards every `-w` request, the
+   upgrade included; `-l` stays without one (invariant 1).
 
 ## Versioning and release
 
 - `PROGRAM_VERSION` / `PROGRAM_RELEASE_DATE` near the top of `vectis.c` (`MAJOR.MINOR.PATCH`).
   `vectis-bootrom.c` keeps its own, separate version.
-- Pull requests that touch code or build (`*.c`, `*.h`, `Makefile`, `ci/`,
+- Pull requests that touch code or build (`*.c`, `*.h`, `web/`, `Makefile`, `ci/`,
   `.github/workflows/build.yml`, Markdown excluded) must bump `PROGRAM_VERSION` and add a
   `## <version> — YYYY-MM-DD` section to `CHANGELOG.md`; `.github/check-version.sh`
   enforces it (`version.yml`). The `no-release` label lets through a change that leaves

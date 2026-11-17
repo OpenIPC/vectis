@@ -22,7 +22,8 @@ Vectis 是一款串口控制台，用于在配合 OpenIPC Vectis 38x38 板开发
   二进制安全的数据传输，以及对波特率、线路参数和 RTS/DTR 的带外
   控制；
 - **Web** —— `-w PORT` 提供一个电源控制页面（通过 RTS+DTR 实现 Enable /
-  Disable / Reset），以及一个供脚本使用的小型 JSON API。
+  Disable / Reset），页面上带有浏览器中的 UART 终端，以及一个供脚本使用的
+  小型 JSON API。
 
 它既可以在终端中交互运行，也可以作为守护进程运行（`systemd`，无需
 终端）；适配器被拔出后会自行重新打开设备链路；除 libc 外没有任何
@@ -101,6 +102,8 @@ USB 路径代替 `-u`（参见“无内核驱动的 USB 模式”）。以服务
   `PURGE-DATA`、`SIGNATURE`、`BRK`
 - Web 电源控制台（`-w`），附带 JSON API：`/status`、`/power/enable`、
   `/power/disable`、`/power/reset`
+- Web 页面上的 UART 终端：xterm.js 内置于二进制文件中（无需互联网），
+  连接时回放输出历史，多个浏览器可同时输入；可选密码（`-W`）
 - 适合以守护进程方式运行：不需要终端，监听端口先于设备链路启动，
   链路断开期间保持可用，每次中断只记录一行 syslog
 - 通过 syslog 记录连接、电源操作和错误
@@ -123,7 +126,8 @@ make
 这会构建带 `-U` 的 `vectis`（体积优化并已 strip）。`USB_CHIPS` 列出 `-U`
 支持的 USB 芯片系列，它们都链接进同一个二进制文件；运行时按 USB VID:PID
 选择芯片，目前只有 `ch34x`。`make USB=0` 构建不带 `-U` 的 `vectis`（仅 tty
-和 RFC 2217）。`make DEBUG=1` 则构建
+和 RFC 2217）。`make WEBTERM=0` 构建不带 Web 页面终端的版本（没有
+`/ws/terminal` 和内置的 xterm.js，约小 75 KB）；电源页面仍然保留。`make DEBUG=1` 则构建
 带调试符号、不做优化的版本。`make vectis-bootrom`
 按需构建原始的桥接程序；`make all` 不会构建它。
 
@@ -143,7 +147,8 @@ make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
 时间戳，仅更换 `CC` 不会重新构建已存在的二进制文件。
 
 每次 push 和 pull request 时，CI 都会为 x86_64、arm、aarch64 和 mipsel
-构建 `vectis` 和 `vectis-bootrom`，并检查 `make USB=0` 能否构建；生成的二进制文件作为
+构建 `vectis` 和 `vectis-bootrom`，并检查 `make USB=0` 和 `make WEBTERM=0`
+能否构建；生成的二进制文件作为
 构建产物附加在每次运行上。在 x86_64 上 CI 还会运行回归测试：测试只需要
 Python 3，并用 pty 代替串口设备：
 
@@ -531,8 +536,11 @@ USB 模式（`make USB=0` 构建中没有）：
   pyserial `rfc2217://`，或原始模式的 nc/socat；参见下文
   “通过 TCP 提供串口”
 - `-w [ADDR:]PORT`、`--web [ADDR:]PORT` —— 在该端口上启动内置的 Web 电源
-  控制台（除非指定了 IPv4 地址，否则监听所有接口）；
+  控制台及 UART 终端（除非指定了 IPv4 地址，否则监听所有接口）；
   参见下文“Web 电源控制台”
+- `-W PASSWORD`、`--web-password PASSWORD` —— `-w` 页面的密码（HTTP
+  Basic，用户名任意）。环境变量 `VECTIS_WEB_PASSWORD` 的作用相同；
+  `-W` 优先。未设置或为空：页面开放。参见下文“密码”
 - `-v`、`--version` —— 打印版本号和发布日期
 - `--help`、`-?` —— 帮助
 
@@ -652,6 +660,7 @@ nc 192.168.1.20 2021                        # 原始模式，逐行发送
   在此未实现。
 - 客户端的所有操作都会连同其地址一起记录到日志，Web
   页面和 `/status` 会显示已连接的客户端。
+- 无论 `-W` 如何设置，该端口都没有密码：它面向实验室网络。
 - 与 `vectis-bootrom` 一样，客户端发来 EOF 即结束会话。
   `nc` 在 stdin 耗尽时正是这样做的（`echo cmd | nc host 2021`），
   因此对于脚本化的一次性命令，建议使用 `vectis -h host -p 2021`
@@ -712,6 +721,7 @@ nc 192.168.1.20 2021                        # 原始模式，逐行发送
 | `/power/enable`  | GET 或 POST | 拉高 RTS+DTR                 | JSON，完整状态 |
 | `/power/disable` | GET 或 POST | 释放 RTS+DTR                 | JSON，完整状态 |
 | `/power/reset`   | GET 或 POST | RTS+DTR 脉冲；脉冲结束后应答 | JSON，完整状态 |
+| `/ws/terminal`   | GET         | UART 终端（WebSocket）       | 见下文         |
 
 复位脉冲在后台运行：在脉冲持续期间，`/status`、
 其他页面、终端和 `-l` 客户端照常得到服务，
@@ -734,7 +744,7 @@ curl -s http://192.168.1.20:8080/power/reset
 {"link":"online","mode":"serial","target":"/dev/ttyUSB0","power":"on",
  "rts":1,"dtr":1,"reset_ms":200,"tcp_client":"192.168.1.5",
  "event":{"seq":7,"kind":"reset","source":"rfc2217","ago_ms":1830},
- "version":"1.7.0"}
+ "terminals":1,"terminal_token":"3f9c...","version":"1.14.0"}
 ```
 
 `link` 为 `online` 或 `offline`；`power` 是本进程最后一次
@@ -745,7 +755,9 @@ curl -s http://192.168.1.20:8080/power/reset
 先 off 后 on），`source` 为 `web`、
 `keyboard`、`tcp`（原始客户端，`Ctrl+P`）、`rfc2217`（来自
 Telnet 客户端的 `SET-CONTROL`）或 `link`（打开串口时拉高），`seq`
-随每个事件递增，`ago_ms` 表示事件发生在多久之前。
+随每个事件递增，`ago_ms` 表示事件发生在多久之前。`terminals` 是已打开的
+Web 终端数量（在 `make WEBTERM=0` 构建中为 `null`），`terminal_token` 是页面
+打开终端时使用的令牌（每个进程随机生成；`WEBTERM=0` 构建中没有）。
 页面借此显示在别处触发的复位：来自键盘或来自
 `vectis -h HOST -p PORT` 客户端的 `Ctrl+P` 会使
 Reset 按钮点亮、显示屏显示 `Resetting`，日志行中会注明
@@ -758,9 +770,62 @@ Reset 按钮点亮、显示屏显示 `Resetting`，日志行中会注明
 断开期间，`/power/` 命令应答 `503`；未知命令应答
 `404`。命令 URL 上的查询字符串会被忽略。
 
-没有任何身份验证。请将控制台绑定到受信任的接口
-（`-w 127.0.0.1:8080`），或将端口限制在实验室网络内，与
-`-l` 监听端口的做法相同。
+### UART 终端
+
+<p align="center">
+  <img src="screenshots/web-terminal.jpg" alt="vectis Web 页面：电源面板及其下方的 UART 终端，显示启动日志和 shell 会话" width="720">
+</p>
+
+<p align="center"><sub>vectis 1.14.0，参数 <code>-w 19081 -l 19021 -t 300</code>，用伪终端代替 OpenIPC Dev Board 的 UART；两条命令是在页面中输入的。</sub></p>
+
+页面在电源面板下方显示同一 UART 的终端：设备输出的一切，以及向设备输入的
+键盘。它是 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0，内置于
+`vectis` 并由其自身提供（`/xterm-5.5.0.js`、`/xterm-5.5.0.css`，gzip 压缩，
+约 70 KB），因此浏览器无需访问互联网；`make WEBTERM=0` 不包含它。
+
+- 连接时终端首先收到设备最近 64 KB 的输出，因此在打开页面之前就已开始的
+  启动过程也能看到。
+- 设备输出同时发往所有已打开的终端、本地控制台和 `-l` 客户端。打开页面的
+  每个人都可以输入，与 `screen -x` 相同；字节原样发送给设备。
+- 没有会话热键：`Ctrl+P` 和 `Ctrl+B` 与其他字节一样发送给设备。复位请使用
+  上方的按钮。
+- 停止读取的浏览器（网络卡住）在为其排队的输出达到约 96 KB 时会被断开，
+  不会拖慢设备或其他终端。已消失的浏览器（笔记本休眠、隧道断开）在 30 秒内
+  未回应 `vectis` 的 ping 即被关闭。页面会自动重新连接，`vectis` 重启后也是如此。
+- 最多同时 8 个终端；它们不占用其他请求的连接槽位。
+- 浏览器只能从本服务器自己的页面打开终端，因此别处的页面无法借助操作者的
+  浏览器访问开发板。页面通过 `?token=` 传递 `/status` 中的 `terminal_token`，
+  其他网站的脚本无法读取它；在改写 `Host` 的代理（camex 服务器的 nginx）
+  之后也能工作。没有令牌时，`Origin` 不是本主机的握手会被拒绝（`403`）；
+  不发送 `Origin` 的客户端（websocat、脚本）可以通过。
+
+`/ws/terminal` 是普通的 WebSocket（RFC 6455）：二进制帧把设备的字节发往
+浏览器，并把输入的字节发回；浏览器发来的文本帧是控制消息，会被忽略
+（xterm 页面会发送窗口大小，而 UART 没有窗口大小）。任何 WebSocket 客户端
+都可以使用：
+
+```sh
+websocat --binary ws://192.168.1.20:8080/ws/terminal
+```
+
+### 密码
+
+页面默认开放：这是用于受信任网络的实验室工具。密码可防止页面被误用：
+
+```sh
+./vectis -u /dev/ttyUSB0 -w 8080 -W secret
+VECTIS_WEB_PASSWORD=secret ./vectis -u /dev/ttyUSB0 -w 8080
+```
+
+设置密码后，对 `-w` 端口的每个请求（页面、`/status`、`/power/*`、终端）
+都需要带有该密码、用户名任意的 HTTP Basic 认证，否则应答 `401`；浏览器只会
+询问一次。脚本中可用：`curl -u :secret http://192.168.1.20:8080/status`。
+`-W` 优先于 `VECTIS_WEB_PASSWORD`；空值表示没有密码。启动时日志会说明页面
+是否受保护。`-W` 在 `ps` 中可见；在意这一点时请使用环境变量。
+
+它不能防御攻击者：密码以明文 HTTP 在网络上传输，而 `-l` 端口根本没有密码
+（普通的 `nc`/`socat` 必须能够继续使用）。请把两个端口都限制在实验室网络内，
+或绑定到某一个接口（`-w 127.0.0.1:8080`）。
 
 ```sh
 # 串口适配器，Web 控制台监听所有接口，端口 8080

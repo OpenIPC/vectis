@@ -23,7 +23,8 @@ development and integration of embedded systems with the OpenIPC UART
   binary-safe data and out-of-band control of baud rate, line settings
   and RTS/DTR;
 - **web** — `-w PORT` serves a power-control page (Enable / Disable /
-  Reset on RTS+DTR) and a small JSON API for scripts.
+  Reset on RTS+DTR) with a UART terminal in the browser, and a small JSON
+  API for scripts.
 
 It runs interactively in a terminal or as a daemon (`systemd`, no
 terminal), reopens the device link on its own when an adapter is
@@ -105,6 +106,9 @@ and several boards on one host are described below.
   `PURGE-DATA`, `SIGNATURE`, `BRK`
 - Web power console (`-w`) with a JSON API: `/status`, `/power/enable`,
   `/power/disable`, `/power/reset`
+- UART terminal on the web page: xterm.js built into the binary (no
+  internet needed), output history on connect, several browsers typing
+  side by side; an optional password (`-W`)
 - Daemon-friendly: no terminal required, listeners come up before the
   device link and stay up while it is away, one syslog line per outage
 - Syslog logging of connections, power actions and errors
@@ -128,7 +132,9 @@ This builds `vectis` (size-optimised and stripped) with `-U`.
 `USB_CHIPS` lists the USB chip families for `-U`, all linked into the one
 binary; the chip is picked by its USB VID:PID at run time, and `ch34x` is
 the only one so far. `make USB=0` builds `vectis` without `-U` (tty and
-RFC 2217 only). `make DEBUG=1` builds
+RFC 2217 only). `make WEBTERM=0` builds it without the terminal of the
+web page (no `/ws/terminal`, no built-in xterm.js, about 75 KB smaller);
+the power page stays. `make DEBUG=1` builds
 with debug symbols and no optimisation instead. `make vectis-bootrom`
 builds the original bridge on demand; `make all` does not.
 
@@ -149,7 +155,8 @@ source and binary timestamps, so a different `CC` alone does not
 rebuild a binary that is already there.
 
 CI builds `vectis` and `vectis-bootrom` for x86_64, arm, aarch64 and
-mipsel on every push and pull request, and checks that `make USB=0` builds; the binaries are
+mipsel on every push and pull request, and checks that `make USB=0` and
+`make WEBTERM=0` build; the binaries are
 attached to each run as artifacts. On x86_64 it also runs the regression
 tests, which need only Python 3 and use a pty in place of the serial
 device:
@@ -556,8 +563,12 @@ Connection options:
   pyserial `rfc2217://`, or raw nc/socat; see "Serving the port over TCP"
   below
 - `-w [ADDR:]PORT`, `--web [ADDR:]PORT` — start the built-in web power
-  console on that port (all interfaces unless an IPv4 address is given);
-  see "Web power console" below
+  console with the UART terminal on that port (all interfaces unless an
+  IPv4 address is given); see "Web power console" below
+- `-W PASSWORD`, `--web-password PASSWORD` — password of the `-w` page
+  (HTTP Basic, any user name). The environment variable
+  `VECTIS_WEB_PASSWORD` does the same; `-W` wins. Unset or empty: the
+  page is open. See "Password" below
 - `-v`, `--version` — print version and release date
 - `--help`, `-?` — help
 
@@ -677,6 +688,8 @@ The behaviour mirrors the original `vectis-bootrom` server:
   `vectis-bootrom` is not implemented here.
 - Everything the client does is logged with its address, and the web
   page and `/status` show the connected client.
+- There is no password, whatever `-W` says: the port is for the lab
+  network.
 - EOF from the client ends the session, as on `vectis-bootrom`. That
   is what `nc` does when its stdin runs out (`echo cmd | nc host 2021`),
   so for scripted one-shot commands prefer `vectis -h host -p 2021`
@@ -737,6 +750,7 @@ script or a browser bookmark can drive the device the same way:
 | `/power/enable`  | GET or POST | assert RTS+DTR                         | JSON, full state |
 | `/power/disable` | GET or POST | deassert RTS+DTR                       | JSON, full state |
 | `/power/reset`   | GET or POST | RTS+DTR pulse; answers when it is over | JSON, full state |
+| `/ws/terminal`   | GET         | the UART terminal (WebSocket)          | see below        |
 
 The reset pulse runs in the background: while it lasts, `/status`, the
 other pages, the terminal and the `-l` client are served as usual, and
@@ -759,7 +773,7 @@ curl -s http://192.168.1.20:8080/power/reset
 {"link":"online","mode":"serial","target":"/dev/ttyUSB0","power":"on",
  "rts":1,"dtr":1,"reset_ms":200,"tcp_client":"192.168.1.5",
  "event":{"seq":7,"kind":"reset","source":"rfc2217","ago_ms":1830},
- "version":"1.7.0"}
+ "terminals":1,"terminal_token":"3f9c...","version":"1.14.0"}
 ```
 
 `link` is `online` or `offline`, `power` is the state last commanded by
@@ -770,7 +784,10 @@ lines from any side: `kind` is `on`, `off` or `reset` (an off followed by
 an on within 5 seconds from the same source), `source` is `web`,
 `keyboard`, `tcp` (raw client, `Ctrl+P`), `rfc2217` (`SET-CONTROL` from a
 Telnet client) or `link` (asserted when the port was opened), `seq`
-grows with every event and `ago_ms` says how long ago it happened. The
+grows with every event and `ago_ms` says how long ago it happened.
+`terminals` is the number of open web terminals (`null` in a
+`make WEBTERM=0` build), `terminal_token` the token the page opens the
+terminal with (random per process; not in a `WEBTERM=0` build). The
 page uses it to show a reset that was triggered elsewhere: a `Ctrl+P`
 from the keyboard or from a `vectis -h HOST -p PORT` client makes the
 Reset button light up and the display show `Resetting`, and the log
@@ -784,9 +801,74 @@ a bare `/`; anything appended to it answers `404`. While the link is
 down the `/power/` commands answer `503`; an unknown command answers
 `404`. Query strings on the command URLs are ignored.
 
-There is no authentication. Bind the console to a trusted interface
-(`-w 127.0.0.1:8080`) or keep the port inside the lab network, as with
-the `-l` listener.
+### UART terminal
+
+<p align="center">
+  <img src="screenshots/web-terminal.jpg" alt="Vectis web page: the power panel and, under it, the UART terminal with a boot log and a shell session" width="720">
+</p>
+
+<p align="center"><sub>vectis 1.14.0 with <code>-w 19081 -l 19021 -t 300</code>, a pseudo-terminal standing in for the UART of an OpenIPC Dev Board; the two commands were typed in the page.</sub></p>
+
+Under the power panel the page shows a terminal on the same UART:
+everything the device prints, and a keyboard into it. It is
+[xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0, built into
+`vectis` and served by it (`/xterm-5.5.0.js`, `/xterm-5.5.0.css`,
+gzipped, about 70 KB), so the browser needs no internet; `make WEBTERM=0`
+leaves it out.
+
+- On connect the terminal first gets the last 64 KB of device output, so
+  a boot that started before the page was opened is there.
+- Device output goes to every open terminal, the local console and the
+  `-l` client at once. Everyone with the page open may type, as with
+  `screen -x`; the bytes go to the device as they are.
+- No session keys: `Ctrl+P` and `Ctrl+B` are sent to the device like
+  any other byte. Reset with the button above.
+- A browser that stops reading (a stalled network) is dropped after
+  about 96 KB of output queued for it, so it never holds up the device
+  or the others. One that has vanished (a laptop asleep, a dropped
+  tunnel) is closed after 30 s without an answer to `vectis`'s pings. The
+  page reconnects by itself, as it does after a restart of `vectis`.
+- Up to 8 terminals at a time; they do not take the slots of the other
+  requests.
+- A browser opens the terminal only from this server's own page, so a
+  page elsewhere cannot use the operator's browser to reach the board.
+  The page passes `?token=` with the `terminal_token` of `/status`, which
+  another site's script cannot read; this also works behind a proxy that
+  rewrites `Host` (nginx of a camex server). Without the token, a
+  handshake whose `Origin` is not this host is refused (`403`); clients
+  that send no `Origin` (websocat, scripts) are let through.
+
+`/ws/terminal` is a plain WebSocket (RFC 6455): binary frames carry the
+device's bytes to the browser and the typed bytes back; text frames from
+the browser are control messages and ignored (xterm pages send their
+window size, which a UART does not have). Any WebSocket client works:
+
+```sh
+websocat --binary ws://192.168.1.20:8080/ws/terminal
+```
+
+### Password
+
+The page is open by default: it is a lab tool for a trusted network. A
+password keeps it from being used by mistake:
+
+```sh
+./vectis -u /dev/ttyUSB0 -w 8080 -W secret
+VECTIS_WEB_PASSWORD=secret ./vectis -u /dev/ttyUSB0 -w 8080
+```
+
+With a password every request to the `-w` port (the page, `/status`,
+`/power/*`, the terminal) needs HTTP Basic with that password and any
+user name, and is answered `401` otherwise; the browser asks for it once.
+For scripts: `curl -u :secret http://192.168.1.20:8080/status`.
+`-W` wins over `VECTIS_WEB_PASSWORD`; an empty value means no password.
+The log says at start whether the page is protected. `-W` is visible in
+`ps`; use the variable where that matters.
+
+It is not a defence against an attacker: the password crosses the
+network in plain HTTP, and the `-l` port has no password at all (plain
+`nc`/`socat` must keep working). Keep both ports inside the lab network,
+or bind them to one interface (`-w 127.0.0.1:8080`).
 
 ```sh
 # Serial adapter, web console on every interface, port 8080

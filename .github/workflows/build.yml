@@ -3,8 +3,9 @@
 #
 # build.yml — CI for vectis: build vectis (with -U) and vectis-bootrom
 # for Linux targets through the Makefile (any compiler warning fails the
-# job), check that `make USB=0` still builds, and run the regression tests
-# on x86_64; plus the static musl builds the release ships: x86_64
+# job), check that `make USB=0` and `make WEBTERM=0` still build, that
+# webterm_assets.h matches web/xterm/, and run the regression tests on
+# x86_64; plus the static musl builds the release ships: x86_64
 # (ci/build-static.sh) and soft-float mipsel for OpenWrt routers
 # (ci/build-mipsel.sh); and the Android app (android/): a debug APK with its
 # unit tests and lint on every run, the release APK signed with the
@@ -133,6 +134,34 @@ jobs:
       - name: Regression tests without USB (USB=0)
         if: matrix.platform.name == 'x86_64'
         run: python3 tests/test_vectis.py .
+
+      # make WEBTERM=0 stays a build option: vectis without the web terminal
+      - name: Build without the web terminal (WEBTERM=0)
+        shell: bash
+        run: |
+          make clean
+          make CC=${{ matrix.platform.cross }}gcc STRIP=${{ matrix.platform.cross }}strip \
+               WEBTERM=0 2>&1 | tee build.log
+          if grep -q 'warning:' build.log; then
+            echo "::error::compiler warnings, see the build log"
+            exit 1
+          fi
+          ${{ matrix.platform.run }} ./vectis --version
+
+      - name: Regression tests without the web terminal (WEBTERM=0)
+        if: matrix.platform.name == 'x86_64'
+        run: python3 tests/test_vectis.py .
+
+      # webterm_assets.h is made from web/xterm/ by web/gen-assets.sh and
+      # committed, so every build (make, the NDK, a plain cc) has it.
+      - name: webterm_assets.h matches web/xterm/
+        if: matrix.platform.name == 'x86_64'
+        run: |
+          sh web/gen-assets.sh
+          if ! git diff --quiet -- webterm_assets.h; then
+            echo "::error::webterm_assets.h is out of date: run sh web/gen-assets.sh and commit it"
+            exit 1
+          fi
 
   static:
     name: Linux x86_64 static (musl)

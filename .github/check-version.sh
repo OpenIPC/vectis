@@ -6,7 +6,8 @@
 # but not PROGRAM_VERSION in vectis.c.  A new version must be
 # MAJOR.MINOR.PATCH without leading zeros, greater than the base one, and
 # have its section in CHANGELOG.md ("## <version> — YYYY-MM-DD") that the
-# base branch does not have yet.  The sources, the Makefile, ci/ and the
+# base branch does not have yet.  The sources (web/ and webterm_assets.h,
+# the web terminal built into vectis, too), the Makefile, ci/ and the
 # build workflow (.github/workflows/build.yml: it builds the release files)
 # count as code or build, without the Markdown files in them; docs, tests,
 # screenshots and the rest of .github/ need no new version.
@@ -24,7 +25,7 @@ set -eu
 
 base=${1:-origin/master}
 source=vectis.c
-code="vectis.c vectis-bootrom.c usbserial.c usbserial.h ch34x.c Makefile ci .github/workflows/build.yml"
+code="vectis.c vectis-bootrom.c usbserial.c usbserial.h ch34x.c webterm_assets.h web Makefile ci .github/workflows/build.yml"
 
 # The one PROGRAM_VERSION definition (comments and other text do not count).
 ver() {
