@@ -625,6 +625,18 @@ def test_web_terminal(tmp):
         fr = bad.frames(1.0, until=b"")
         check((8, struct.pack(">H", 1002)) in fr, "an oversized ping is refused with 1002")
         bad.close()
+        for what, frames in (("a continuation with no message open", [(b"zz", 0, True)]),
+                             ("a new message inside a fragmented one",
+                              [(b"a", 2, False), (b"b", 2, True)])):
+            bad = Ws(wport)
+            bad.data(0.5)
+            for payload, op, fin in frames:
+                bad.send(payload, opcode=op, fin=fin)
+            fr = bad.frames(1.0, until=b"")
+            got = dev.read(0.3)
+            check((8, struct.pack(">H", 1002)) in fr and b"zz" not in got and b"b" not in got,
+                  "%s is refused with 1002, nothing reaches the device (%r)" % (what, got))
+            bad.close()
         b.send(struct.pack(">H", 1000), opcode=8)
         fr = b.frames(1.0, until=b"")
         check(any(op == 8 for op, _ in fr), "close answered with close")

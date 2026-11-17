@@ -1746,7 +1746,7 @@ static int web_auth_ok(const char *hdr, size_t len)
 
 struct wt_client {
     int     fd;
-    int     frag_text;     /* a fragmented text frame is being continued */
+    int     frag;          /* fragmented message open: 0 none, 1 binary, 2 text */
     int     fwd;           /* the data frame in progress goes to the device */
     uint64_t left;         /* its payload bytes still to come */
     uint64_t pos;          /* its payload bytes seen (for the mask) */
@@ -1997,11 +1997,17 @@ static void wt_read(struct wt_client *c)
                 break;
 
             if (op <= 0x2) {                /* data: stream the payload */
-                if (op == 0x1)
-                    c->frag_text = !fin;    /* text: control, ignored */
-                else if (op == 0x2)
-                    c->frag_text = 0;
-                c->fwd = op == 0x2 || (op == 0x0 && !c->frag_text);
+                /* RFC 6455 5.4: a continuation only inside a fragmented
+                 * message, a new message only outside one. */
+                if ((op == 0x0) != (c->frag != 0)) {
+                    wt_fail(c, 1002, "bad fragmentation");
+                    return;
+                }
+                c->fwd = op == 0x2 || (op == 0x0 && c->frag == 1);   /* text: ignored */
+                if (op != 0x0)
+                    c->frag = op == 0x2 ? 1 : 2;
+                if (fin)
+                    c->frag = 0;
                 memcpy(c->mask, p + hl - 4, 4);
                 c->left = len;
                 c->pos = 0;
@@ -2076,7 +2082,7 @@ static void wt_open(struct web_client *wc, const char *key)
     c->fd = wc->fd;
     wc->fd = -1;
     memcpy(c->peer, wc->peer, sizeof c->peer);
-    c->frag_text = 0;
+    c->frag = 0;
     c->fwd = 0;
     c->left = c->pos = 0;
     c->rx_ms = c->ping_ms = now_ms();
