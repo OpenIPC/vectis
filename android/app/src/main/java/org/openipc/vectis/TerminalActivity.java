@@ -42,6 +42,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class TerminalActivity extends Activity {
+    /** On screen: the recent output, a bound for weak TV boxes; the page keeps 5000 lines. */
     private static final int SHOWN_LINES = 300;
     private static final int RETRY_MS = 2000;
     private static final int REDRAW_MS = 100;
@@ -277,7 +278,9 @@ public class TerminalActivity extends Activity {
                 o.write(WsCodec.request(port, Http.base64(k), pw));
                 o.flush();
                 InputStream in = s.getInputStream();
+                s.setSoTimeout(2 * RETRY_MS);           // a listener that never answers: retry
                 String head = readHead(in);
+                s.setSoTimeout(0);                      // a quiet UART is not a dead connection
                 if (head.startsWith("HTTP/1.1 401")) {
                     refused = true;
                     setState(R.string.term_password);   // kept until the next attempt succeeds
