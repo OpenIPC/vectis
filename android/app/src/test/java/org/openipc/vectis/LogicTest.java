@@ -85,6 +85,7 @@ public class LogicTest {
         assertFalse(Settings.validPassword(new String(new char[256]).replace('\0', 'x')));
         // bytes, not characters: 128 Cyrillic letters are 256 bytes
         assertFalse(Settings.validPassword(new String(new char[128]).replace('\0', 'ж')));
+        assertFalse(Settings.validPassword("ab\0cd"));     // cannot go into the environment
     }
 
     @Test

@@ -457,7 +457,7 @@ public class VectisService extends Service {
             ProcessBuilder pb = new ProcessBuilder(cmd);
             environment(pb.environment(), Settings.password(this));
             p = pb.start();
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {   // RuntimeException: a bad environment value
             line("app: cannot start vectis: " + e.getMessage());
             return;
         }

@@ -85,7 +85,8 @@ public class TerminalActivity extends Activity {
         public void run() {
             redrawPosted = false;
             out.setText(term.text(SHOWN_LINES));
-            scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+            // scrollTo, not fullScroll: that one also moves the focus off the input and the keys
+            scroll.post(() -> scroll.scrollTo(0, Math.max(0, out.getBottom() - scroll.getHeight())));
         }
     };
 

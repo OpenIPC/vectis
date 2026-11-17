@@ -61,8 +61,10 @@ final class Settings {
     /** vectis takes a web password of at most this many bytes (UTF-8). */
     static final int MAX_PASSWORD = 255;
 
+    /** At most MAX_PASSWORD bytes and no NUL: an environment variable cannot carry one. */
     static boolean validPassword(String p) {
-        return p == null || p.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= MAX_PASSWORD;
+        return p == null || (p.indexOf('\0') < 0
+                && p.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= MAX_PASSWORD);
     }
 
     /** The web page password; "" means the page is open. */
