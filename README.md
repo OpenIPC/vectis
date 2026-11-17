@@ -773,7 +773,7 @@ curl -s http://192.168.1.20:8080/power/reset
 {"link":"online","mode":"serial","target":"/dev/ttyUSB0","power":"on",
  "rts":1,"dtr":1,"reset_ms":200,"tcp_client":"192.168.1.5",
  "event":{"seq":7,"kind":"reset","source":"rfc2217","ago_ms":1830},
- "terminals":1,"version":"1.14.0"}
+ "terminals":1,"terminal_token":"3f9c...","version":"1.14.0"}
 ```
 
 `link` is `online` or `offline`, `power` is the state last commanded by
@@ -786,7 +786,8 @@ an on within 5 seconds from the same source), `source` is `web`,
 Telnet client) or `link` (asserted when the port was opened), `seq`
 grows with every event and `ago_ms` says how long ago it happened.
 `terminals` is the number of open web terminals (`null` in a
-`make WEBTERM=0` build). The
+`make WEBTERM=0` build), `terminal_token` the token the page opens the
+terminal with (random per process; not in a `WEBTERM=0` build). The
 page uses it to show a reset that was triggered elsewhere: a `Ctrl+P`
 from the keyboard or from a `vectis -h HOST -p PORT` client makes the
 Reset button light up and the display show `Resetting`, and the log
@@ -828,6 +829,13 @@ leaves it out.
   restart of `vectis`.
 - Up to 8 terminals at a time; they do not take the slots of the other
   requests.
+- A browser opens the terminal only from this server's own page, so a
+  page elsewhere cannot use the operator's browser to reach the board.
+  The page passes `?token=` with the `terminal_token` of `/status`, which
+  another site's script cannot read; this also works behind a proxy that
+  rewrites `Host` (nginx of a camex server). Without the token, a
+  handshake whose `Origin` is not this host is refused (`403`); clients
+  that send no `Origin` (websocat, scripts) are let through.
 
 `/ws/terminal` is a plain WebSocket (RFC 6455): binary frames carry the
 device's bytes to the browser and the typed bytes back; text frames from

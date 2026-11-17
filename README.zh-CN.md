@@ -744,7 +744,7 @@ curl -s http://192.168.1.20:8080/power/reset
 {"link":"online","mode":"serial","target":"/dev/ttyUSB0","power":"on",
  "rts":1,"dtr":1,"reset_ms":200,"tcp_client":"192.168.1.5",
  "event":{"seq":7,"kind":"reset","source":"rfc2217","ago_ms":1830},
- "terminals":1,"version":"1.14.0"}
+ "terminals":1,"terminal_token":"3f9c...","version":"1.14.0"}
 ```
 
 `link` 为 `online` 或 `offline`；`power` 是本进程最后一次
@@ -756,7 +756,8 @@ curl -s http://192.168.1.20:8080/power/reset
 `keyboard`、`tcp`（原始客户端，`Ctrl+P`）、`rfc2217`（来自
 Telnet 客户端的 `SET-CONTROL`）或 `link`（打开串口时拉高），`seq`
 随每个事件递增，`ago_ms` 表示事件发生在多久之前。`terminals` 是已打开的
-Web 终端数量（在 `make WEBTERM=0` 构建中为 `null`）。
+Web 终端数量（在 `make WEBTERM=0` 构建中为 `null`），`terminal_token` 是页面
+打开终端时使用的令牌（每个进程随机生成；`WEBTERM=0` 构建中没有）。
 页面借此显示在别处触发的复位：来自键盘或来自
 `vectis -h HOST -p PORT` 客户端的 `Ctrl+P` 会使
 Reset 按钮点亮、显示屏显示 `Resetting`，日志行中会注明
@@ -791,6 +792,11 @@ Reset 按钮点亮、显示屏显示 `Resetting`，日志行中会注明
 - 停止读取的浏览器（网络卡住）在为其排队的输出达到约 96 KB 时会被断开，
   不会拖慢设备或其他终端。页面会自动重新连接，`vectis` 重启后也是如此。
 - 最多同时 8 个终端；它们不占用其他请求的连接槽位。
+- 浏览器只能从本服务器自己的页面打开终端，因此别处的页面无法借助操作者的
+  浏览器访问开发板。页面通过 `?token=` 传递 `/status` 中的 `terminal_token`，
+  其他网站的脚本无法读取它；在改写 `Host` 的代理（camex 服务器的 nginx）
+  之后也能工作。没有令牌时，`Origin` 不是本主机的握手会被拒绝（`403`）；
+  不发送 `Origin` 的客户端（websocat、脚本）可以通过。
 
 `/ws/terminal` 是普通的 WebSocket（RFC 6455）：二进制帧把设备的字节发往
 浏览器，并把输入的字节发回；浏览器发来的文本帧是控制消息，会被忽略

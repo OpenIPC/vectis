@@ -146,14 +146,16 @@ def http(port, path):
 class Ws:
     """A minimal WebSocket client (RFC 6455) for /ws/terminal."""
 
-    def __init__(self, port, auth=None, read=True):
+    def __init__(self, port, auth=None, origin=None, query=""):
         self.sock = socket.create_connection(("127.0.0.1", port), 5)
         key = base64.b64encode(os.urandom(16)).decode()
-        req = ("GET /ws/terminal HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        req = ("GET /ws/terminal%s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n"
                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-               "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n" % key)
+               "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n" % (query, port, key))
         if auth is not None:
             req += "Authorization: Basic %s\r\n" % base64.b64encode(auth.encode()).decode()
+        if origin is not None:
+            req += "Origin: %s\r\n" % origin
         self.sock.sendall((req + "\r\n").encode())
         head = b""
         while b"\r\n\r\n" not in head:
@@ -554,6 +556,22 @@ def test_web_terminal(tmp):
 
         dev.write(b"U-Boot 2016.11\r\n")
         time.sleep(0.3)
+        token = st.get("terminal_token") or ""
+        check(re.fullmatch(r"[0-9a-f]{32}", token) is not None, "/status: a 32-hex terminal_token")
+        check("token='+s.terminal_token" in page, "web page: opens the terminal with the token")
+        for origin, query, want in (
+                ("http://evil.example", "", 403), ("null", "", 403),
+                ("http://127.0.0.1:%d.evil.example" % wport, "", 403),
+                ("http://evil.example", "?token=" + "0" * 32, 403),
+                ("http://evil.example", "?token=" + token[:31], 403),
+                ("HTTP://127.0.0.1:%d" % wport, "", 101),
+                # behind a proxy that rewrites Host (camex nginx): the token
+                ("http://box.camex.example", "?token=" + token, 101),
+                ("http://box.camex.example", "?x=1&token=" + token, 101)):
+            o = Ws(wport, origin=origin, query=query)
+            check(o.status == want, "Origin %s%s: %d (%d)" % (origin, query and " +" + query[:12],
+                                                             want, o.status))
+            o.close()
         a = Ws(wport)
         check(a.status == 101 and a.accept_ok, "handshake: 101 with the right Sec-WebSocket-Accept")
         got = a.data(2.0, until=b"2016.11\r\n")
@@ -638,8 +656,9 @@ def test_web_terminal(tmp):
         d.close()
     finally:
         text = stop_quiet(p, log)
-    check("terminal opened" in text and "too slow, dropped" in text,
-          "the log names opened and dropped terminals")
+    check("terminal opened" in text and "too slow, dropped" in text and
+          "Origin is another site" in text,
+          "the log names opened, dropped and refused terminals")
 
 
 def test_web_password(tmp):

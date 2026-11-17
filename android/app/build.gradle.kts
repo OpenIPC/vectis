@@ -41,7 +41,8 @@ val vectisAbis: List<String> = ((project.findProperty("vectisAbis") as String?)
 // executable named libvectis.so (android/build-native.sh), packaged as a native library
 val nativeOut = layout.buildDirectory.dir("jniLibs")
 val buildNative by tasks.registering(Exec::class) {
-    inputs.files(rootProject.files("../vectis.c", "../usbserial.c", "../usbserial.h", "../ch34x.c"))
+    inputs.files(rootProject.files("../vectis.c", "../usbserial.c", "../usbserial.h", "../ch34x.c",
+                                  "../webterm_assets.h"))
     inputs.file(rootProject.file("build-native.sh"))
     inputs.property("abis", vectisAbis)   // another ABI list must rebuild
     outputs.dir(nativeOut)

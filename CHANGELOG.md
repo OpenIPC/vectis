@@ -15,8 +15,11 @@ The `-w` page gets a UART terminal and an optional password (#95).
   `/ws/terminal`. On connect it gets the last 64 KB of device output, then everything live.
   Everyone with the page open may type, as with `screen -x`; the bytes go to the device as
   they are (no session keys: reset with the button). Up to 8 terminals; one that stops
-  reading is dropped and never holds up the device. Works in every mode (`-u`, `-U`,
-  `-h/-p`) and on Android, which runs the same binary. `/status` gains `terminals`.
+  reading is dropped and never holds up the device. The page opens it with a per-process
+  token from `/status` (works behind a proxy such as camex's nginx); without the token a
+  browser handshake whose `Origin` is another site is refused, so no other page can drive
+  the board through the operator's browser. Works in every mode (`-u`, `-U`, `-h/-p`) and on
+  Android, which runs the same binary. `/status` gains `terminals` and `terminal_token`.
 - `-W PASSWORD` or `VECTIS_WEB_PASSWORD` (`-W` wins) closes the whole `-w` port (page,
   `/status`, `/power/*`, terminal) behind HTTP Basic with any user name; unset or empty, the
   page stays open as before. `-l` has no password.

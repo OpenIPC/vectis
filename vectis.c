@@ -1288,12 +1288,16 @@ static const char web_page[] =
     " var fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open($('term'));fit.fit();\n"
     " var ws=null,enc=new TextEncoder();\n"
     " function send(b){if(ws&&ws.readyState===1)ws.send(b)}\n"
+    /* The token from /status proves the page is this server's own. */
+    " function retry(){tstate('Reconnecting','bad');setTimeout(connect,2000)}\n"
     " function connect(){\n"
-    "  ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/terminal');\n"
-    "  ws.binaryType='arraybuffer';\n"
-    "  ws.onopen=function(){term.reset();tstate('Connected','on')};\n"
-    "  ws.onmessage=function(e){if(typeof e.data!=='string')term.write(new Uint8Array(e.data))};\n"
-    "  ws.onclose=function(){tstate('Reconnecting','bad');setTimeout(connect,2000)};\n"
+    "  fetch(url('/status'),{cache:'no-store'}).then(function(r){return r.json()}).then(function(s){\n"
+    "   ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/terminal?token='+s.terminal_token);\n"
+    "   ws.binaryType='arraybuffer';\n"
+    "   ws.onopen=function(){term.reset();tstate('Connected','on')};\n"
+    "   ws.onmessage=function(e){if(typeof e.data!=='string')term.write(new Uint8Array(e.data))};\n"
+    "   ws.onclose=retry;\n"
+    "  }).catch(retry);\n"
     " }\n"
     " term.onData(function(d){send(enc.encode(d))});\n"
     " term.onBinary(function(d){var b=new Uint8Array(d.length);for(var i=0;i<d.length;i++)b[i]=d.charCodeAt(i)&255;send(b)});\n"
@@ -1686,7 +1690,8 @@ static int web_auth_ok(const char *hdr, size_t len)
  * slow browser never holds up the poll loop: a terminal that falls
  * WT_OUT_MAX behind is dropped instead.  The history is kept only with
  * -w.  The handshake goes through the same checks as any request (the
- * password, when there is one). */
+ * password, when there is one), and a browser's must come from this
+ * server's own page (web_origin_ok()). */
 
 #ifdef VECTIS_WEBTERM
 
@@ -1719,10 +1724,13 @@ static int wt_count(void)
     return n;
 }
 
+static void wt_make_token(void);
+
 static void wt_init(void)
 {
     for (int i = 0; i < WT_MAX_CLIENTS; i++)
         g_wt[i].fd = -1;
+    wt_make_token();
 }
 
 static void wt_shutdown(void)
@@ -2019,8 +2027,72 @@ static void wt_open(struct web_client *wc, const char *key)
     wt_flush(c);
 }
 
+/* Who may open a terminal.  A browser sends Origin with every WebSocket
+ * handshake, and unlike fetch() the handshake is not held back by CORS:
+ * without a check a page from any other site, open in the operator's
+ * browser, could read and type into the terminal (with a password too,
+ * once the browser has it).  Let through:
+ *   - a request with the token of this process (?token=, the page reads it
+ *     from /status, which another site's script cannot read): this is
+ *     what the page does, and it also works behind a proxy that rewrites
+ *     Host (nginx of a camex server);
+ *   - a request whose Origin names this very host:port (Host);
+ *   - a request without Origin (websocat, a script, the Android app). */
+static char g_wt_token[33];
+
+static void wt_make_token(void)
+{
+    uint8_t r[16];
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    ssize_t n = fd >= 0 ? read(fd, r, sizeof r) : -1;
+
+    if (fd >= 0)
+        close(fd);
+    if (n != (ssize_t)sizeof r) {
+        /* No urandom: not secret, but still not guessable from a web page. */
+        struct sha1_ctx s;
+        uint8_t d[20];
+        long long seed[3] = { now_ms(), (long long)getpid(), (long long)time(NULL) };
+        sha1_init(&s);
+        sha1_update(&s, seed, sizeof seed);
+        sha1_final(&s, d);
+        memcpy(r, d, sizeof r);
+    }
+    for (size_t i = 0; i < sizeof r; i++)
+        snprintf(g_wt_token + 2 * i, 3, "%02x", r[i]);
+}
+
+static int web_origin_ok(const char *hdr, size_t len, const char *query)
+{
+    char origin[300], host[300];
+    const char *o = origin, *t = query ? strstr(query, "token=") : NULL;
+    int diff = 0;
+
+    if (t != NULL && (t == query || t[-1] == '&')) {
+        t += 6;
+        if (strlen(t) >= 32 && (t[32] == '\0' || t[32] == '&')) {
+            for (int i = 0; i < 32; i++)
+                diff |= t[i] ^ g_wt_token[i];
+            if (diff == 0)
+                return 1;
+        }
+    }
+    if (http_header(hdr, len, "Origin", origin, sizeof origin) != 0)
+        return 1;
+    if (http_header(hdr, len, "Host", host, sizeof host) != 0 || host[0] == '\0')
+        return 0;
+    if (strncasecmp(o, "http://", 7) == 0)
+        o += 7;
+    else if (strncasecmp(o, "https://", 8) == 0)
+        o += 8;
+    else
+        return 0;                           /* "null", file:, ... */
+    return strcasecmp(o, host) == 0;
+}
+
 /* GET /ws/terminal: check the upgrade request, then hand it to wt_open(). */
-static void web_terminal(struct web_client *c, size_t hdr_len, int is_get)
+static void web_terminal(struct web_client *c, size_t hdr_len, int is_get,
+                         const char *query)
 {
     char up[64], key[64], ver[16];
 
@@ -2041,6 +2113,13 @@ static void web_terminal(struct web_client *c, size_t hdr_len, int is_get)
         web_reply_ex(c, 426, "Upgrade Required", "text/plain",
                      "Sec-WebSocket-Version: 13\r\n", "no-store",
                      WEB_TEXT("WebSocket version 13 only\n"), 0);
+        return;
+    }
+    if (!web_origin_ok(c->buf, hdr_len, query)) {
+        log_message(LOG_WARNING, "[web] %s: terminal refused: Origin is another site, no token",
+                    c->peer);
+        web_reply(c, 403, "Forbidden", "text/plain",
+                  WEB_TEXT("the terminal opens from this server's own page only\n"), 0);
         return;
     }
     wt_open(c, key);
@@ -2096,10 +2175,11 @@ static size_t web_status_json(char *out, size_t cap)
             dtr = (st & TIOCM_DTR) ? 1 : 0;
         }
     }
-    char event[128], terminals[16];
+    char event[128], terminals[64];
 
 #ifdef VECTIS_WEBTERM
-    snprintf(terminals, sizeof terminals, "%d", wt_count());
+    snprintf(terminals, sizeof terminals, "%d,\"terminal_token\":\"%s\"",
+             wt_count(), g_wt_token);
 #else
     snprintf(terminals, sizeof terminals, "null");   /* built with WEBTERM=0 */
 #endif
@@ -2267,7 +2347,7 @@ static void web_process_request(struct web_client *c, size_t hdr_len)
     }
 #ifdef VECTIS_WEBTERM
     if (strcmp(path, "/ws/terminal") == 0) {
-        web_terminal(c, hdr_len, is_get);
+        web_terminal(c, hdr_len, is_get, q ? q + 1 : NULL);
         return;
     }
     if (strcmp(path, WT_ASSET_JS) == 0 || strcmp(path, WT_ASSET_CSS) == 0) {
