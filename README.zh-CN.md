@@ -911,8 +911,10 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 
 `android/` 中的应用在带 USB host 的 Android 电视盒或手机上实现上述功能，
 无需 root（Android 5.0 及以上，32 位和 64 位 ARM）。前台服务持有适配器，
-并以 `vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 2081`
-运行 vectis：控制台和 Web 电源控制台位于盒子的这些 TCP 端口上，与 Linux 相同。
+并以 `vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 8085`
+运行 vectis：控制台和 Web 页面（电源和 UART 终端）位于盒子的这些 TCP 端口上，
+与 Linux 相同。Web 端口默认为 8085，与 Decoder 和 Microsnander 相同；之前在
+设置中保存的端口保持不变。
 
 - **安装**：从 `latest` 发布下载 [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   （Android 询问时，允许从此来源安装）。
@@ -920,8 +922,18 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
   勾选 “Always open Vectis when USB Serial is connected” 并按 OK。
   也可以打开应用并按 **Allow USB access**。
 - **界面**显示适配器、带指示灯的电源状态（RTS+DTR）、盒子的地址及控制台和
-  Web 端口，以及按钮 Start、Stop、Open web console（在盒子的浏览器中打开）
-  和 Settings（波特率和两个端口，1024 及以上：更低的端口需要 root）。
+  Web 端口、Web 页面是否设有密码，以及按钮 Start、Stop、Terminal、Open web
+  console（在盒子的浏览器中打开）和 Settings（波特率、两个端口——1024 及以上，
+  更低的端口需要 root——以及 Web 页面密码）。
+- **Terminal** 在盒子自己的屏幕上显示 UART：输出为纯文本（去掉颜色），带
+  **Enter** 的输入行，以及 **Ctrl+C**、**y**、**n**（各自带 Enter）、**Reset**、
+  **Power on** 和 **Power off** 按钮，都可以用电视遥控器操作。它是页面终端的
+  又一个客户端：先收到最近 64 KB 的输出，在这里或浏览器中输入的内容都发往
+  同一个 UART。
+- **Web 页面密码**（Settings 中的最后一项；默认为空：页面开放）。设置后，
+  页面、`/status`、`/power/*` 和终端都会要求输入（HTTP Basic，用户名任意，
+  `curl -u :密码`）。应用通过 `VECTIS_WEB_PASSWORD` 把它传给 vectis，并在自己的
+  请求中使用；它保存在应用的私有存储中。
 - **拔出适配器**时 vectis 及其端口继续运行。适配器插回后，服务重新打开它，
   vectis 在下一次重试时接管。停止应用或 vectis 时 RTS/DTR 保持不变，
   与 Linux 上的 `-U` 相同。
@@ -929,13 +941,14 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
   在启动时不会为已经插着的适配器授予 USB 访问权限，因此屏幕上会出现
   访问对话框：用遥控器按 OK。没有屏幕的盒子：拔下适配器再插回。
 - **Stop** 会让 vectis 保持停止状态直到按 Start：启动和插入事件不会启动它。
-- 两个端口都在盒子的所有网络接口上监听且无认证，与 Linux 上的 `-l PORT`、
-  `-w PORT` 相同：该网络中的任何人都可以使用控制台并切换电源。
-  请将盒子放在可信网络中。
+- 两个端口都在盒子的所有网络接口上监听，与 Linux 上的 `-l PORT`、`-w PORT`
+  相同。没有密码时，该网络中的任何人都可以使用控制台并切换电源；控制台端口
+  （`-l`）根本没有密码。请将盒子放在可信网络中。
 
 在 Linux 或 macOS 上构建，需要 Android SDK、NDK r27（`ANDROID_NDK_HOME`）
 和 Gradle 8：`cd android && gradle assembleDebug`；APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
-`gradle testDebugUnitTest` 无需设备即可运行应用逻辑（设置、命令行、日志）的测试。
+`gradle testDebugUnitTest` 无需设备即可运行应用逻辑（设置、命令行和密码、日志、
+终端文本和 WebSocket 帧）的测试。
 `android/build-native.sh` 用 NDK 为应用构建 vectis，生成名为 `libvectis.so`
 的可执行文件。已在 Android 10 电视盒（32 位 ARM，无 root）上用 CH340 验证。
 

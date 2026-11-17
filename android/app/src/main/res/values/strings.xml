@@ -7,6 +7,7 @@
     <string name="btn_start">Start</string>
     <string name="btn_stop">Stop</string>
     <string name="btn_access">Allow USB access</string>
+    <string name="btn_terminal">Terminal</string>
     <string name="btn_web">Open web console</string>
     <string name="btn_settings">Settings</string>
     <string name="start_on_boot">Start on boot</string>
@@ -15,6 +16,9 @@
     <string name="label_power">POWER</string>
     <string name="label_console">CONSOLE</string>
     <string name="label_web">WEB</string>
+    <string name="label_page">PAGE</string>
+    <string name="web_open">open, no password</string>
+    <string name="web_protected">password</string>
 
     <string name="adapter_none">none plugged in (CH340 / CH341)</string>
     <string name="adapter_no_access">%1$s — no access yet</string>
@@ -31,12 +35,28 @@
     <string name="settings_baud">Baud rate</string>
     <string name="settings_console">Console TCP port (-l)</string>
     <string name="settings_web">Web console TCP port (-w)</string>
+    <string name="settings_password">Web page password</string>
+    <string name="settings_password_hint">empty: the page is open</string>
     <string name="settings_save">Save</string>
     <string name="settings_cancel">Cancel</string>
     <string name="settings_bad">Baud: 300, 1200 … 115200, 230400, 460800, 921600; ports 1024–65535, different</string>
     <string name="no_browser">No browser here: open %1$s from another device</string>
 
     <string name="notify_starting">Starting</string>
-    <string name="notify_serving">Console :%1$d, web :%2$d</string>
+    <string name="notify_serving">Console :%1$d, web :%2$d, %3$s</string>
     <string name="notify_no_adapter">Waiting for the adapter</string>
+
+    <string name="term_title">UART terminal</string>
+    <string name="term_connecting">Connecting</string>
+    <string name="term_connected">Connected</string>
+    <string name="term_reconnecting">Reconnecting</string>
+    <string name="term_password">Wrong password</string>
+    <string name="term_hint">command, then Enter</string>
+    <string name="term_enter">Enter</string>
+    <string name="term_ctrl_c">Ctrl+C</string>
+    <string name="term_yes">y</string>
+    <string name="term_no">n</string>
+    <string name="term_reset">Reset</string>
+    <string name="term_on">Power on</string>
+    <string name="term_off">Power off</string>
 </resources>

@@ -2,8 +2,9 @@
  * Copyright (c) OpenIPC  https://openipc.org  MIT License
  *
  * MainActivity.java — the status screen: the adapter, power (RTS+DTR) from
- * vectis' /status, the addresses with the console and web ports, Start /
- * Stop, USB access, the web console, the settings and Start on boot.
+ * vectis' /status, the addresses with the console and web ports and whether
+ * the web page has a password, Start / Stop, USB access, the terminal
+ * (TerminalActivity), the web console, the settings and Start on boot.
  * Built from platform views in code: works with a TV remote (D-pad); the
  * brass look of brand (Brass.java, res/values).
  *
@@ -39,11 +40,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
 import org.json.JSONObject;
@@ -56,7 +52,7 @@ public class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private View lamp;
     private TextView display, logView;
-    private Button start, stop, access, web;
+    private Button start, stop, access, terminal, web;
     /** The last /status of vectis, read off the UI thread; null if none. */
     private volatile JSONObject status;
     private volatile Object pollToken;
@@ -125,6 +121,8 @@ public class MainActivity extends Activity {
             VectisService.send(this, VectisService.ACTION_STOP);
         });
         access = button(col, R.string.btn_access, v -> askAccess());
+        terminal = button(col, R.string.btn_terminal,
+                v -> startActivity(new Intent(this, TerminalActivity.class)));
         web = button(col, R.string.btn_web, v -> openWeb());
         button(col, R.string.btn_settings, v -> showSettings());
 
@@ -233,13 +231,18 @@ public class MainActivity extends Activity {
     }
 
     private EditText field(LinearLayout box, int label, int value) {
+        EditText e = field(box, label, String.format(Locale.US, "%d", value));
+        e.setInputType(InputType.TYPE_CLASS_NUMBER);
+        return e;
+    }
+
+    private EditText field(LinearLayout box, int label, String value) {
         TextView t = new TextView(this);
         t.setText(label);
         t.setTextColor(Brass.color(this, R.color.dim));
         box.addView(t);
         EditText e = new EditText(this);
-        e.setInputType(InputType.TYPE_CLASS_NUMBER);
-        e.setText(String.format(Locale.US, "%d", value));
+        e.setText(value);
         e.setTypeface(Typeface.MONOSPACE);
         box.addView(e);
         return e;
@@ -253,6 +256,10 @@ public class MainActivity extends Activity {
         EditText baud = field(box, R.string.settings_baud, Settings.baud(this));
         EditText console = field(box, R.string.settings_console, Settings.consolePort(this));
         EditText webPort = field(box, R.string.settings_web, Settings.webPort(this));
+        // Last, as in Decoder and Microsnander; shown as typed: a lab tool, set with a remote
+        EditText password = field(box, R.string.settings_password, Settings.password(this));
+        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        password.setHint(R.string.settings_password_hint);
         new AlertDialog.Builder(this)
                 .setTitle(R.string.settings_title)
                 .setView(box)
@@ -263,6 +270,7 @@ public class MainActivity extends Activity {
                         return;
                     }
                     Settings.setPorts(this, b, c, p);
+                    Settings.setPassword(this, password.getText().toString());
                     if (VectisService.instance != null)
                         VectisService.send(this, VectisService.ACTION_RESTART);
                 })
@@ -285,20 +293,7 @@ public class MainActivity extends Activity {
             VectisService s = VectisService.instance;
             if (s != null && s.isRunning()) {
                 try {
-                    URL u = new URL("http://127.0.0.1:" + Settings.webPort(this) + "/status");
-                    HttpURLConnection c = (HttpURLConnection) u.openConnection();
-                    c.setConnectTimeout(800);
-                    c.setReadTimeout(800);
-                    try (InputStream in = c.getInputStream()) {
-                        ByteArrayOutputStream b = new ByteArrayOutputStream();
-                        byte[] buf = new byte[2048];
-                        int n;
-                        while ((n = in.read(buf)) > 0 && b.size() < 65536)
-                            b.write(buf, 0, n);
-                        st = new JSONObject(new String(b.toByteArray(), StandardCharsets.UTF_8));
-                    } finally {
-                        c.disconnect();
-                    }
+                    st = Http.json(Settings.webPort(this), "/status", Settings.password(this), false);
                 } catch (Exception ignored) {
                     // vectis not listening yet
                 }
@@ -355,6 +350,8 @@ public class MainActivity extends Activity {
         }
         line(t, R.string.label_console, host == null ? getString(R.string.no_address) : con.toString());
         line(t, R.string.label_web, host == null ? getString(R.string.no_address) : webs.toString());
+        line(t, R.string.label_page, getString(Settings.password(this).isEmpty()
+                ? R.string.web_open : R.string.web_protected));
 
         display.setText(t.toString().trim());
         display.setTextColor(Brass.color(this, color == R.color.dim ? R.color.dim : R.color.ink));
@@ -363,6 +360,7 @@ public class MainActivity extends Activity {
         stop.setEnabled(s != null);
         access.setVisibility(d != null && (s == null || !s.hasAccess()) ? View.VISIBLE : View.GONE);
         web.setEnabled(s != null && s.isRunning());
+        terminal.setEnabled(s != null && s.isRunning());
         logView.setText(s != null ? s.log.tail(LOG_SHOWN).trim() : "");
         logView.setVisibility(s != null ? View.VISIBLE : View.GONE);
     }

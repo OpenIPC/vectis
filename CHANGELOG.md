@@ -6,6 +6,22 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.15.0 — 2026-11-17
+
+The Android app gets the web terminal and password of 1.14.0 (#96).
+
+- **Terminal** screen in the app: the UART on the box's own screen as plain text (colours
+  dropped, CR rewrites the line), an input line with Enter, keys for Ctrl+C, y, n, Reset,
+  Power on and Power off, usable with a TV remote. A native screen rather than a WebView,
+  which may be too old for xterm.js on Android 5-7. It is one more client of
+  `/ws/terminal`: the history and the input are shared with the browsers.
+- **Web page password** in Settings (the last field, empty by default: open). Passed to
+  vectis in `VECTIS_WEB_PASSWORD`, never on the command line; the app's own `/status` and
+  terminal requests use it. The screen and the notification say whether the page is
+  protected.
+- The web port is **8085** by default (was 2081), as in Decoder and Microsnander and as camex
+  servers expect; a port saved before is kept.
+
 ## 1.14.0 — 2026-11-17
 
 The `-w` page gets a UART terminal and an optional password (#95).

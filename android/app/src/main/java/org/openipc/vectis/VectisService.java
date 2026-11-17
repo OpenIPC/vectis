@@ -8,7 +8,9 @@
  *   - vectis is the C program of the repository root, built as an
  *     executable named libvectis.so (build-native.sh) and installed in
  *     nativeLibraryDir; it runs here as a child process:
- *     vectis -U fd:@org.openipc.vectis.usb -b BAUD -l PORT -w PORT.
+ *     vectis -U fd:@org.openipc.vectis.usb -b BAUD -l PORT -w PORT, with
+ *     the web page password, if one is set, in VECTIS_WEB_PASSWORD (not on
+ *     the command line, where ps would show it).
  *   - Only root can open /dev/bus/usb, so the service opens the adapter with
  *     UsbManager and serves a usbfs fd on the abstract socket of -U: every
  *     connection from our own uid gets the adapter opened anew (vectis
@@ -413,8 +415,9 @@ public class VectisService extends Service {
 
     /**
      * The vectis command line.  The ports listen on every interface, as
-     * -l PORT and -w PORT do on Linux: the console and the power switch are
-     * meant to be reached from the lab network (README, no authentication).
+     * -l PORT and -w PORT do on Linux: the console, the power switch and the
+     * web terminal are meant to be reached from the lab network (README; the
+     * web page takes an optional password, the console none).
      */
     static List<String> command(String bin, int baud, int console, int web) {
         List<String> cmd = new ArrayList<>();
@@ -430,6 +433,18 @@ public class VectisService extends Service {
         return cmd;
     }
 
+    /**
+     * The password for vectis: set when there is one, removed otherwise, so
+     * an empty one never reaches vectis (an empty value would mean "open"
+     * anyway, but nothing from the app's own environment may leak in).
+     */
+    static void environment(java.util.Map<String, String> env, String password) {
+        if (password == null || password.isEmpty())
+            env.remove("VECTIS_WEB_PASSWORD");
+        else
+            env.put("VECTIS_WEB_PASSWORD", password);
+    }
+
     private void runOnce(int gen) {
         int seq;
         synchronized (lock) {
@@ -439,7 +454,9 @@ public class VectisService extends Service {
                 Settings.consolePort(this), Settings.webPort(this));
         Process p;
         try {
-            p = new ProcessBuilder(cmd).start();
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            environment(pb.environment(), Settings.password(this));
+            p = pb.start();
         } catch (IOException e) {
             line("app: cannot start vectis: " + e.getMessage());
             return;
@@ -561,7 +578,8 @@ public class VectisService extends Service {
         if (!isRunning())
             text = getString(R.string.notify_starting);
         else if (hasAccess())
-            text = getString(R.string.notify_serving, Settings.consolePort(this), Settings.webPort(this));
+            text = getString(R.string.notify_serving, Settings.consolePort(this), Settings.webPort(this),
+                    getString(Settings.password(this).isEmpty() ? R.string.web_open : R.string.web_protected));
         else
             text = getString(R.string.notify_no_adapter);
         goForeground(text);
