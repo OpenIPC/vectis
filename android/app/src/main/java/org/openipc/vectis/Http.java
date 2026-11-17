@@ -86,21 +86,15 @@ final class Http {
         }
     }
 
-    /** GET (or POST) http://127.0.0.1:PORT/PATH and parse the JSON reply. */
-    static JSONObject json(int port, String path, String password, boolean post)
-            throws IOException, JSONException {
+    /** GET http://127.0.0.1:PORT/PATH and parse the JSON reply (the screen's /status). */
+    static JSONObject json(int port, String path, String password) throws IOException, JSONException {
         HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + port + path)
                 .openConnection();
         c.setConnectTimeout(800);
-        c.setReadTimeout(post ? 65000 : 800);   // /power/reset answers after the pulse (-t)
+        c.setReadTimeout(800);
         String auth = basic(password);
         if (auth != null)
             c.setRequestProperty("Authorization", auth);
-        if (post) {
-            c.setRequestMethod("POST");
-            c.setFixedLengthStreamingMode(0);
-            c.setDoOutput(true);
-        }
         try (InputStream in = c.getResponseCode() < 400 ? c.getInputStream() : c.getErrorStream()) {
             ByteArrayOutputStream b = new ByteArrayOutputStream();
             byte[] buf = new byte[2048];

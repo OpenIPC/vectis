@@ -297,7 +297,7 @@ public class MainActivity extends Activity {
             VectisService s = VectisService.instance;
             if (s != null && s.isRunning()) {
                 try {
-                    st = Http.json(Settings.webPort(this), "/status", Settings.password(this), false);
+                    st = Http.json(Settings.webPort(this), "/status", Settings.password(this));
                 } catch (Exception ignored) {
                     // vectis not listening yet
                 }

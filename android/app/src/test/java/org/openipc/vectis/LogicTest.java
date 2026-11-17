@@ -172,6 +172,28 @@ public class LogicTest {
     }
 
     @Test
+    public void terminalOneColumnPerCharacter() {
+        TermBuffer t = new TermBuffer(100);
+        feed(t, "a\uD83D\uDE00b\bc");                  // an emoji, then backspace over b
+        assertEquals("a\ufffdc", t.text(10));
+        t.clear();
+        byte[] b = new byte[TermBuffer.MAX_COLS - 1];
+        java.util.Arrays.fill(b, (byte) 'x');
+        t.feed(b, 0, b.length);
+        feed(t, "\uD83D\uDE00\uD83D\uDE00");               // at the wrap boundary
+        String[] l = t.text(10).split("\n");
+        assertEquals(TermBuffer.MAX_COLS, l[0].length());
+        assertEquals("\ufffd", l[1]);
+    }
+
+    @Test
+    public void terminalTakesC1Controls() {
+        TermBuffer t = new TermBuffer(100);
+        feed(t, "\u009b31mred\u009b0m \u009d0;title\u0007ok");
+        assertEquals("red ok", t.text(10));
+    }
+
+    @Test
     public void terminalUtf8SplitAcrossReads() {
         TermBuffer t = new TermBuffer(100);
         byte[] b = "Привет".getBytes(StandardCharsets.UTF_8);

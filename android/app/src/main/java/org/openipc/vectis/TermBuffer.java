@@ -6,7 +6,8 @@
  * (colours, cursor moves, titles) are dropped, except "erase to the end of
  * the line"; CR returns to the start of the line, so a progress line
  * rewrites itself; backspace and tabs move the column.  Keeps the last
- * maxLines lines; a line wraps at MAX_COLS.  No Android classes: tested on the JVM (LogicTest).
+ * maxLines lines; a line wraps at MAX_COLS.  One column per character: a
+ * character outside the BMP shows as U+FFFD; C1 controls act as their ESC forms.  No Android classes: tested on the JVM (LogicTest).
  */
 package org.openipc.vectis;
 
@@ -48,8 +49,21 @@ final class TermBuffer {
         if (in.remaining() <= partial.capacity())
             partial.put(in);
         out.flip();
-        while (out.hasRemaining())
-            put(out.get());
+        while (out.hasRemaining()) {
+            char ch = out.get();
+            if (Character.isHighSurrogate(ch)) {
+                // One column per character: a character outside the BMP (an emoji) shows as
+                // U+FFFD, so backspace and wrapping never split a surrogate pair
+                if (out.hasRemaining() && Character.isLowSurrogate(out.get(out.position())))
+                    out.get();
+                else if (!out.hasRemaining())
+                    continue;       // its low half comes with the next read: not kept, rare on a UART
+                ch = '\ufffd';
+            } else if (Character.isLowSurrogate(ch)) {
+                continue;
+            }
+            put(ch);
+        }
     }
 
     private void put(char ch) {
@@ -89,6 +103,11 @@ final class TermBuffer {
         }
         if (ch == 27) {
             state = ESC;
+        } else if (ch >= 0x80 && ch <= 0x9f) {
+            // C1 controls, as UTF-8: CSI and the string introducers as their ESC forms
+            params.setLength(0);
+            state = ch == 0x9b ? CSI
+                    : ch == 0x9d || ch == 0x90 || ch == 0x98 || ch == 0x9e || ch == 0x9f ? OSC : NONE;
         } else if (ch == '\n') {
             newline();
         } else if (ch == '\r') {
