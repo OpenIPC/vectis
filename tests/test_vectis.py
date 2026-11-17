@@ -559,6 +559,7 @@ def test_web_terminal(tmp):
         token = st.get("terminal_token") or ""
         check(re.fullmatch(r"[0-9a-f]{32}", token) is not None, "/status: a 32-hex terminal_token")
         check("token='+s.terminal_token" in page, "web page: opens the terminal with the token")
+        check("subarray(i,i+2048)" in page, "web page: sends a paste in 2 KB frames")
         for origin, query, want in (
                 ("http://evil.example", "", 403), ("null", "", 403),
                 ("http://127.0.0.1:%d.evil.example" % wport, "", 403),
@@ -605,9 +606,21 @@ def test_web_terminal(tmp):
         a.send(b"ag\r", opcode=0)
         got = dev.read(1.0, until=b"\r")
         check(got == b"frag\r", "fragmented binary frame reassembled (%r)" % got)
+        paste = bytes(0x20 + (i * 7) % 95 for i in range(20000)) + b"\r"
+        a.send(b"x" * 10000, opcode=1)              # a large text frame: skipped whole
+        a.send(paste)                               # a paste larger than the input buffer
+        got = dev.read(3.0, until=b"\r")
+        check(got == paste, "a 20000-byte frame streams through, a large text frame is skipped "
+              "(%d bytes)" % len(got))
         a.send(b"pp", opcode=9)
         fr = a.frames(1.0, until=None)
         check((10, b"pp") in fr, "ping answered with pong")
+        bad = Ws(wport)
+        bad.data(0.5)
+        bad.send(b"p" * 200, opcode=9)              # control frames are at most 125 bytes
+        fr = bad.frames(1.0, until=b"")
+        check((8, struct.pack(">H", 1002)) in fr, "an oversized ping is refused with 1002")
+        bad.close()
         b.send(struct.pack(">H", 1000), opcode=8)
         fr = b.frames(1.0, until=b"")
         check(any(op == 8 for op, _ in fr), "close answered with close")

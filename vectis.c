@@ -1287,7 +1287,7 @@ static const char web_page[] =
     "  theme:{background:'#120d0a',foreground:'#e8d9b8',cursor:'#ffb347',cursorAccent:'#120d0a',selectionBackground:'rgba(201,162,77,.4)'}});\n"
     " var fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open($('term'));fit.fit();\n"
     " var ws=null,enc=new TextEncoder();\n"
-    " function send(b){if(ws&&ws.readyState===1)ws.send(b)}\n"
+    " function send(b){if(ws&&ws.readyState===1)for(var i=0;i<b.length;i+=2048)ws.send(b.subarray(i,i+2048))}\n"
     /* The token from /status proves the page is this server's own. */
     " function retry(){tstate('Reconnecting','bad');setTimeout(connect,2000)}\n"
     " function connect(){\n"
@@ -1697,12 +1697,16 @@ static int web_auth_ok(const char *hdr, size_t len)
 
 #define WT_HIST_SIZE  (64 * 1024)                 /* sent to a new terminal */
 #define WT_OUT_MAX    (WT_HIST_SIZE + 32 * 1024)  /* queued per terminal */
-#define WT_IN_MAX     4096                        /* largest frame taken */
+#define WT_IN_MAX     4096                        /* input buffer; data streams through */
 #define WT_GUID       "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 struct wt_client {
     int     fd;
     int     frag_text;     /* a fragmented text frame is being continued */
+    int     fwd;           /* the data frame in progress goes to the device */
+    uint64_t left;         /* its payload bytes still to come */
+    uint64_t pos;          /* its payload bytes seen (for the mask) */
+    uint8_t mask[4];       /* its masking key */
     char    peer[INET_ADDRSTRLEN];
     size_t  in_len;
     size_t  out_off, out_len;
@@ -1882,7 +1886,11 @@ static void wt_to_link(const uint8_t *d, size_t n)
         log_errno(LOG_WARNING, "[web] write(%s)", g_serial_mode ? "serial" : "socket");
 }
 
-/* Take every complete frame out of the input buffer. */
+/* Take what the input buffer holds.  Data frames (binary, text and their
+ * continuations) stream through whatever their size: the payload is
+ * unmasked and passed on as it arrives, so a large paste is not limited
+ * by the buffer.  Control frames (at most 125 bytes, RFC 6455 5.5) are
+ * taken whole. */
 static void wt_read(struct wt_client *c)
 {
     ssize_t n = recv(c->fd, c->in + c->in_len, WT_IN_MAX - c->in_len, MSG_DONTWAIT);
@@ -1898,76 +1906,88 @@ static void wt_read(struct wt_client *c)
     }
     c->in_len += (size_t)n;
 
-    while (c->fd >= 0 && c->in_len >= 2) {
-        uint8_t *p = c->in, *mask, *pl;
-        int fin = (p[0] & 0x80) != 0;
-        uint8_t op = p[0] & 0x0F;
-        uint64_t len = p[1] & 0x7F;
-        size_t hl = 2;
+    while (c->fd >= 0 && c->in_len > 0) {
+        uint8_t *p = c->in;
+        size_t used;
 
-        if (!(p[1] & 0x80)) {               /* a browser always masks */
-            wt_fail(c, 1002, "unmasked frame");
-            return;
-        }
-        if (len == 126) {
-            if (c->in_len < 4)
-                break;
-            len = (uint64_t)p[2] << 8 | p[3];
-            hl = 4;
-        } else if (len == 127) {
-            if (c->in_len < 10)
-                break;
-            len = 0;
-            for (int i = 0; i < 8; i++)
-                len = len << 8 | p[2 + i];
-            hl = 10;
-        }
-        hl += 4;                            /* the masking key */
-        if (len > WT_IN_MAX - hl) {
-            wt_fail(c, 1009, "frame too large");
-            return;
-        }
-        if (c->in_len < hl + len)
-            break;                          /* wait for the rest */
-        mask = p + hl - 4;
-        pl = p + hl;
-        for (size_t i = 0; i < len; i++)
-            pl[i] ^= mask[i & 3];
+        if (c->left > 0) {                  /* inside a data frame's payload */
+            size_t k = c->left < c->in_len ? (size_t)c->left : c->in_len;
+            for (size_t i = 0; i < k; i++)
+                p[i] ^= c->mask[(c->pos + i) & 3];
+            if (c->fwd)
+                wt_to_link(p, k);
+            c->pos += k;
+            c->left -= k;
+            used = k;
+        } else {
+            int fin = (p[0] & 0x80) != 0;
+            uint8_t op = p[0] & 0x0F;
+            uint64_t len;
+            size_t hl = 2;
 
-        switch (op) {
-        case 0x0:                           /* continuation */
-            if (!c->frag_text)
-                wt_to_link(pl, (size_t)len);
-            break;
-        case 0x1:                           /* text: control, ignored */
-            c->frag_text = !fin;
-            break;
-        case 0x2:                           /* binary: keys for the device */
-            c->frag_text = 0;
-            wt_to_link(pl, (size_t)len);
-            break;
-        case 0x8:                           /* close: answer with its code */
-            if (wt_frame(c, 0x8, pl, len >= 2 ? 2 : 0, NULL, 0) == 0)
-                wt_flush(c);
-            wt_close(c, "closed by the browser");
-            return;
-        case 0x9:                           /* ping */
-            (void)wt_frame(c, 0xA, pl, (size_t)len, NULL, 0);
-            break;
-        case 0xA:                           /* pong */
-            break;
-        default:
-            wt_fail(c, 1002, "unknown frame");
-            return;
+            if (c->in_len < 2)
+                break;
+            if (!(p[1] & 0x80)) {           /* a browser always masks */
+                wt_fail(c, 1002, "unmasked frame");
+                return;
+            }
+            len = p[1] & 0x7F;
+            if (len == 126) {
+                if (c->in_len < 4)
+                    break;
+                len = (uint64_t)p[2] << 8 | p[3];
+                hl = 4;
+            } else if (len == 127) {
+                if (c->in_len < 10)
+                    break;
+                len = 0;
+                for (int i = 0; i < 8; i++)
+                    len = len << 8 | p[2 + i];
+                hl = 10;
+            }
+            hl += 4;                        /* the masking key */
+            if (c->in_len < hl)
+                break;
+
+            if (op <= 0x2) {                /* data: stream the payload */
+                if (op == 0x1)
+                    c->frag_text = !fin;    /* text: control, ignored */
+                else if (op == 0x2)
+                    c->frag_text = 0;
+                c->fwd = op == 0x2 || (op == 0x0 && !c->frag_text);
+                memcpy(c->mask, p + hl - 4, 4);
+                c->left = len;
+                c->pos = 0;
+                used = hl;
+            } else {
+                uint8_t *pl = p + hl;
+                if (op < 0x8 || op > 0xA) {
+                    wt_fail(c, 1002, "unknown frame");
+                    return;
+                }
+                if (len > 125 || !fin) {
+                    wt_fail(c, 1002, "bad control frame");
+                    return;
+                }
+                if (c->in_len < hl + len)
+                    break;                  /* wait for the rest */
+                for (size_t i = 0; i < len; i++)
+                    pl[i] ^= p[hl - 4 + (i & 3)];
+                if (op == 0x8) {            /* close: answer with its code */
+                    if (wt_frame(c, 0x8, pl, len >= 2 ? 2 : 0, NULL, 0) == 0)
+                        wt_flush(c);
+                    wt_close(c, "closed by the browser");
+                    return;
+                }
+                if (op == 0x9)              /* ping */
+                    (void)wt_frame(c, 0xA, pl, (size_t)len, NULL, 0);
+                used = hl + (size_t)len;    /* pong: nothing to do */
+            }
         }
         if (c->fd < 0)
             return;
-        memmove(c->in, c->in + hl + len, c->in_len - hl - (size_t)len);
-        c->in_len -= hl + (size_t)len;
-    }
-    if (c->fd >= 0 && c->in_len == WT_IN_MAX) {
-        wt_fail(c, 1009, "frame too large");
-        return;
+        memmove(c->in, c->in + used, c->in_len - used);
+        c->in_len -= used;
     }
     wt_flush(c);
 }
@@ -2010,6 +2030,8 @@ static void wt_open(struct web_client *wc, const char *key)
     wc->fd = -1;
     memcpy(c->peer, wc->peer, sizeof c->peer);
     c->frag_text = 0;
+    c->fwd = 0;
+    c->left = c->pos = 0;
     c->in_len = 0;
     c->out_off = c->out_len = 0;
     if (setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) != 0)
