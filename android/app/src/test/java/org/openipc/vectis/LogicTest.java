@@ -191,6 +191,18 @@ public class LogicTest {
         TermBuffer t = new TermBuffer(100);
         feed(t, "\u009b31mred\u009b0m \u009d0;title\u0007ok");
         assertEquals("red ok", t.text(10));
+        t.clear();
+        feed(t, "A\u009d0;title\u009cB\u0090q");     // ST ends a string, also split across reads
+        t.feed(new byte[] {(byte) 0xc2}, 0, 1);
+        t.feed(new byte[] {(byte) 0x9c, 'C'}, 0, 2);
+        assertEquals("ABC", t.text(10));
+    }
+
+    @Test
+    public void terminalCanAndSubCancelSequences() {
+        TermBuffer t = new TermBuffer(100);
+        feed(t, "a\u001b[12\u0018b\u001b]0;x\u001ac\u001b\u0018d");
+        assertEquals("abcd", t.text(10));
     }
 
     @Test

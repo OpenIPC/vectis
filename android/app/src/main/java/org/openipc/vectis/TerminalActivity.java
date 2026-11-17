@@ -40,6 +40,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class TerminalActivity extends Activity {
     /** On screen: the recent output, a bound for weak TV boxes; the page keeps 5000 lines. */
@@ -197,9 +198,23 @@ public class TerminalActivity extends Activity {
         }
         Conn c = conn;
         conn = null;                    // nothing more is sent to it, before it is closed
-        if (c != null)
-            c.close();
-        writer.shutdownNow();
+        ExecutorService w = writer;
+        if (c != null) {
+            // Frames already accepted (Enter cleared the input) go out first, then it closes;
+            // a peer that stops reading holds it for 2 s at most
+            w.execute(c::close);
+            Thread t = new Thread(() -> {
+                try {
+                    if (!w.awaitTermination(2, TimeUnit.SECONDS))
+                        c.close();
+                } catch (InterruptedException e) {
+                    c.close();
+                }
+            }, "vectis-terminal-close");
+            t.setDaemon(true);
+            t.start();
+        }
+        w.shutdown();
         powerer.shutdownNow();
         super.onPause();
     }

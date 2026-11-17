@@ -67,11 +67,15 @@ final class TermBuffer {
     }
 
     private void put(char ch) {
+        if (state != NONE && (ch == 0x18 || ch == 0x1a)) {
+            state = NONE;               // CAN, SUB: cancel a sequence in progress
+            return;
+        }
         switch (state) {
             case ESC:
                 params.setLength(0);
                 // ESC ( B and the like: intermediates 0x20-0x2F, then one final byte
-                // ESC ] (OSC) and ESC P/X/^/_ (DCS, SOS, PM, APC): strings up to BEL or ESC \
+                // ESC ] (OSC) and ESC P/X/^/_ (DCS, SOS, PM, APC): strings up to BEL, ESC \ or ST
                 state = ch == '[' ? CSI
                         : ch == ']' || ch == 'P' || ch == 'X' || ch == '^' || ch == '_' ? OSC
                         : ch >= 0x20 && ch <= 0x2f ? ESC_INTER : NONE;
@@ -90,8 +94,8 @@ final class TermBuffer {
                 }
                 return;
             case OSC:
-                if (ch == 7)
-                    state = NONE;
+                if (ch == 7 || ch == 0x9c)
+                    state = NONE;       // BEL or ST (U+009C)
                 else if (ch == 27)
                     state = OSC_ESC;
                 return;
