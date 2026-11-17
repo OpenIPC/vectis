@@ -724,6 +724,12 @@ def test_web_password(tmp):
         text = stop_quiet(p, log)
     check("open, no password" in text, "the log says the page is open")
 
+    p, log = start_quiet([VECTIS, "-u", dev.link, "-n"], os.path.join(tmp, "pw2.log"),
+                         env=dict(os.environ, VECTIS_WEB_PASSWORD="x" * 300))
+    time.sleep(1.0)
+    check(p.poll() is None, "a long VECTIS_WEB_PASSWORD without -w is ignored")
+    stop_quiet(p, log)
+
     r = subprocess.run([VECTIS, "-u", dev.link, "-W", "x"], stdin=subprocess.DEVNULL,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
     check(r.returncode == 1 and b"give -w too" in r.stdout, "-W without -w: refused")

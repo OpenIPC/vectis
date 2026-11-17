@@ -1086,6 +1086,7 @@ static int on_stdin_eof(void)
 #define WEB_REQ_MAX            4096   /* request (headers + body) we are willing to buffer */
 #define WEB_CLIENT_TIMEOUT_MS  5000   /* drop a client that never completes its request */
 #define WEB_SEND_TIMEOUT_MS    3000   /* give up on a client that will not read the reply */
+#define WEB_BODY_TIMEOUT_MS    30000  /* a static body (page, xterm.js) still unsent: drop */
 
 struct web_client {
     int       fd;
@@ -1093,6 +1094,9 @@ struct web_client {
     int       rd_closed;    /* pending, and the client shut its write side */
     size_t    len;
     long long started_ms;
+    const uint8_t *body;    /* a static body still being sent (POLLOUT) */
+    size_t    body_left;
+    long long body_ms;
     char      peer[INET_ADDRSTRLEN];
     char      buf[WEB_REQ_MAX];
 };
@@ -1319,6 +1323,7 @@ static void web_client_close(struct web_client *c)
     c->len = 0;
     c->pending = 0;
     c->rd_closed = 0;
+    c->body_left = 0;
 }
 
 static void web_shutdown(void)
@@ -1485,6 +1490,41 @@ static void web_reply(struct web_client *c, int code, const char *reason,
                       int head_only)
 {
     web_reply_ex(c, code, reason, ctype, NULL, "no-store", body, body_len, head_only);
+}
+
+/* Send what the socket takes now of a static body; the rest goes out on
+ * POLLOUT (web_handle_pollfds), so a client that does not read never
+ * holds up the poll loop.  It is closed when done or after
+ * WEB_BODY_TIMEOUT_MS. */
+static void web_body_flush(struct web_client *c)
+{
+    while (c->body_left > 0) {
+        ssize_t k = send(c->fd, c->body, c->body_left, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (k < 0) {
+            if (errno == EINTR)
+                continue;
+            if (errno != EAGAIN && errno != EWOULDBLOCK)
+                web_client_close(c);
+            return;
+        }
+        c->body += k;
+        c->body_left -= (size_t)k;
+    }
+}
+
+/* A reply whose body lives as long as the program (the page, the
+ * xterm.js assets): the head now, the body without blocking. */
+static void web_reply_static(struct web_client *c, const char *ctype, const char *extra,
+                             const char *cache, const void *body, size_t body_len,
+                             int head_only)
+{
+    web_reply_ex(c, 200, "OK", ctype, extra, cache, NULL, body_len, 1);
+    if (head_only || c->fd < 0)
+        return;
+    c->body = body;
+    c->body_left = body_len;
+    c->body_ms = now_ms();
+    web_body_flush(c);
 }
 
 /* ---------- SHA-1 and base64 (WebSocket handshake, Basic auth) ---------- */
@@ -2070,15 +2110,12 @@ static void wt_make_token(void)
 
     if (fd >= 0)
         close(fd);
+    g_wt_token[0] = '\0';
     if (n != (ssize_t)sizeof r) {
-        /* No urandom: not secret, but still not guessable from a web page. */
-        struct sha1_ctx s;
-        uint8_t d[20];
-        long long seed[3] = { now_ms(), (long long)getpid(), (long long)time(NULL) };
-        sha1_init(&s);
-        sha1_update(&s, seed, sizeof seed);
-        sha1_final(&s, d);
-        memcpy(r, d, sizeof r);
+        /* No randomness: no token rather than a guessable one.  The page
+         * still opens the terminal where Origin matches Host. */
+        log_message(LOG_WARNING, "[web] /dev/urandom unreadable: terminal token disabled");
+        return;
     }
     for (size_t i = 0; i < sizeof r; i++)
         snprintf(g_wt_token + 2 * i, 3, "%02x", r[i]);
@@ -2090,7 +2127,7 @@ static int web_origin_ok(const char *hdr, size_t len, const char *query)
     const char *o = origin, *t = query ? strstr(query, "token=") : NULL;
     int diff = 0;
 
-    if (t != NULL && (t == query || t[-1] == '&')) {
+    if (t != NULL && g_wt_token[0] != '\0' && (t == query || t[-1] == '&')) {
         t += 6;
         if (strlen(t) >= 32 && (t[32] == '\0' || t[32] == '&')) {
             for (int i = 0; i < 32; i++)
@@ -2345,7 +2382,8 @@ static void web_process_request(struct web_client *c, size_t hdr_len)
             web_reply(c, 405, "Method Not Allowed", "text/plain", WEB_TEXT("GET only\n"), 0);
             return;
         }
-        web_reply(c, 200, "OK", "text/html; charset=utf-8", web_page, sizeof(web_page) - 1, is_head);
+        web_reply_static(c, "text/html; charset=utf-8", NULL, "no-store",
+                         web_page, sizeof(web_page) - 1, is_head);
         return;
     }
     if (strcmp(path, "/status") == 0) {
@@ -2378,11 +2416,10 @@ static void web_process_request(struct web_client *c, size_t hdr_len)
             web_reply(c, 405, "Method Not Allowed", "text/plain", WEB_TEXT("GET only\n"), 0);
             return;
         }
-        web_reply_ex(c, 200, "OK",
-                     js ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8",
-                     "Content-Encoding: gzip\r\n", "max-age=86400",
-                     js ? (const void *)wt_js_gz : (const void *)wt_css_gz,
-                     js ? sizeof wt_js_gz : sizeof wt_css_gz, is_head);
+        web_reply_static(c, js ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8",
+                         "Content-Encoding: gzip\r\n", "max-age=86400",
+                         js ? (const void *)wt_js_gz : (const void *)wt_css_gz,
+                         js ? sizeof wt_js_gz : sizeof wt_css_gz, is_head);
         return;
     }
 #endif
@@ -2445,7 +2482,7 @@ static void web_client_read(struct web_client *c)
         return;  /* wait for the body */
 
     web_process_request(c, hdr_len);
-    if (!c->pending)
+    if (!c->pending && c->body_left == 0)
         web_client_close(c);
 }
 
@@ -2518,7 +2555,9 @@ static int web_fill_pollfds(struct pollfd *p)
         /* A client waiting for its reset reply has said all it had to
          * say: watch only for its half-close, then for errors alone
          * (POLLHUP/POLLERR are always reported). */
-        if (!g_web_clients[i].pending)
+        if (g_web_clients[i].body_left > 0)
+            p[1 + i].events = POLLOUT;  /* only the rest of a static body to send */
+        else if (!g_web_clients[i].pending)
             p[1 + i].events = POLLIN;
         else
             p[1 + i].events = g_web_clients[i].rd_closed ? 0 : (POLLIN | POLLRDHUP);
@@ -2552,7 +2591,18 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
             continue;  /* empty slot, or accepted only just now */
         if (p[1 + i].revents & POLLNVAL)
             web_client_close(c);
-        else if (c->pending && (p[1 + i].revents & (POLLHUP | POLLERR)))
+        else if (c->body_left > 0) {
+            if (p[1 + i].revents & (POLLERR | POLLHUP))
+                web_client_close(c);
+            else if (p[1 + i].revents & POLLOUT) {
+                web_body_flush(c);
+                if (c->fd >= 0 && c->body_left == 0)
+                    web_client_close(c);
+            }
+            if (c->fd >= 0 && now - c->body_ms > WEB_BODY_TIMEOUT_MS)
+                web_client_close(c);
+            continue;
+        } else if (c->pending && (p[1 + i].revents & (POLLHUP | POLLERR)))
             web_client_close(c);   /* the peer is gone */
         else if (c->pending && (p[1 + i].revents & (POLLIN | POLLRDHUP)))
             web_pending_check(c);
@@ -3780,6 +3830,8 @@ int main(int argc, char **argv)
     else
         snprintf(g_web_target, sizeof g_web_target, "%s:%s", host, port);
 
+    if (web_password != NULL && !web_password_arg && web_port == 0)
+        web_password = NULL;   /* VECTIS_WEB_PASSWORD without -w: not used */
     if (web_password != NULL) {
         if (strlen(web_password) >= sizeof g_web_password) {
             log_message(LOG_ERR, "The web password is too long (%zu characters at most)",
