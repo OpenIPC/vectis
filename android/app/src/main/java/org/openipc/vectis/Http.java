@@ -46,6 +46,46 @@ final class Http {
         return o.toString();
     }
 
+    /**
+     * POST http://127.0.0.1:PORT/PATH: null when vectis did it, else what went
+     * wrong (its "error", or the HTTP status).
+     */
+    static String post(int port, String path, String password) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + port + path)
+                    .openConnection();
+            c.setConnectTimeout(800);
+            c.setReadTimeout(65000);   // /power/reset answers after the pulse (-t)
+            String auth = basic(password);
+            if (auth != null)
+                c.setRequestProperty("Authorization", auth);
+            c.setRequestMethod("POST");
+            c.setFixedLengthStreamingMode(0);
+            c.setDoOutput(true);
+            try {
+                int code = c.getResponseCode();
+                if (code < 400)
+                    return null;
+                try (InputStream in = c.getErrorStream()) {
+                    ByteArrayOutputStream b = new ByteArrayOutputStream();
+                    byte[] buf = new byte[1024];
+                    int n;
+                    while (in != null && (n = in.read(buf)) > 0 && b.size() < 4096)
+                        b.write(buf, 0, n);
+                    String e = new JSONObject(new String(b.toByteArray(), StandardCharsets.UTF_8))
+                            .optString("error", "");
+                    return e.isEmpty() ? "HTTP " + code : e;
+                } catch (JSONException e) {
+                    return "HTTP " + code;
+                }
+            } finally {
+                c.disconnect();
+            }
+        } catch (IOException e) {
+            return e.getMessage() != null ? e.getMessage() : "no answer";
+        }
+    }
+
     /** GET (or POST) http://127.0.0.1:PORT/PATH and parse the JSON reply. */
     static JSONObject json(int port, String path, String password, boolean post)
             throws IOException, JSONException {

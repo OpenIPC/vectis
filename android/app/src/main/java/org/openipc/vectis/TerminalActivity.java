@@ -30,6 +30,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -48,14 +49,35 @@ public class TerminalActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final TermBuffer term = new TermBuffer(1000);
     private final SecureRandom random = new SecureRandom();
-    private ExecutorService writer;
+    /** Frames for vectis, in order; the power buttons have their own thread. */
+    private ExecutorService writer, powerer;
     private TextView out, state;
     private ScrollView scroll;
     private EditText input;
-    private volatile boolean shown;
-    private volatile Socket socket;
-    private volatile OutputStream sink;
+    /** The current reader; an older one (before a pause) sees it changed and ends. */
+    private volatile Object generation;
+    /** The connection keys go to, null while there is none. */
+    private volatile Conn conn;
     private boolean redrawPosted;
+
+    /** One WebSocket connection: its socket and the stream to write to it. */
+    private static final class Conn {
+        final Socket socket;
+        final OutputStream out;
+
+        Conn(Socket socket, OutputStream out) {
+            this.socket = socket;
+            this.out = out;
+        }
+
+        void close() {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // closing anyway
+            }
+        }
+    }
 
     private final Runnable redraw = new Runnable() {
         @Override
@@ -124,9 +146,9 @@ public class TerminalActivity extends Activity {
         key(keys, R.string.term_ctrl_c, v -> send(new byte[] {3}));
         key(keys, R.string.term_yes, v -> send("y\r"));
         key(keys, R.string.term_no, v -> send("n\r"));
-        key(keys, R.string.term_reset, v -> power("reset"));
-        key(keys, R.string.term_on, v -> power("enable"));
-        key(keys, R.string.term_off, v -> power("disable"));
+        key(keys, R.string.term_reset, v -> power("reset", R.string.term_reset));
+        key(keys, R.string.term_on, v -> power("enable", R.string.term_on));
+        key(keys, R.string.term_off, v -> power("disable", R.string.term_off));
         page.addView(keys);
 
         setContentView(page);
@@ -141,24 +163,25 @@ public class TerminalActivity extends Activity {
         row.addView(b, Brass.margins(this, 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
     }
 
+    private Thread reader;
+    private volatile Socket connecting;   // the reader's socket before the handshake ends
+
     @Override
     protected void onResume() {
         super.onResume();
-        shown = true;
+        Object gen = new Object();
+        generation = gen;
         writer = Executors.newSingleThreadExecutor();
-        new Thread(this::run, "vectis-terminal").start();
+        powerer = Executors.newSingleThreadExecutor();
+        reader = new Thread(() -> run(gen), "vectis-terminal");
+        reader.start();
     }
 
     @Override
     protected void onPause() {
-        shown = false;
-        closeSocket();
-        writer.shutdownNow();
-        super.onPause();
-    }
-
-    private void closeSocket() {
-        Socket s = socket;
+        generation = null;
+        reader.interrupt();
+        Socket s = connecting;
         if (s != null) {
             try {
                 s.close();
@@ -166,6 +189,12 @@ public class TerminalActivity extends Activity {
                 // closing anyway
             }
         }
+        Conn c = conn;
+        if (c != null)
+            c.close();
+        writer.shutdownNow();
+        powerer.shutdownNow();
+        super.onPause();
     }
 
     /** The text of the input line, then CR (Enter on a serial console). */
@@ -180,35 +209,35 @@ public class TerminalActivity extends Activity {
     }
 
     private void send(byte[] data) {
-        OutputStream o = sink;
-        if (o == null || writer.isShutdown())
+        Conn c = conn;
+        if (c == null || writer.isShutdown())
             return;
         byte[] mask = new byte[4];
         random.nextBytes(mask);
         byte[] f = WsCodec.frame(WsCodec.BINARY, data, 0, data.length, mask);
-        writer.execute(() -> write(o, f));
+        writer.execute(() -> write(c, f));
     }
 
-    private void write(OutputStream o, byte[] f) {
+    /** Write a frame; a failure closes this connection only, its reader then reconnects. */
+    private static void write(Conn c, byte[] f) {
         try {
-            synchronized (o) {
-                o.write(f);
-                o.flush();
+            synchronized (c.out) {
+                c.out.write(f);
+                c.out.flush();
             }
         } catch (IOException e) {
-            closeSocket();   // the reader sees it and reconnects
+            c.close();
         }
     }
 
-    private void power(String what) {
+    private void power(String what, int label) {
         int port = Settings.webPort(this);
         String pw = Settings.password(this);
-        writer.execute(() -> {
-            try {
-                Http.json(port, "/power/" + what, pw, true);
-            } catch (Exception ignored) {
-                // the state line tells whether vectis is there
-            }
+        powerer.execute(() -> {
+            String err = Http.post(port, "/power/" + what, pw);
+            if (err != null)
+                handler.post(() -> Toast.makeText(this, getString(R.string.term_failed,
+                        getString(label), err), Toast.LENGTH_LONG).show());
         });
     }
 
@@ -225,13 +254,17 @@ public class TerminalActivity extends Activity {
         });
     }
 
-    /** Connect, read until the connection ends, retry while the screen is shown. */
-    private void run() {
-        while (shown) {
+    /** Connect, read until the connection ends, retry while this generation is current. */
+    private void run(Object gen) {
+        while (generation == gen) {
             int port = Settings.webPort(this);
             String pw = Settings.password(this);
+            boolean refused = false;
+            Conn mine = null;
             try (Socket s = new Socket()) {
-                socket = s;
+                connecting = s;
+                if (generation != gen)
+                    break;
                 s.connect(new InetSocketAddress("127.0.0.1", port), RETRY_MS);
                 s.setTcpNoDelay(true);
                 byte[] k = new byte[16];
@@ -242,21 +275,25 @@ public class TerminalActivity extends Activity {
                 InputStream in = s.getInputStream();
                 String head = readHead(in);
                 if (head.startsWith("HTTP/1.1 401")) {
-                    setState(R.string.term_password);
-                } else if (head.startsWith("HTTP/1.1 101")) {
-                    term.clear();             // the history follows
-                    sink = o;
+                    refused = true;
+                    setState(R.string.term_password);   // kept until the next attempt succeeds
+                } else if (head.startsWith("HTTP/1.1 101") && generation == gen) {
+                    term.clear();                       // the history follows, if there is one
+                    dirty();
+                    mine = new Conn(s, o);
+                    conn = mine;
                     setState(R.string.term_connected);
-                    pump(in, o);
+                    pump(in, mine, gen);
                 }
             } catch (IOException | RuntimeException e) {
                 // vectis not up yet, or the connection dropped
             }
-            sink = null;
-            socket = null;
-            if (!shown)
+            if (mine != null && conn == mine)
+                conn = null;
+            if (generation != gen)
                 break;
-            setState(R.string.term_reconnecting);
+            if (!refused)
+                setState(R.string.term_reconnecting);
             try {
                 Thread.sleep(RETRY_MS);
             } catch (InterruptedException e) {
@@ -276,11 +313,11 @@ public class TerminalActivity extends Activity {
         return h.toString();
     }
 
-    private void pump(InputStream in, OutputStream o) throws IOException {
+    private void pump(InputStream in, Conn c, Object gen) throws IOException {
         WsCodec.Parser p = new WsCodec.Parser();
         byte[] buf = new byte[8192];
         int n;
-        while (shown && (n = in.read(buf)) > 0) {
+        while (generation == gen && (n = in.read(buf)) > 0) {
             for (WsCodec.Frame f : p.feed(buf, 0, n)) {
                 if (f.opcode == WsCodec.BINARY || f.opcode == WsCodec.CONT) {
                     term.feed(f.data, 0, f.data.length);
@@ -288,7 +325,7 @@ public class TerminalActivity extends Activity {
                 } else if (f.opcode == WsCodec.PING) {
                     byte[] mask = new byte[4];
                     random.nextBytes(mask);
-                    write(o, WsCodec.frame(WsCodec.PONG, f.data, 0, f.data.length, mask));
+                    write(c, WsCodec.frame(WsCodec.PONG, f.data, 0, f.data.length, mask));
                 } else if (f.opcode == WsCodec.CLOSE) {
                     return;
                 }

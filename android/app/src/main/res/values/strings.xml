@@ -37,6 +37,7 @@
     <string name="settings_web">Web console TCP port (-w)</string>
     <string name="settings_password">Web page password</string>
     <string name="settings_password_hint">empty: the page is open</string>
+    <string name="settings_password_long">The web page password takes at most 255 bytes</string>
     <string name="settings_save">Save</string>
     <string name="settings_cancel">Cancel</string>
     <string name="settings_bad">Baud: 300, 1200 … 115200, 230400, 460800, 921600; ports 1024–65535, different</string>
@@ -59,4 +60,5 @@
     <string name="term_reset">Reset</string>
     <string name="term_on">Power on</string>
     <string name="term_off">Power off</string>
+    <string name="term_failed">%1$s: %2$s</string>
 </resources>

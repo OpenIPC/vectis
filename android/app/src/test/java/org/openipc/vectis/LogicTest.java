@@ -70,6 +70,24 @@ public class LogicTest {
     }
 
     @Test
+    public void aSavedWebPortIsKept() {
+        Map<String, Object> saved = new HashMap<>();
+        assertEquals(8085, Settings.stored(saved, "web_port", Settings.DEFAULT_WEB));
+        saved.put("web_port", 2081);                 // saved by 1.13 or earlier
+        assertEquals(2081, Settings.stored(saved, "web_port", Settings.DEFAULT_WEB));
+        assertEquals(8085, Settings.stored(null, "web_port", Settings.DEFAULT_WEB));
+    }
+
+    @Test
+    public void passwordFitsVectis() {
+        assertTrue(Settings.validPassword(""));
+        assertTrue(Settings.validPassword(new String(new char[255]).replace('\0', 'x')));
+        assertFalse(Settings.validPassword(new String(new char[256]).replace('\0', 'x')));
+        // bytes, not characters: 128 Cyrillic letters are 256 bytes
+        assertFalse(Settings.validPassword(new String(new char[128]).replace('\0', 'ж')));
+    }
+
+    @Test
     public void passwordGoesToTheEnvironmentOnlyWhenSet() {
         Map<String, String> env = new HashMap<>();
         env.put("VECTIS_WEB_PASSWORD", "left over");
@@ -113,6 +131,26 @@ public class LogicTest {
         assertEquals("Writing 100%\n", t.text(10));
         feed(t, "abcdef\r\u001b[Kxy\bz\n");
         assertTrue(t.text(10).endsWith("xz\n"));
+    }
+
+    @Test
+    public void terminalEraseLineVariants() {
+        TermBuffer t = new TermBuffer(100);
+        feed(t, "abcdef\b\b\u001b[1K");                 // erase from the start to the cursor
+        assertEquals("     f", t.text(10));
+        t.clear();
+        feed(t, "abcdef\b\b\u001b[2Kz");                // erase the whole line, the cursor stays
+        assertEquals("    z", t.text(10));
+        t.clear();
+        feed(t, "abcdef\b\b\u001b[0K");
+        assertEquals("abcd", t.text(10));
+    }
+
+    @Test
+    public void terminalDropsCharsetSelection() {
+        TermBuffer t = new TermBuffer(100);
+        feed(t, "ok\u001b(B\u001b[m done\u001b)0!");     // tput sgr0 and friends
+        assertEquals("ok done!", t.text(10));
     }
 
     @Test

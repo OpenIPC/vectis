@@ -49,7 +49,20 @@ final class Settings {
     }
 
     static int webPort(Context c) {
-        return prefs(c).getInt(WEB, DEFAULT_WEB);
+        return stored(prefs(c).getAll(), WEB, DEFAULT_WEB);
+    }
+
+    /** A saved int, or the default when none was saved: a new default never overwrites. */
+    static int stored(java.util.Map<String, ?> saved, String key, int def) {
+        Object v = saved == null ? null : saved.get(key);
+        return v instanceof Integer ? (Integer) v : def;
+    }
+
+    /** vectis takes a web password of at most this many bytes (UTF-8). */
+    static final int MAX_PASSWORD = 255;
+
+    static boolean validPassword(String p) {
+        return p == null || p.getBytes(java.nio.charset.StandardCharsets.UTF_8).length <= MAX_PASSWORD;
     }
 
     /** The web page password; "" means the page is open. */

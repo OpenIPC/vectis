@@ -19,13 +19,14 @@ import java.util.ArrayDeque;
 import java.util.Iterator;
 
 final class TermBuffer {
-    private static final int NONE = 0, ESC = 1, CSI = 2, OSC = 3, OSC_ESC = 4;
+    private static final int NONE = 0, ESC = 1, CSI = 2, OSC = 3, OSC_ESC = 4, ESC_INTER = 5;
 
     private final int maxLines;
     private final ArrayDeque<String> lines = new ArrayDeque<>();
     private final StringBuilder cur = new StringBuilder();
     private int col;
     private int state = NONE;
+    private final StringBuilder params = new StringBuilder();   // of the CSI sequence
     private final CharsetDecoder utf8 = StandardCharsets.UTF_8.newDecoder()
             .onMalformedInput(CodingErrorAction.REPLACE)
             .onUnmappableCharacter(CodingErrorAction.REPLACE);
@@ -52,13 +53,21 @@ final class TermBuffer {
     private void put(char ch) {
         switch (state) {
             case ESC:
-                state = ch == '[' ? CSI : ch == ']' ? OSC : NONE;
+                params.setLength(0);
+                // ESC ( B and the like: intermediates 0x20-0x2F, then one final byte
+                state = ch == '[' ? CSI : ch == ']' ? OSC : ch >= 0x20 && ch <= 0x2f ? ESC_INTER : NONE;
+                return;
+            case ESC_INTER:
+                if (ch >= 0x30 && ch <= 0x7e)
+                    state = NONE;
                 return;
             case CSI:
                 if (ch >= 0x40 && ch <= 0x7e) {
                     if (ch == 'K')
-                        cur.setLength(col);      // erase to the end of the line
+                        eraseLine(params.toString());
                     state = NONE;
+                } else if (params.length() < 32) {
+                    params.append(ch);
                 }
                 return;
             case OSC:
@@ -91,11 +100,26 @@ final class TermBuffer {
                 put(' ');
             while (col % 8 != 0);
         } else if (ch >= 0x20 && ch != 0x7f) {
+            while (cur.length() < col)
+                cur.append(' ');            // after an erase that left the cursor further on
             if (col < cur.length())
                 cur.setCharAt(col, ch);
             else
                 cur.append(ch);
             col++;
+        }
+    }
+
+    /** CSI K: 0 (or none) from the cursor to the end, 1 from the start to the cursor, 2 all. */
+    private void eraseLine(String p) {
+        if (p.isEmpty() || p.equals("0")) {
+            if (col < cur.length())
+                cur.setLength(col);
+        } else if (p.equals("1")) {
+            for (int i = 0; i <= col && i < cur.length(); i++)
+                cur.setCharAt(i, ' ');
+        } else if (p.equals("2")) {
+            cur.setLength(0);
         }
     }
 
@@ -117,6 +141,7 @@ final class TermBuffer {
         cur.setLength(0);
         col = 0;
         state = NONE;
+        params.setLength(0);
         partial.clear();
         utf8.reset();
     }

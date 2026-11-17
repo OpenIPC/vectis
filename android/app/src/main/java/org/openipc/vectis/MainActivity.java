@@ -269,6 +269,10 @@ public class MainActivity extends Activity {
                         Toast.makeText(this, R.string.settings_bad, Toast.LENGTH_LONG).show();
                         return;
                     }
+                    if (!Settings.validPassword(password.getText().toString())) {
+                        Toast.makeText(this, R.string.settings_password_long, Toast.LENGTH_LONG).show();
+                        return;
+                    }
                     Settings.setPorts(this, b, c, p);
                     Settings.setPassword(this, password.getText().toString());
                     if (VectisService.instance != null)
