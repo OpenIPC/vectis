@@ -4,10 +4,10 @@ The `-w` page draws its terminal with [xterm.js](https://github.com/xtermjs/xter
 (MIT, see `LICENSE`). The files are built into `vectis` (`webterm_assets.h`), so the
 browser needs no internet; `make WEBTERM=0` leaves them out.
 
-| File           | From the npm package                | Change                          |
-|----------------|-------------------------------------|---------------------------------|
-| `xterm.js`     | `@xterm/xterm` 5.5.0, `lib/xterm.js` | last line (`sourceMappingURL`) removed |
-| `xterm.css`    | `@xterm/xterm` 5.5.0, `css/xterm.css` | none                           |
+| File           | From the npm package                          | Change                                 |
+|----------------|-----------------------------------------------|----------------------------------------|
+| `xterm.js`     | `@xterm/xterm` 5.5.0, `lib/xterm.js`          | last line (`sourceMappingURL`) removed |
+| `xterm.css`    | `@xterm/xterm` 5.5.0, `css/xterm.css`         | none                                   |
 | `addon-fit.js` | `@xterm/addon-fit` 0.10.0, `lib/addon-fit.js` | last line (`sourceMappingURL`) removed |
 
 Package tarballs (registry.npmjs.org), SHA-256:
