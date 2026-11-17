@@ -975,6 +975,13 @@ console and the web page (power and the UART terminal) are on those TCP
 ports of the box, as on Linux. The web port is 8085 by default, as in
 Decoder and Microsnander; a port saved in the settings before is kept.
 
+<p align="center">
+  <img src="screenshots/android-main.jpg" alt="Vectis app on a TV box: adapter, power, console and web addresses, page password state, buttons Start, Stop, Terminal, Open web console, Settings" width="49%">
+  <img src="screenshots/android-terminal.jpg" alt="Vectis app terminal screen: UART output as plain text, input line with Enter, keys Ctrl+C, y, n, Reset, Power on, Power off" width="49%">
+</p>
+
+<p align="center"><sub>vectis 1.15.0 on an Android 10 TV box (adb screenshots). The UART of this bench loops back, so the text in the terminal was sent from a browser's terminal on the same page and came back.</sub></p>
+
 - **Install** [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   from the `latest` release (allow installing from this source when
   Android asks).

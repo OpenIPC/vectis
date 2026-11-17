@@ -976,6 +976,13 @@ ARM). Служба переднего плана владеет адаптеро
 как на Linux. Веб-порт по умолчанию 8085, как в Decoder и Microsnander;
 порт, сохранённый в настройках раньше, остаётся.
 
+<p align="center">
+  <img src="screenshots/android-main.jpg" alt="Приложение Vectis на ТВ-приставке: адаптер, питание, адреса консоли и веба, пароль страницы, кнопки Start, Stop, Terminal, Open web console, Settings" width="49%">
+  <img src="screenshots/android-terminal.jpg" alt="Экран терминала приложения Vectis: вывод UART простым текстом, строка ввода с Enter, кнопки Ctrl+C, y, n, Reset, Power on, Power off" width="49%">
+</p>
+
+<p align="center"><sub>vectis 1.15.0 на ТВ-приставке с Android 10 (снимки через adb). UART на этом стенде замкнут сам на себя, поэтому текст в терминале отправлен из терминала браузера на той же странице и вернулся обратно.</sub></p>
+
 - **Установка** — [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   из релиза `latest` (когда Android спросит, разрешите установку из этого
   источника).

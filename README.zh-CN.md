@@ -916,6 +916,13 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 与 Linux 相同。Web 端口默认为 8085，与 Decoder 和 Microsnander 相同；之前在
 设置中保存的端口保持不变。
 
+<p align="center">
+  <img src="screenshots/android-main.jpg" alt="电视盒上的 Vectis 应用：适配器、电源、控制台和 Web 地址、页面密码状态，按钮 Start、Stop、Terminal、Open web console、Settings" width="49%">
+  <img src="screenshots/android-terminal.jpg" alt="Vectis 应用的终端界面：纯文本的 UART 输出、带 Enter 的输入行，Ctrl+C、y、n、Reset、Power on、Power off 按钮" width="49%">
+</p>
+
+<p align="center"><sub>Android 10 电视盒上的 vectis 1.15.0（adb 截图）。该测试台的 UART 是回环的，因此终端中的文本是从同一页面的浏览器终端发送并回显的。</sub></p>
+
 - **安装**：从 `latest` 发布下载 [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   （Android 询问时，允许从此来源安装）。
 - **首次启动。** 插入适配器（CH340/CH341）。Android 会提示用 Vectis 打开它：
