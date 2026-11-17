@@ -200,22 +200,26 @@ public class TerminalActivity extends Activity {
     /** The text of the input line, then CR (Enter on a serial console). */
     private void enter() {
         String t = input.getText().toString();
-        input.setText("");
-        send(t + "\r");
+        if (send(t + "\r"))
+            input.setText("");          // kept while not connected, to be sent again
     }
 
-    private void send(String s) {
-        send(s.getBytes(StandardCharsets.UTF_8));
+    private boolean send(String s) {
+        return send(s.getBytes(StandardCharsets.UTF_8));
     }
 
-    private void send(byte[] data) {
+    /** False, with a note on the screen, when there is no connection to send to. */
+    private boolean send(byte[] data) {
         Conn c = conn;
-        if (c == null || writer.isShutdown())
-            return;
+        if (c == null || writer.isShutdown()) {
+            Toast.makeText(this, R.string.term_not_connected, Toast.LENGTH_SHORT).show();
+            return false;
+        }
         byte[] mask = new byte[4];
         random.nextBytes(mask);
         byte[] f = WsCodec.frame(WsCodec.BINARY, data, 0, data.length, mask);
         writer.execute(() -> write(c, f));
+        return true;
     }
 
     /** Write a frame; a failure closes this connection only, its reader then reconnects. */

@@ -6,7 +6,7 @@
  * (colours, cursor moves, titles) are dropped, except "erase to the end of
  * the line"; CR returns to the start of the line, so a progress line
  * rewrites itself; backspace and tabs move the column.  Keeps the last
- * maxLines lines.  No Android classes: tested on the JVM (LogicTest).
+ * maxLines lines; a line wraps at MAX_COLS.  No Android classes: tested on the JVM (LogicTest).
  */
 package org.openipc.vectis;
 
@@ -19,6 +19,8 @@ import java.util.ArrayDeque;
 import java.util.Iterator;
 
 final class TermBuffer {
+    /** A longer line wraps, so output without newlines stays bounded. */
+    static final int MAX_COLS = 1024;
     private static final int NONE = 0, ESC = 1, CSI = 2, OSC = 3, OSC_ESC = 4, ESC_INTER = 5;
 
     private final int maxLines;
@@ -85,11 +87,7 @@ final class TermBuffer {
         if (ch == 27) {
             state = ESC;
         } else if (ch == '\n') {
-            lines.addLast(cur.toString());
-            while (lines.size() > maxLines)
-                lines.removeFirst();
-            cur.setLength(0);
-            col = 0;
+            newline();
         } else if (ch == '\r') {
             col = 0;
         } else if (ch == '\b') {
@@ -100,6 +98,8 @@ final class TermBuffer {
                 put(' ');
             while (col % 8 != 0);
         } else if (ch >= 0x20 && ch != 0x7f) {
+            if (col >= MAX_COLS)
+                newline();
             while (cur.length() < col)
                 cur.append(' ');            // after an erase that left the cursor further on
             if (col < cur.length())
@@ -108,6 +108,14 @@ final class TermBuffer {
                 cur.append(ch);
             col++;
         }
+    }
+
+    private void newline() {
+        lines.addLast(cur.toString());
+        while (lines.size() > maxLines)
+            lines.removeFirst();
+        cur.setLength(0);
+        col = 0;
     }
 
     /** CSI K: 0 (or none) from the cursor to the end, 1 from the start to the cursor, 2 all. */

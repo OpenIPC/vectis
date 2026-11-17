@@ -60,5 +60,6 @@
     <string name="term_reset">Reset</string>
     <string name="term_on">Power on</string>
     <string name="term_off">Power off</string>
+    <string name="term_not_connected">Not connected: nothing was sent</string>
     <string name="term_failed">%1$s: %2$s</string>
 </resources>

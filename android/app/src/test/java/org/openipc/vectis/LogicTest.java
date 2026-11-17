@@ -147,6 +147,19 @@ public class LogicTest {
     }
 
     @Test
+    public void terminalWrapsEndlessOutput() {
+        TermBuffer t = new TermBuffer(5);
+        byte[] b = new byte[10 * TermBuffer.MAX_COLS + 7];
+        java.util.Arrays.fill(b, (byte) 'x');
+        t.feed(b, 0, b.length);
+        String all = t.text(100);
+        assertTrue(all.length() <= 5 * (TermBuffer.MAX_COLS + 1) + TermBuffer.MAX_COLS);
+        for (String l : all.split("\n"))
+            assertTrue(l.length() <= TermBuffer.MAX_COLS);
+        assertTrue(all.endsWith("\nxxxxxxx"));
+    }
+
+    @Test
     public void terminalDropsCharsetSelection() {
         TermBuffer t = new TermBuffer(100);
         feed(t, "ok\u001b(B\u001b[m done\u001b)0!");     // tput sgr0 and friends
