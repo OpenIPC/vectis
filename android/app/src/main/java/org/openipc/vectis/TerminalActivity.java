@@ -84,9 +84,13 @@ public class TerminalActivity extends Activity {
         @Override
         public void run() {
             redrawPosted = false;
+            // Follow the output only if the reader is at the bottom: scrolling back stays put
+            boolean atBottom = scroll.getScrollY() + scroll.getHeight() >= out.getBottom() - Brass.dp(
+                    TerminalActivity.this, 24);
             out.setText(term.text(SHOWN_LINES));
             // scrollTo, not fullScroll: that one also moves the focus off the input and the keys
-            scroll.post(() -> scroll.scrollTo(0, Math.max(0, out.getBottom() - scroll.getHeight())));
+            if (atBottom)
+                scroll.post(() -> scroll.scrollTo(0, Math.max(0, out.getBottom() - scroll.getHeight())));
         }
     };
 
@@ -192,6 +196,7 @@ public class TerminalActivity extends Activity {
             }
         }
         Conn c = conn;
+        conn = null;                    // nothing more is sent to it, before it is closed
         if (c != null)
             c.close();
         writer.shutdownNow();
@@ -247,8 +252,12 @@ public class TerminalActivity extends Activity {
         });
     }
 
-    private void setState(int text) {
-        handler.post(() -> state.setText(text));
+    /** The label, unless a newer reader (after a pause) has taken over meanwhile. */
+    private void setState(Object gen, int text) {
+        handler.post(() -> {
+            if (generation == gen)
+                state.setText(text);
+        });
     }
 
     private void dirty() {
@@ -284,13 +293,17 @@ public class TerminalActivity extends Activity {
                 s.setSoTimeout(0);                      // a quiet UART is not a dead connection
                 if (head.startsWith("HTTP/1.1 401")) {
                     refused = true;
-                    setState(R.string.term_password);   // kept until the next attempt succeeds
+                    setState(gen, R.string.term_password);   // kept until the next attempt succeeds
                 } else if (head.startsWith("HTTP/1.1 101") && generation == gen) {
                     term.clear();                       // the history follows, if there is one
                     dirty();
                     mine = new Conn(s, o);
                     conn = mine;
-                    setState(R.string.term_connected);
+                    if (generation != gen) {            // paused meanwhile: not ours to publish
+                        conn = null;
+                        break;
+                    }
+                    setState(gen, R.string.term_connected);
                     pump(in, mine, gen);
                 }
             } catch (IOException | RuntimeException e) {
@@ -301,7 +314,7 @@ public class TerminalActivity extends Activity {
             if (generation != gen)
                 break;
             if (!refused)
-                setState(R.string.term_reconnecting);
+                setState(gen, R.string.term_reconnecting);
             try {
                 Thread.sleep(RETRY_MS);
             } catch (InterruptedException e) {

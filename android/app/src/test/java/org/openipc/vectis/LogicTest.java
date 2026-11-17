@@ -165,6 +165,10 @@ public class LogicTest {
         TermBuffer t = new TermBuffer(100);
         feed(t, "ok\u001b(B\u001b[m done\u001b)0!");     // tput sgr0 and friends
         assertEquals("ok done!", t.text(10));
+        t.clear();
+        feed(t, "a\u001bPq#0;2;0;0;0\u001b\\b\u001b_apc");    // DCS, then an APC split across reads
+        feed(t, " text\u0007c");
+        assertEquals("abc", t.text(10));
     }
 
     @Test

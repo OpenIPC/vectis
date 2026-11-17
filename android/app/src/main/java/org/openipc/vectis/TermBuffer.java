@@ -57,7 +57,10 @@ final class TermBuffer {
             case ESC:
                 params.setLength(0);
                 // ESC ( B and the like: intermediates 0x20-0x2F, then one final byte
-                state = ch == '[' ? CSI : ch == ']' ? OSC : ch >= 0x20 && ch <= 0x2f ? ESC_INTER : NONE;
+                // ESC ] (OSC) and ESC P/X/^/_ (DCS, SOS, PM, APC): strings up to BEL or ESC \
+                state = ch == '[' ? CSI
+                        : ch == ']' || ch == 'P' || ch == 'X' || ch == '^' || ch == '_' ? OSC
+                        : ch >= 0x20 && ch <= 0x2f ? ESC_INTER : NONE;
                 return;
             case ESC_INTER:
                 if (ch >= 0x30 && ch <= 0x7e)
