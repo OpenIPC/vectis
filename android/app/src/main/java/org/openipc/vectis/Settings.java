@@ -5,12 +5,19 @@
  * baud rate, the two TCP ports (web 8085 as Decoder and Microsnander, which
  * camex servers expect), the web page password (empty: none), start on boot,
  * and whether the user wants vectis running (Stop clears it).  A value saved
- * before keeps winning over a new default.
+ * before keeps winning over a new default.  And the camex tunnel (#97): on or
+ * off and the fields of the tunnel library, the same as in Microsnander.
  */
 package org.openipc.vectis;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import org.openipc.camex.tunnel.CamexTunnel;
+import org.openipc.camex.tunnel.Field;
 
 final class Settings {
     static final int DEFAULT_BAUD = 115200;
@@ -96,5 +103,41 @@ final class Settings {
 
     static void setRunning(Context c, boolean on) {
         prefs(c).edit().putBoolean(RUNNING, on).apply();
+    }
+
+    // ── the camex tunnel ──────────────────────────────────────────
+
+    private static final String TUNNEL = "camex", TUNNEL_PREFIX = "camex.";
+
+    /**
+     * The keys kept here: every field of the library, so a new one needs no change
+     * here; but the web port, which is the page's port (WEB).
+     */
+    static List<String> tunnelKeys() {
+        List<String> k = new ArrayList<>();
+        for (Field f : CamexTunnel.fields())
+            if (!CamexTunnel.WEB_PORT.equals(f.key))
+                k.add(f.key);
+        return k;
+    }
+
+    static boolean tunnelEnabled(Context c) {
+        return prefs(c).getBoolean(TUNNEL, false);
+    }
+
+    /** The tunnel's values; the server's nginx opens the page by the client's name on the web port. */
+    static Map<String, String> tunnel(Context c) {
+        Map<String, String> v = new HashMap<>();
+        for (String k : tunnelKeys())
+            v.put(k, prefs(c).getString(TUNNEL_PREFIX + k, CamexTunnel.TRANSPORT.equals(k) ? "UDP" : ""));
+        v.put(CamexTunnel.WEB_PORT, String.valueOf(webPort(c)));
+        return v;
+    }
+
+    static void setTunnel(Context c, boolean on, Map<String, String> v) {
+        SharedPreferences.Editor e = prefs(c).edit().putBoolean(TUNNEL, on);
+        for (String k : tunnelKeys())
+            e.putString(TUNNEL_PREFIX + k, v.containsKey(k) ? v.get(k) : "");
+        e.apply();
     }
 }

@@ -117,6 +117,7 @@ android {
 }
 
 dependencies {
-    // Platform classes only: no AppCompat or AndroidX
+    // Platform classes only: no AppCompat or AndroidX. The camex tunnel (bundles/camex)
+    implementation(project(":camex-tunnel"))
     testImplementation("junit:junit:4.13.2")
 }

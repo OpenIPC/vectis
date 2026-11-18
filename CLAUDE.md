@@ -52,7 +52,10 @@ change that can be exercised without hardware.
   `libvectis.so`, with `-U fd:@org.openipc.vectis.usb`; a fresh `openDevice()` per
   connection; web port 8085 by default, the web page password from the settings in
   `VECTIS_WEB_PASSWORD`; `TerminalActivity` is a native screen on `/ws/terminal`
-  (`WsCodec`, `TermBuffer`). Version from `PROGRAM_VERSION`. Build: `cd android && gradle assembleDebug`;
+  (`WsCodec`, `TermBuffer`). Remote access through a camex server (#97): the submodule
+  `bundles/camex` (pinned to a camex release; `git submodule update --init`), its tunnel
+  library as `:camex-tunnel`, started and stopped with vectis by the service
+  (`startTunnel()`), its settings in `Settings.tunnel*`. Version from `PROGRAM_VERSION`. Build: `cd android && gradle assembleDebug`;
   tests of the device-free logic: `gradle testDebugUnitTest` (`android/app/src/test`).
 - `tests/test_vectis.py`, `ci/`, `.github/workflows/{build,version}.yml`,
   `.github/check-version.sh`.
@@ -103,7 +106,7 @@ Easy to break and not obvious from one function — read the surrounding block c
 - `PROGRAM_VERSION` / `PROGRAM_RELEASE_DATE` near the top of `vectis.c` (`MAJOR.MINOR.PATCH`).
   `vectis-bootrom.c` keeps its own, separate version.
 - Pull requests that touch code or build (`*.c`, `*.h`, `web/`, `Makefile`, `ci/`,
-  `.github/workflows/build.yml`, Markdown excluded) must bump `PROGRAM_VERSION` and add a
+  `.github/workflows/build.yml`, `android/`, `bundles/`, `.gitmodules`, Markdown excluded) must bump `PROGRAM_VERSION` and add a
   `## <version> — YYYY-MM-DD` section to `CHANGELOG.md`; `.github/check-version.sh`
   enforces it (`version.yml`). The `no-release` label lets through a change that leaves
   the release files as they are. Docs, tests and the rest of `.github/` need no bump.

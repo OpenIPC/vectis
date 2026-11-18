@@ -976,11 +976,11 @@ ports of the box, as on Linux. The web port is 8085 by default, as in
 Decoder and Microsnander; a port saved in the settings before is kept.
 
 <p align="center">
-  <img src="screenshots/android-main.jpg" alt="Vectis app on a TV box: adapter, power, console and web addresses, page password state, buttons Start, Stop, Terminal, Open web console, Settings" width="49%">
+  <img src="screenshots/android-main.jpg" alt="Vectis app on a TV box: adapter, power, console and web addresses, page password state, buttons Start, Stop, Terminal, Open web console, Settings, and the camex tunnel address" width="49%">
   <img src="screenshots/android-terminal.jpg" alt="Vectis app terminal screen: UART output as plain text, input line with Enter, keys Ctrl+C, y, n, Reset, Power on, Power off" width="49%">
 </p>
 
-<p align="center"><sub>vectis 1.15.0 on an Android 10 TV box (adb screenshots). The UART of this bench loops back, so the text in the terminal was sent from a browser's terminal on the same page and came back.</sub></p>
+<p align="center"><sub>vectis 1.16.0 (the main screen, with the camex tunnel up) and 1.15.0 (the terminal) on an Android 10 TV box (adb screenshots). The UART of this bench loops back, so the text in the terminal was sent from a browser's terminal on the same page and came back.</sub></p>
 
 - **Install** [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   from the `latest` release (allow installing from this source when
@@ -1021,8 +1021,51 @@ Decoder and Microsnander; a port saved in the settings before is kept.
   use the console and switch the power; the console port (`-l`) has no
   password at all. Keep the box on a trusted network.
 
+### Remote access through a camex server
+
+The app has [camex](https://github.com/OpenIPC/camex) built in, as
+Decoder and Microsnander do: the box joins a camex server, and an
+operator anywhere opens its page (power and the UART terminal) there, by
+the client name: `http://<client name>.<server domain>/` through nginx on
+the server ([camex: nginx in front of the clients](https://github.com/OpenIPC/camex/blob/master/docs/nginx.md)).
+The box needs no open port and no public address.
+
+- **Settings → Network**: tick "Remote access through a camex server"
+  and fill in the server (`host:port`), the client name, UDP or TCP
+  (UDP by default), the server's public key and the psk. Or paste the
+  link that camex's `install.sh` prints
+  (`https://openipc.github.io/camex/connect/#…`) and press **Fill from
+  the link**; opening such a link (or `camex://connect?…`) on the box
+  opens the settings filled in and the tunnel ticked. The web page
+  password stays the last field of the section.
+- The tunnel tells the server the web port (8085 by default:
+  `--web-port`, camex 3.19.0 or later), so nginx reaches the page on it.
+  The page works through nginx with and without the password: its
+  terminal does not depend on the Host header nginx sends.
+- **VPN consent**, once: the app asks after Save (the system dialog,
+  OK with the remote), or **Allow VPN for the camex tunnel** on the
+  screen. On a box without a screen: `adb shell appops set
+  org.openipc.vectis ACTIVATE_VPN allow` and `adb shell appops
+  write-settings`. Only the tunnel network and the server's routes go
+  through the VPN, never the box's other traffic.
+- The screen shows the tunnel's state and the page's address in it
+  (**TUNNEL**), the notification too. The tunnel runs while vectis does,
+  reconnects by itself, and comes back after a reboot with the service.
+
+On a router or a Linux host camex is not built in: run the camex client
+next to vectis (`camex-mipsel` from the [camex releases](https://github.com/OpenIPC/camex/releases/latest)
+on a MIPS router), with vectis' web port:
+
+```sh
+vectis -U usb:1a86:7523 -l 2021 -w 8085 &
+camex --mode client --auto --server-host camex.example.org --port 5800 \
+      --server-pubkey <server public key> --psk hex:<64 hex digits> \
+      --name bench-1 --web-port 8085
+```
+
 Build on Linux or macOS with the Android SDK, NDK r27 (`ANDROID_NDK_HOME`)
-and Gradle 8: `cd android && gradle assembleDebug`; the APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
+and Gradle 8: `git submodule update --init` (camex, `bundles/camex`),
+then `cd android && gradle assembleDebug`; the APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
 `gradle testDebugUnitTest` runs the tests of the app's logic (settings,
 command line and password, log, the terminal's text and WebSocket
 frames) without a device.

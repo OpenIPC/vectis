@@ -977,11 +977,11 @@ ARM). Служба переднего плана владеет адаптеро
 порт, сохранённый в настройках раньше, остаётся.
 
 <p align="center">
-  <img src="screenshots/android-main.jpg" alt="Приложение Vectis на ТВ-приставке: адаптер, питание, адреса консоли и веба, пароль страницы, кнопки Start, Stop, Terminal, Open web console, Settings" width="49%">
+  <img src="screenshots/android-main.jpg" alt="Приложение Vectis на ТВ-приставке: адаптер, питание, адреса консоли и веба, пароль страницы, кнопки Start, Stop, Terminal, Open web console, Settings и адрес туннеля camex" width="49%">
   <img src="screenshots/android-terminal.jpg" alt="Экран терминала приложения Vectis: вывод UART простым текстом, строка ввода с Enter, кнопки Ctrl+C, y, n, Reset, Power on, Power off" width="49%">
 </p>
 
-<p align="center"><sub>vectis 1.15.0 на ТВ-приставке с Android 10 (снимки через adb). UART на этом стенде замкнут сам на себя, поэтому текст в терминале отправлен из терминала браузера на той же странице и вернулся обратно.</sub></p>
+<p align="center"><sub>vectis 1.16.0 (главный экран, туннель camex поднят) и 1.15.0 (терминал) на ТВ-приставке с Android 10 (снимки через adb). UART на этом стенде замкнут сам на себя, поэтому текст в терминале отправлен из терминала браузера на той же странице и вернулся обратно.</sub></p>
 
 - **Установка** — [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   из релиза `latest` (когда Android спросит, разрешите установку из этого
@@ -1023,8 +1023,52 @@ ARM). Служба переднего плана владеет адаптеро
   переключать питание; у порта консоли (`-l`) пароля нет вовсе. Держите
   приставку в доверенной сети.
 
+### Удалённый доступ через сервер camex
+
+В приложение встроен [camex](https://github.com/OpenIPC/camex), как в
+Decoder и Microsnander: приставка подключается к серверу camex, и
+оператор откуда угодно открывает её страницу (питание и терминал UART)
+там, по имени клиента: `http://<имя клиента>.<домен сервера>/` через nginx
+на сервере ([camex: nginx перед клиентами](https://github.com/OpenIPC/camex/blob/master/docs/nginx.md)).
+Приставке не нужны ни открытый порт, ни публичный адрес.
+
+- **Settings → Network**: отметьте «Remote access through a camex
+  server» и заполните сервер (`host:port`), имя клиента, UDP или TCP (по
+  умолчанию UDP), открытый ключ сервера и psk. Или вставьте ссылку,
+  которую печатает `install.sh` camex
+  (`https://openipc.github.io/camex/connect/#…`), и нажмите **Fill from
+  the link**; такая ссылка (или `camex://connect?…`), открытая на
+  приставке, открывает настройки уже заполненными и с отмеченным
+  туннелем. Пароль веб-страницы остаётся последним полем раздела.
+- Туннель сообщает серверу веб-порт (по умолчанию 8085: `--web-port`,
+  camex 3.19.0 или новее), и nginx открывает страницу на нём. Страница
+  работает через nginx и с паролем, и без: её терминал не зависит от
+  заголовка Host, который передаёт nginx.
+- **Согласие на VPN** — один раз: приложение спрашивает после Save
+  (системный диалог, OK пультом) или по кнопке **Allow VPN for the camex
+  tunnel** на экране. На приставке без экрана: `adb shell appops set
+  org.openipc.vectis ACTIVATE_VPN allow` и `adb shell appops
+  write-settings`. Через VPN идут только сеть туннеля и маршруты
+  сервера, остальной трафик приставки — нет.
+- На экране видно состояние туннеля и адрес страницы в нём (**TUNNEL**),
+  в уведомлении тоже. Туннель работает, пока работает vectis,
+  переподключается сам и возвращается после перезагрузки вместе с
+  сервисом.
+
+На роутере или Linux-хосте camex не встроен: запустите клиент camex
+рядом с vectis (`camex-mipsel` из [релизов camex](https://github.com/OpenIPC/camex/releases/latest)
+на роутере MIPS) с веб-портом vectis:
+
+```sh
+vectis -U usb:1a86:7523 -l 2021 -w 8085 &
+camex --mode client --auto --server-host camex.example.org --port 5800 \
+      --server-pubkey <открытый ключ сервера> --psk hex:<64 hex-цифры> \
+      --name bench-1 --web-port 8085
+```
+
 Сборка — на Linux или macOS, Android SDK, NDK r27 (`ANDROID_NDK_HOME`) и
-Gradle 8: `cd android && gradle assembleDebug`; APK — `android/app/build/outputs/apk/debug/app-debug.apk`.
+Gradle 8: `git submodule update --init` (camex, `bundles/camex`), затем
+`cd android && gradle assembleDebug`; APK — `android/app/build/outputs/apk/debug/app-debug.apk`.
 `gradle testDebugUnitTest` запускает тесты логики приложения (настройки,
 командная строка и пароль, журнал, текст терминала и кадры WebSocket) без
 устройства.

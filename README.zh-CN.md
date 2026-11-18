@@ -917,11 +917,11 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 设置中保存的端口保持不变。
 
 <p align="center">
-  <img src="screenshots/android-main.jpg" alt="电视盒上的 Vectis 应用：适配器、电源、控制台和 Web 地址、页面密码状态，按钮 Start、Stop、Terminal、Open web console、Settings" width="49%">
+  <img src="screenshots/android-main.jpg" alt="电视盒上的 Vectis 应用：适配器、电源、控制台和 Web 地址、页面密码状态，按钮 Start、Stop、Terminal、Open web console、Settings，以及 camex 隧道地址" width="49%">
   <img src="screenshots/android-terminal.jpg" alt="Vectis 应用的终端界面：纯文本的 UART 输出、带 Enter 的输入行，Ctrl+C、y、n、Reset、Power on、Power off 按钮" width="49%">
 </p>
 
-<p align="center"><sub>Android 10 电视盒上的 vectis 1.15.0（adb 截图）。该测试台的 UART 是回环的，因此终端中的文本是从同一页面的浏览器终端发送并回显的。</sub></p>
+<p align="center"><sub>Android 10 电视盒上的 vectis 1.16.0（主屏幕，camex 隧道已连接）和 1.15.0（终端）（adb 截图）。该测试台的 UART 是回环的，因此终端中的文本是从同一页面的浏览器终端发送并回显的。</sub></p>
 
 - **安装**：从 `latest` 发布下载 [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   （Android 询问时，允许从此来源安装）。
@@ -952,8 +952,46 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
   相同。没有密码时，该网络中的任何人都可以使用控制台并切换电源；控制台端口
   （`-l`）根本没有密码。请将盒子放在可信网络中。
 
+### 通过 camex 服务器远程访问
+
+应用内置了 [camex](https://github.com/OpenIPC/camex)，与 Decoder 和
+Microsnander 相同：盒子连接到 camex 服务器，操作员可以在任何地方通过客户端
+名称打开它的页面（电源和 UART 终端）：经服务器上的 nginx 访问
+`http://<客户端名称>.<服务器域名>/`
+（[camex：客户端前面的 nginx](https://github.com/OpenIPC/camex/blob/master/docs/nginx.md)）。
+盒子不需要开放端口，也不需要公网地址。
+
+- **Settings → Network**：勾选“Remote access through a camex server”，
+  填写服务器（`host:port`）、客户端名称、UDP 或 TCP（默认 UDP）、服务器公钥
+  和 psk。或者粘贴 camex 的 `install.sh` 打印的链接
+  （`https://openipc.github.io/camex/connect/#…`）并按 **Fill from the
+  link**；在盒子上打开这样的链接（或 `camex://connect?…`）会打开已填好并勾选
+  了隧道的设置。Web 页面密码仍是该部分的最后一个字段。
+- 隧道会把 Web 端口告诉服务器（默认 8085：`--web-port`，需要 camex 3.19.0
+  或更高版本），nginx 就在这个端口上访问页面。无论有无密码，页面都能通过
+  nginx 使用：它的终端不依赖 nginx 发送的 Host 头。
+- **VPN 授权**只需一次：保存后应用会询问（系统对话框，用遥控器按 OK），
+  或在屏幕上按 **Allow VPN for the camex tunnel**。在没有屏幕的盒子上：
+  `adb shell appops set org.openipc.vectis ACTIVATE_VPN allow` 和
+  `adb shell appops write-settings`。只有隧道网络和服务器的路由走 VPN，
+  盒子的其他流量不走。
+- 屏幕和通知显示隧道的状态和页面在隧道中的地址（**TUNNEL**）。隧道随 vectis
+  一起运行，会自动重连，并在重启后随服务一起恢复。
+
+在路由器或 Linux 主机上 camex 不是内置的：在 vectis 旁边运行 camex 客户端
+（MIPS 路由器上使用 [camex 发布版](https://github.com/OpenIPC/camex/releases/latest)
+中的 `camex-mipsel`），并指定 vectis 的 Web 端口：
+
+```sh
+vectis -U usb:1a86:7523 -l 2021 -w 8085 &
+camex --mode client --auto --server-host camex.example.org --port 5800 \
+      --server-pubkey <服务器公钥> --psk hex:<64 个十六进制数字> \
+      --name bench-1 --web-port 8085
+```
+
 在 Linux 或 macOS 上构建，需要 Android SDK、NDK r27（`ANDROID_NDK_HOME`）
-和 Gradle 8：`cd android && gradle assembleDebug`；APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
+和 Gradle 8：先 `git submodule update --init`（camex，`bundles/camex`），
+再 `cd android && gradle assembleDebug`；APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
 `gradle testDebugUnitTest` 无需设备即可运行应用逻辑（设置、命令行和密码、日志、
 终端文本和 WebSocket 帧）的测试。
 `android/build-native.sh` 用 NDK 为应用构建 vectis，生成名为 `libvectis.so`
