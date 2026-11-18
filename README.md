@@ -1051,6 +1051,11 @@ The box needs no open port and no public address.
 - The screen shows the tunnel's state and the page's address in it
   (**TUNNEL**), the notification too. The tunnel runs while vectis does,
   reconnects by itself, and comes back after a reboot with the service.
+- The tunnel puts the box on the server's network: whoever reaches the
+  page through nginx, and every client of that network, can use the
+  power and the terminal unless the page has a password, and the console
+  port (`-l`, never a password) is open to the tunnel network too. Set a
+  password when the server is shared.
 
 On a router or a Linux host camex is not built in: run the camex client
 next to vectis (`camex-mipsel` from the [camex releases](https://github.com/OpenIPC/camex/releases/latest)

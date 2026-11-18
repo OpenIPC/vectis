@@ -460,11 +460,22 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** The values of a camex link into the fields; its malformed fields are listed. False: not a link. */
+    /**
+     * The values of a camex link into the fields. A link with malformed fields changes nothing:
+     * they are listed and it is false, as for no link at all.
+     */
     private boolean fill(String link, Map<String, EditText> texts, Map<String, RadioGroup> choices, TextView errors) {
         ConnectLink l = ConnectLink.parse(link);
         if (l == null) {
             errors.setText(R.string.tunnel_link_bad);
+            errors.setVisibility(View.VISIBLE);
+            return false;
+        }
+        if (!l.errors.isEmpty()) {
+            StringBuilder m = new StringBuilder();
+            for (Map.Entry<String, String> e : l.errors.entrySet())
+                m.append(getString(R.string.tunnel_link_field, e.getKey(), e.getValue())).append('\n');
+            errors.setText(m.toString().trim());
             errors.setVisibility(View.VISIBLE);
             return false;
         }
@@ -479,11 +490,7 @@ public class MainActivity extends Activity {
                     g.check(r.getId());
             }
         }
-        StringBuilder m = new StringBuilder();
-        for (Map.Entry<String, String> e : l.errors.entrySet())
-            m.append(getString(R.string.tunnel_link_field, e.getKey(), e.getValue())).append('\n');
-        errors.setText(m.toString().trim());
-        errors.setVisibility(m.length() > 0 ? View.VISIBLE : View.GONE);
+        errors.setVisibility(View.GONE);
         return true;
     }
 
