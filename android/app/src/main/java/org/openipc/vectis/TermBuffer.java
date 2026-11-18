@@ -100,7 +100,7 @@ final class TermBuffer {
                     state = OSC_ESC;
                 return;
             case OSC_ESC:
-                state = ch == '\\' ? NONE : OSC;
+                state = ch == '\\' || ch == 0x9c ? NONE : OSC;
                 return;
             default:
                 break;

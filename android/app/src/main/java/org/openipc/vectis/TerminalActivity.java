@@ -40,7 +40,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class TerminalActivity extends Activity {
     /** On screen: the recent output, a bound for weak TV boxes; the page keeps 5000 lines. */
@@ -62,14 +64,17 @@ public class TerminalActivity extends Activity {
     private volatile Conn conn;
     private boolean redrawPosted;
 
-    /** One WebSocket connection: its socket and the stream to write to it. */
+    /** One WebSocket connection: its socket, the stream to write to it and its writer. */
     private static final class Conn {
         final Socket socket;
         final OutputStream out;
+        final ExecutorService writer;
+        private final AtomicBoolean closing = new AtomicBoolean();
 
-        Conn(Socket socket, OutputStream out) {
+        Conn(Socket socket, OutputStream out, ExecutorService writer) {
             this.socket = socket;
             this.out = out;
+            this.writer = writer;
         }
 
         void close() {
@@ -78,6 +83,32 @@ public class TerminalActivity extends Activity {
             } catch (IOException ignored) {
                 // closing anyway
             }
+        }
+
+        /**
+         * On leaving the screen: frames already accepted (Enter cleared the input) go out
+         * first, then the socket closes; a peer that stops reading holds it 2 s at most.
+         * The writer takes nothing new.  Safe to call twice (onPause and the reader).
+         */
+        void closeAfterWrites() {
+            if (!closing.compareAndSet(false, true))
+                return;
+            try {
+                writer.execute(this::close);
+            } catch (RejectedExecutionException e) {
+                close();
+            }
+            writer.shutdown();
+            Thread t = new Thread(() -> {
+                try {
+                    if (!writer.awaitTermination(2, TimeUnit.SECONDS))
+                        close();
+                } catch (InterruptedException e) {
+                    close();
+                }
+            }, "vectis-terminal-close");
+            t.setDaemon(true);
+            t.start();
         }
     }
 
@@ -188,33 +219,27 @@ public class TerminalActivity extends Activity {
     protected void onPause() {
         generation = null;
         reader.interrupt();
-        Socket s = connecting;
-        if (s != null) {
-            try {
-                s.close();
-            } catch (IOException ignored) {
-                // closing anyway
-            }
-        }
         Conn c = conn;
         conn = null;                    // nothing more is sent to it, before it is closed
-        ExecutorService w = writer;
         if (c != null) {
-            // Frames already accepted (Enter cleared the input) go out first, then it closes;
-            // a peer that stops reading holds it for 2 s at most
-            w.execute(c::close);
-            Thread t = new Thread(() -> {
+            // Wake the reader without closing: the writer closes after the accepted frames
+            try {
+                c.socket.shutdownInput();
+            } catch (IOException ignored) {
+                // closed already
+            }
+            c.closeAfterWrites();
+        } else {
+            Socket s = connecting;      // still connecting: nothing was sent to it
+            if (s != null) {
                 try {
-                    if (!w.awaitTermination(2, TimeUnit.SECONDS))
-                        c.close();
-                } catch (InterruptedException e) {
-                    c.close();
+                    s.close();
+                } catch (IOException ignored) {
+                    // closing anyway
                 }
-            }, "vectis-terminal-close");
-            t.setDaemon(true);
-            t.start();
+            }
         }
-        w.shutdown();
+        writer.shutdown();
         powerer.shutdownNow();
         super.onPause();
     }
@@ -291,7 +316,8 @@ public class TerminalActivity extends Activity {
             String pw = Settings.password(this);
             boolean refused = false;
             Conn mine = null;
-            try (Socket s = new Socket()) {
+            Socket s = new Socket();
+            try {
                 connecting = s;
                 if (generation != gen)
                     break;
@@ -312,7 +338,7 @@ public class TerminalActivity extends Activity {
                 } else if (head.startsWith("HTTP/1.1 101") && generation == gen) {
                     term.clear();                       // the history follows, if there is one
                     dirty();
-                    mine = new Conn(s, o);
+                    mine = new Conn(s, o, writer);
                     conn = mine;
                     if (generation != gen) {            // paused meanwhile: not ours to publish
                         conn = null;
@@ -326,6 +352,15 @@ public class TerminalActivity extends Activity {
             }
             if (mine != null && conn == mine)
                 conn = null;
+            if (mine == null || generation == gen) {
+                try {
+                    s.close();
+                } catch (IOException ignored) {
+                    // closed
+                }
+            } else {
+                mine.closeAfterWrites();        // paused: the accepted frames go out first
+            }
             if (generation != gen)
                 break;
             if (!refused)

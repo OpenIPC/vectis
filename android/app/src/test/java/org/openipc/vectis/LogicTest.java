@@ -195,7 +195,8 @@ public class LogicTest {
         feed(t, "A\u009d0;title\u009cB\u0090q");     // ST ends a string, also split across reads
         t.feed(new byte[] {(byte) 0xc2}, 0, 1);
         t.feed(new byte[] {(byte) 0x9c, 'C'}, 0, 2);
-        assertEquals("ABC", t.text(10));
+        feed(t, "\u001b]0;x\u001b\u009cD");             // ST right after an ESC in the string
+        assertEquals("ABCD", t.text(10));
     }
 
     @Test
