@@ -109,7 +109,15 @@ public class VectisService extends Service {
     private boolean wanted;               // guarded by lock: keep vectis running
     private int generation;               // guarded by lock: which runLoop is the current one
     private volatile LocalServerSocket server;
-    private int bindTries;                // main thread: failed binds since the last good one
+    private int bindTries;                // main thread: failed binds of this Start
+    /** The one pending bind retry (main thread): a new Start or Stop replaces or cancels it. */
+    private final Runnable retryBind = () -> {
+        if (Settings.running(this) && !isWanted() && instance == this) {
+            bindVectis();
+            startTunnel();
+            updateNotification();
+        }
+    };
     private PowerManager.WakeLock wakeLock;
     private volatile String lastExit = "";
     private boolean askedAccess;          // guarded by this: the access dialog was shown in this run
@@ -406,8 +414,15 @@ public class VectisService extends Service {
 
     // ── vectis ────────────────────────────────────────────────────
 
-    @SuppressLint("WakelockTimeout")   // vectis serves until Stop: no natural timeout
+    /** A new Start: a fresh retry budget, no retry of an earlier Start left pending. */
     private void startVectis() {
+        main.removeCallbacks(retryBind);
+        bindTries = 0;
+        bindVectis();
+    }
+
+    @SuppressLint("WakelockTimeout")   // vectis serves until Stop: no natural timeout
+    private void bindVectis() {
         int gen;
         synchronized (lock) {
             if (wanted)
@@ -425,13 +440,8 @@ public class VectisService extends Service {
             // second, a few times, unless Stop came meanwhile
             if (++bindTries <= BIND_TRIES) {
                 line("app: the socket @" + SOCKET + " is still taken (" + e.getMessage() + "), again in 1 s");
-                main.postDelayed(() -> {
-                    if (Settings.running(this) && !isWanted() && instance == this) {
-                        startVectis();
-                        startTunnel();
-                        updateNotification();
-                    }
-                }, BIND_RETRY_MS);
+                main.removeCallbacks(retryBind);
+                main.postDelayed(retryBind, BIND_RETRY_MS);
             } else {
                 line("app: cannot open the socket @" + SOCKET + ": " + e.getMessage());
             }
@@ -582,6 +592,8 @@ public class VectisService extends Service {
     }
 
     private void stopVectis() {
+        main.removeCallbacks(retryBind);
+        bindTries = 0;
         Process p;
         LocalServerSocket s;
         synchronized (lock) {
