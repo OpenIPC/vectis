@@ -277,4 +277,14 @@ public class LogicTest {
         assertTrue(k.contains(org.openipc.camex.tunnel.CamexTunnel.TRANSPORT));
         assertTrue(!k.contains(org.openipc.camex.tunnel.CamexTunnel.WEB_PORT));
     }
+
+    @Test
+    public void camexLinkUsedOnlyWhenNotFromRecents() {
+        String l = "camex://connect?h=example.org";
+        String view = "android.intent.action.VIEW";
+        assertEquals(l, MainActivity.linkToOpen(view, l, 0));
+        assertEquals(null, MainActivity.linkToOpen(view, l, 0x00100000));   // FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY
+        assertEquals(null, MainActivity.linkToOpen("android.intent.action.MAIN", l, 0));
+        assertEquals(null, MainActivity.linkToOpen(view, null, 0));
+    }
 }

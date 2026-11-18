@@ -45,6 +45,7 @@ import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbManager;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -86,6 +87,8 @@ public class VectisService extends Service {
     private static final int STOP_TIMEOUT_MS = 3000;
     /** A tunnel without the consent (or refused) is started again this often. */
     private static final int TUNNEL_RETRY_MS = 60000;
+    /** A socket name still taken (the old one not released yet) is tried again this often, this many times. */
+    private static final int BIND_RETRY_MS = 1000, BIND_TRIES = 10;
     /** VID:PID pairs vectis drives (ch34x.c, res/xml/device_filter.xml). */
     private static final int[][] IDS = {
         {0x1a86, 0x5523}, {0x1a86, 0x7522}, {0x1a86, 0x7523}, {0x2184, 0x0057}, {0x4348, 0x5523}, {0x9986, 0x7523},
@@ -105,7 +108,16 @@ public class VectisService extends Service {
     private Process process;              // guarded by lock
     private boolean wanted;               // guarded by lock: keep vectis running
     private int generation;               // guarded by lock: which runLoop is the current one
-    private LocalServerSocket server;
+    private volatile LocalServerSocket server;
+    private int bindTries;                // main thread: failed binds of this Start
+    /** The one pending bind retry (main thread): a new Start or Stop replaces or cancels it. */
+    private final Runnable retryBind = () -> {
+        if (Settings.running(this) && !isWanted() && instance == this) {
+            bindVectis();
+            startTunnel();
+            updateNotification();
+        }
+    };
     private PowerManager.WakeLock wakeLock;
     private volatile String lastExit = "";
     private boolean askedAccess;          // guarded by this: the access dialog was shown in this run
@@ -351,6 +363,14 @@ public class VectisService extends Service {
             } catch (IOException e) {
                 return;                   // closed by stopVectis()
             }
+            if (server != s) {            // stopVectis() woke us: this socket is done
+                try {
+                    c.close();
+                } catch (IOException ignored) {
+                    // nothing to do
+                }
+                return;
+            }
             try {
                 if (c.getPeerCredentials().getUid() != me)
                     continue;             // not ours: no fd, closed below
@@ -394,8 +414,15 @@ public class VectisService extends Service {
 
     // ── vectis ────────────────────────────────────────────────────
 
-    @SuppressLint("WakelockTimeout")   // vectis serves until Stop: no natural timeout
+    /** A new Start: a fresh retry budget, no retry of an earlier Start left pending. */
     private void startVectis() {
+        main.removeCallbacks(retryBind);
+        bindTries = 0;
+        bindVectis();
+    }
+
+    @SuppressLint("WakelockTimeout")   // vectis serves until Stop: no natural timeout
+    private void bindVectis() {
         int gen;
         synchronized (lock) {
             if (wanted)
@@ -406,12 +433,21 @@ public class VectisService extends Service {
         try {
             server = new LocalServerSocket(SOCKET);
         } catch (IOException e) {
-            line("app: cannot open the socket @" + SOCKET + ": " + e.getMessage());
             synchronized (lock) {
                 wanted = false;
             }
+            // The previous socket may not have let go of the name yet (#101): again in a
+            // second, a few times, unless Stop came meanwhile
+            if (++bindTries <= BIND_TRIES) {
+                line("app: the socket @" + SOCKET + " is still taken (" + e.getMessage() + "), again in 1 s");
+                main.removeCallbacks(retryBind);
+                main.postDelayed(retryBind, BIND_RETRY_MS);
+            } else {
+                line("app: cannot open the socket @" + SOCKET + ": " + e.getMessage());
+            }
             return;
         }
+        bindTries = 0;
         LocalServerSocket s = server;
         new Thread(() -> serve(s), "vectis-fd").start();
         if (wakeLock != null)
@@ -556,6 +592,8 @@ public class VectisService extends Service {
     }
 
     private void stopVectis() {
+        main.removeCallbacks(retryBind);
+        bindTries = 0;
         Process p;
         LocalServerSocket s;
         synchronized (lock) {
@@ -575,6 +613,13 @@ public class VectisService extends Service {
             }
         }
         if (s != null) {
+            // close() alone may leave serve() blocked in accept() and the name taken until it
+            // returns (#101): a connection wakes it first, and it sees it is no longer the server
+            try (LocalSocket w = new LocalSocket()) {
+                w.connect(new LocalSocketAddress(SOCKET));
+            } catch (IOException ignored) {
+                // nothing listens: nothing to wake
+            }
             try {
                 s.close();
             } catch (IOException ignored) {
