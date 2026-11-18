@@ -10,7 +10,8 @@
 # the web terminal built into vectis, too), the Makefile, ci/, the build
 # workflow (.github/workflows/build.yml: it builds the release files), the
 # Android app (android/) and its camex submodule (bundles/, .gitmodules)
-# count as code or build, without the Markdown files in them; docs, tests,
+# count as code or build, without the Markdown files in them and the app's
+# tests (android/app/src/test, androidTest); docs, tests,
 # screenshots and the rest of .github/ need no new version.
 # NO_RELEASE=true (the pull request's `no-release` label) lets a change to
 # the code or the build through without a new version, for changes that
@@ -43,7 +44,8 @@ new=$(ver HEAD < "$source")
 old=$(git show "$base:$source" | ver "$base")
 
 # shellcheck disable=SC2086 # $code is a list of paths
-changed=$(git diff --name-only "$base"...HEAD -- $code ':(exclude,glob)**/*.md')
+changed=$(git diff --name-only "$base"...HEAD -- $code ':(exclude,glob)**/*.md' \
+	':(exclude)android/app/src/test' ':(exclude)android/app/src/androidTest')
 
 if [ "$new" = "$old" ]; then
 	if [ -n "$changed" ] && [ "${NO_RELEASE:-}" = true ]; then

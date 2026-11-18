@@ -186,8 +186,8 @@ public class VectisService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null && intent.getAction() != null ? intent.getAction() : ACTION_START;
         if (action.equals(ACTION_STOP)) {
+            stopVectis();                 // first: the tunnel's last state then posts no notification
             stopTunnel();
-            stopVectis();
             Compat.stopForeground(this);
             stopSelf();
             return START_NOT_STICKY;
@@ -214,8 +214,8 @@ public class VectisService extends Service {
     public void onDestroy() {
         unregisterReceiver(usbEvents);
         CamexTunnel.removeListener(tunnelState);
-        stopTunnel();
         stopVectis();
+        stopTunnel();
         instance = null;
         super.onDestroy();
     }
@@ -591,7 +591,9 @@ public class VectisService extends Service {
     /** The tunnel of the settings, when it is on; a start refused now is tried again later. */
     private void startTunnel() {
         main.removeCallbacks(retryTunnel);
-        if (!Settings.tunnelEnabled(this) || !isWanted()) {
+        // Settings.running too: a start that arrives after Stop (queued, or a sticky restart)
+        // must not bring the tunnel back
+        if (!Settings.tunnelEnabled(this) || !Settings.running(this) || !isWanted()) {
             stopTunnel();
             return;
         }
@@ -620,7 +622,7 @@ public class VectisService extends Service {
     private final CamexTunnel.Listener tunnelState = (st, addr, err) -> {
         showTunnel(st, addr, err);
         if ((st == CamexTunnel.State.NEEDS_CONSENT || st == CamexTunnel.State.FAILED)
-                && Settings.tunnelEnabled(this) && isWanted()) {
+                && Settings.tunnelEnabled(this) && Settings.running(this) && isWanted()) {
             main.removeCallbacks(retryTunnel);   // consent revoked while it ran, or refused
             main.postDelayed(retryTunnel, TUNNEL_RETRY_MS);
         }
@@ -645,8 +647,8 @@ public class VectisService extends Service {
             if (!t.isEmpty())
                 line("app: camex tunnel: " + t);
         }
-        if (instance != null)
-            goForeground(notifyText);
+        if (instance != null && isWanted())
+            goForeground(notifyText);     // not while stopping: that would post it again
     }
 
     /** The one notification of vectis and its tunnel. */
