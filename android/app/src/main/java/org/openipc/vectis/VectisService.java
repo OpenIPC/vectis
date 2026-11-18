@@ -188,6 +188,7 @@ public class VectisService extends Service {
         if (action.equals(ACTION_STOP)) {
             stopVectis();                 // first: the tunnel's last state then posts no notification
             stopTunnel();
+            dropNotificationLater(getApplicationContext());
             Compat.stopForeground(this);
             stopSelf();
             return START_NOT_STICKY;
@@ -216,6 +217,7 @@ public class VectisService extends Service {
         CamexTunnel.removeListener(tunnelState);
         stopVectis();
         stopTunnel();
+        dropNotificationLater(getApplicationContext());
         instance = null;
         super.onDestroy();
     }
@@ -649,6 +651,21 @@ public class VectisService extends Service {
         }
         if (instance != null && isWanted())
             goForeground(notifyText);     // not while stopping: that would post it again
+    }
+
+    /**
+     * The tunnel's service leaves the shared notification behind when it stops (it is the
+     * app's, so it detaches it): once it has, and unless vectis runs again, remove it.
+     */
+    private static void dropNotificationLater(Context app) {
+        Handler h = new Handler(Looper.getMainLooper());
+        Runnable drop = () -> {
+            VectisService s = instance;
+            if (s == null || !s.isWanted())
+                ((android.app.NotificationManager) app.getSystemService(NOTIFICATION_SERVICE)).cancel(NOTIFY_ID);
+        };
+        h.postDelayed(drop, 1000);
+        h.postDelayed(drop, 3000);
     }
 
     /** The one notification of vectis and its tunnel. */
