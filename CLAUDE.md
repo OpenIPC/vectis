@@ -50,7 +50,9 @@ change that can be exercised without hardware.
 - `android/` → the Android app (`org.openipc.vectis`): a foreground service owns the
   USB adapter (UsbManager) and runs vectis, built by `android/build-native.sh` as
   `libvectis.so`, with `-U fd:@org.openipc.vectis.usb`; a fresh `openDevice()` per
-  connection. Version from `PROGRAM_VERSION`. Build: `cd android && gradle assembleDebug`;
+  connection; web port 8085 by default, the web page password from the settings in
+  `VECTIS_WEB_PASSWORD`; `TerminalActivity` is a native screen on `/ws/terminal`
+  (`WsCodec`, `TermBuffer`). Version from `PROGRAM_VERSION`. Build: `cd android && gradle assembleDebug`;
   tests of the device-free logic: `gradle testDebugUnitTest` (`android/app/src/test`).
 - `tests/test_vectis.py`, `ci/`, `.github/workflows/{build,version}.yml`,
   `.github/check-version.sh`.

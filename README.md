@@ -970,9 +970,17 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 `android/` holds an app that does the above on an Android TV box or a
 phone with a USB host, without root (Android 5.0 and later, 32- and
 64-bit ARM). A foreground service owns the adapter and runs vectis as
-`vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 2081`: the
-console and the web power console are on those TCP ports of the box,
-as on Linux.
+`vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 8085`: the
+console and the web page (power and the UART terminal) are on those TCP
+ports of the box, as on Linux. The web port is 8085 by default, as in
+Decoder and Microsnander; a port saved in the settings before is kept.
+
+<p align="center">
+  <img src="screenshots/android-main.jpg" alt="Vectis app on a TV box: adapter, power, console and web addresses, page password state, buttons Start, Stop, Terminal, Open web console, Settings" width="49%">
+  <img src="screenshots/android-terminal.jpg" alt="Vectis app terminal screen: UART output as plain text, input line with Enter, keys Ctrl+C, y, n, Reset, Power on, Power off" width="49%">
+</p>
+
+<p align="center"><sub>vectis 1.15.0 on an Android 10 TV box (adb screenshots). The UART of this bench loops back, so the text in the terminal was sent from a browser's terminal on the same page and came back.</sub></p>
 
 - **Install** [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   from the `latest` release (allow installing from this source when
@@ -982,9 +990,21 @@ as on Linux.
   connected" and press OK. Or open the app and press **Allow USB
   access**.
 - **The screen** shows the adapter, power (RTS+DTR) with a lamp, the
-  box's addresses with the console and web ports, and the buttons
-  Start, Stop, Open web console (in the box's browser) and Settings
-  (baud rate and the two ports, 1024 and up: lower ones need root).
+  box's addresses with the console and web ports, whether the web page
+  has a password, and the buttons Start, Stop, Terminal, Open web
+  console (in the box's browser) and Settings (baud rate, the two ports,
+  1024 and up: lower ones need root, and the web page password).
+- **Terminal** shows the UART on the box's own screen: the output as
+  plain text (colours dropped), an input line with **Enter**, and keys
+  for **Ctrl+C**, **y**, **n** (each followed by Enter), **Reset**,
+  **Power on** and **Power off**, all usable with a TV remote. It is one
+  more client of the page's terminal: the last 64 KB of output come
+  first, and what is typed here or in a browser goes to the same UART.
+- **Web page password** (Settings, the last field; empty by default:
+  the page is open). When set, the page, `/status`, `/power/*` and the
+  terminal ask for it (HTTP Basic, any user name, `curl -u :PASSWORD`).
+  The app passes it to vectis in `VECTIS_WEB_PASSWORD` and uses it for
+  its own requests; it is kept in the app's private storage.
 - **Unplugging** leaves vectis and its ports running. When the adapter
   is back, the service opens it again and vectis picks it up on its
   next retry. Stopping the app or vectis leaves RTS/DTR as they are, as
@@ -996,15 +1016,16 @@ as on Linux.
   the adapter and plug it back in.
 - **Stop** keeps vectis stopped until Start: boot and plug-in events
   leave it alone.
-- Both ports listen on every interface of the box with no
-  authentication, as `-l PORT` and `-w PORT` do on Linux: anyone on that
-  network can use the console and switch the power. Keep the box on a
-  trusted network.
+- Both ports listen on every interface of the box, as `-l PORT` and
+  `-w PORT` do on Linux. Without a password anyone on that network can
+  use the console and switch the power; the console port (`-l`) has no
+  password at all. Keep the box on a trusted network.
 
 Build on Linux or macOS with the Android SDK, NDK r27 (`ANDROID_NDK_HOME`)
 and Gradle 8: `cd android && gradle assembleDebug`; the APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
 `gradle testDebugUnitTest` runs the tests of the app's logic (settings,
-command line, log) without a device.
+command line and password, log, the terminal's text and WebSocket
+frames) without a device.
 `android/build-native.sh` builds vectis for the app with the NDK, as an
 executable named `libvectis.so`. Checked on an Android 10 TV box (32-bit
 ARM, no root) with a CH340.
