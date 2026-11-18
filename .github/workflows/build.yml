@@ -78,15 +78,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # A stalled mirror fails the job instead of holding it (#71); the
-      # install normally takes about 20 s, but a slow mirror has gone past
-      # 5 min often enough to fail runs that would have finished.
+      # A stalled mirror fails the job quickly instead of holding it (#71);
+      # the install normally takes about 20 s. A connection that stops
+      # sending is dropped after 30 s and retried, so one dead mirror
+      # connection does not use up the whole limit.
       - name: Install cross-compiler
         if: matrix.platform.pkgs != ''
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ${{ matrix.platform.pkgs }}
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 install -y -qq ${{ matrix.platform.pkgs }}
 
       - name: Build
         shell: bash
@@ -193,10 +194,10 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install qemu-user
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 install -y -qq qemu-user
 
       - name: Cache toolchain
         uses: actions/cache@v6
