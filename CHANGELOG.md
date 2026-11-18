@@ -28,9 +28,11 @@ network to reach vectis.
 - Android, settings: one brass SETTINGS window with the sections VECTIS (**Allow remote
   access**, baud, ports, the page password last) and CAMEX (no link field: a camex link
   opened on the box still fills it). Remote access off: vectis opens no network port, the
-  CONSOLE and WEB rows read OFF (#110).
+  CONSOLE and WEB rows read OFF, and the camex tunnel stays down: there is no page to
+  offer the server (#110).
 - Android: the screen, the power buttons and the terminal talk to vectis on
-  `--web-local @org.openipc.vectis.web` instead of TCP on 127.0.0.1 (#111).
+  `--web-local @org.openipc.vectis.web` instead of TCP on 127.0.0.1, and check that the
+  socket's owner is the app's own uid (#111).
 - Android: when another app holds the web port, vectis takes the next free one; the WEB
   row, the log and the camex tunnel use the port in use (#112).
 

@@ -702,7 +702,8 @@ public class VectisService extends Service {
         main.removeCallbacks(retryTunnel);
         // Settings.running too: a start that arrives after Stop (queued, or a sticky restart)
         // must not bring the tunnel back
-        if (!Settings.tunnelEnabled(this) || !Settings.running(this) || !isWanted()) {
+        // Remote access off: no web port to offer the server, so no tunnel either
+        if (!Settings.tunnelEnabled(this) || !Settings.remoteAccess(this) || !Settings.running(this) || !isWanted()) {
             stopTunnel();
             return;
         }
@@ -731,7 +732,7 @@ public class VectisService extends Service {
     private final CamexTunnel.Listener tunnelState = (st, addr, err) -> {
         showTunnel(st, addr, err);
         if ((st == CamexTunnel.State.NEEDS_CONSENT || st == CamexTunnel.State.FAILED)
-                && Settings.tunnelEnabled(this) && Settings.running(this) && isWanted()) {
+                && Settings.tunnelEnabled(this) && Settings.remoteAccess(this) && Settings.running(this) && isWanted()) {
             main.removeCallbacks(retryTunnel);   // consent revoked while it ran, or refused
             main.postDelayed(retryTunnel, TUNNEL_RETRY_MS);
         }

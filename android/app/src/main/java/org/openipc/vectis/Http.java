@@ -49,16 +49,15 @@ final class Http {
         return o.toString();
     }
 
-    /** A connected socket to vectis' --web-local; the caller closes it. */
-    static LocalSocket connect() throws IOException {
-        LocalSocket s = new LocalSocket();
-        try {
-            s.connect(new LocalSocketAddress(VectisService.WEB_SOCKET, LocalSocketAddress.Namespace.ABSTRACT));
-        } catch (IOException e) {
-            s.close();
-            throw e;
-        }
-        return s;
+    /**
+     * Connects s (made and published by the caller, so a pause can close it meanwhile) to
+     * vectis' --web-local, and checks that the peer is our own uid: an abstract name belongs to
+     * whoever binds it first, and another app holding it must not get the terminal's input.
+     */
+    static void connect(LocalSocket s) throws IOException {
+        s.connect(new LocalSocketAddress(VectisService.WEB_SOCKET, LocalSocketAddress.Namespace.ABSTRACT));
+        if (s.getPeerCredentials().getUid() != android.os.Process.myUid())
+            throw new IOException("@" + VectisService.WEB_SOCKET + " is not vectis");
     }
 
     /** A reply: the status code and the body. */
@@ -90,7 +89,8 @@ final class Http {
 
     /** One request on the local socket; the reply read until vectis closes the connection. */
     static Reply request(String method, String path, int timeoutMs) throws IOException {
-        try (LocalSocket s = connect()) {
+        try (LocalSocket s = new LocalSocket()) {
+            connect(s);
             s.setSoTimeout(timeoutMs);
             OutputStream o = s.getOutputStream();
             o.write((method + " " + path + " HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n"

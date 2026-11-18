@@ -1078,7 +1078,8 @@ The box needs no open port and no public address.
   write-settings`. Only the tunnel network and the server's routes go
   through the VPN, never the box's other traffic.
 - The screen shows the tunnel's state and the box's address in it
-  (**CAMEX**), the notification too. The tunnel runs while vectis does,
+  (**CAMEX**), the notification too. The tunnel runs while vectis does
+  with remote access on (off, there is no page to offer the server),
   reconnects by itself, and comes back after a reboot with the service.
 - The tunnel puts the box on the server's network: whoever reaches the
   page through nginx, and every client of that network, can use the

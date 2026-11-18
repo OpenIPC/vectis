@@ -356,10 +356,11 @@ public class TerminalActivity extends Activity {
             try {
                 if (generation != gen)
                     break;
-                s = Http.connect();
-                connecting = s;
+                s = new LocalSocket();
+                connecting = s;             // published first: a pause closes it even mid-connect
                 if (generation != gen)
                     break;
+                Http.connect(s);
                 byte[] k = new byte[16];
                 random.nextBytes(k);
                 OutputStream o = s.getOutputStream();

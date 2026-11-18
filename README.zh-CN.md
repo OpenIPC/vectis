@@ -993,7 +993,7 @@ Microsnander 相同：盒子连接到 camex 服务器，操作员可以在任何
   `adb shell appops set org.openipc.vectis ACTIVATE_VPN allow` 和
   `adb shell appops write-settings`。只有隧道网络和服务器的路由走 VPN，
   盒子的其他流量不走。
-- 屏幕和通知显示隧道的状态和盒子在隧道中的地址（**CAMEX**）。隧道随 vectis
+- 屏幕和通知显示隧道的状态和盒子在隧道中的地址（**CAMEX**）。隧道在远程访问开启时随 vectis
   一起运行，会自动重连，并在重启后随服务一起恢复。
 - 隧道把盒子加入服务器的网络：如果页面没有密码，任何通过 nginx 打开页面的人
   以及该网络的任何客户端都可以使用电源和终端；控制台端口（`-l`，始终没有密码）
