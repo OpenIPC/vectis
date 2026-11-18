@@ -172,10 +172,17 @@ public class MainActivity extends Activity {
         openLink(i);
     }
 
-    /** A camex link the app was opened with: the settings, the tunnel filled from it. */
+    /**
+     * A camex link the app was opened with: the settings, the tunnel filled from it. Used once:
+     * not when the app is reopened from recents with the intent that started it, and cleared.
+     */
     private void openLink(Intent i) {
-        if (i != null && Intent.ACTION_VIEW.equals(i.getAction()) && i.getData() != null)
-            showSettings(i.getData().toString());
+        if (i == null || !Intent.ACTION_VIEW.equals(i.getAction()) || i.getData() == null)
+            return;
+        String link = i.getData().toString();
+        setIntent(new Intent(this, MainActivity.class));
+        if ((i.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0)
+            showSettings(link);
     }
 
     /** The system's VPN dialog, once; the service starts the tunnel after OK. */

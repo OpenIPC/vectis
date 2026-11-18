@@ -6,6 +6,17 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.16.1 — 2026-11-18
+
+Android fixes:
+
+- Stop, then Start a few seconds later could leave vectis not running ("cannot open the
+  socket @org.openipc.vectis.usb: Address already in use"): the old socket's thread is
+  woken before it is closed, so it lets go of the name, and a name still taken is tried
+  again every second, up to 10 times (#101).
+- A camex link is used once: reopening the app from recents no longer opens the settings
+  filled from the link that started it (review of #102).
+
 ## 1.16.0 — 2026-11-18
 
 The Android app gets remote access through a camex server, built in as in Decoder and
