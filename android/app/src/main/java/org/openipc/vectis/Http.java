@@ -1,17 +1,20 @@
 /*
  * Copyright (c) OpenIPC  https://openipc.org  MIT License
  *
- * Http.java — the app's own requests to vectis on 127.0.0.1: /status for
- * the screen and /power/* for the terminal's buttons, with the web page
- * password (HTTP Basic, empty user name) when one is set.
+ * Http.java — the app's own requests to vectis on its local socket
+ * (--web-local @org.openipc.vectis.web): /status for the screen and
+ * /power/* for the terminal's buttons.  The socket takes only our own UID
+ * and no password, and it is there with remote access off too.  HTTP/1.1,
+ * one request per connection: vectis closes it after the reply.
  */
 package org.openipc.vectis;
 
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -46,64 +49,86 @@ final class Http {
         return o.toString();
     }
 
-    /**
-     * POST http://127.0.0.1:PORT/PATH: null when vectis did it, else what went
-     * wrong (its "error", or the HTTP status).
-     */
-    static String post(int port, String path, String password) {
+    /** A connected socket to vectis' --web-local; the caller closes it. */
+    static LocalSocket connect() throws IOException {
+        LocalSocket s = new LocalSocket();
         try {
-            HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + port + path)
-                    .openConnection();
-            c.setConnectTimeout(800);
-            c.setReadTimeout(65000);   // /power/reset answers after the pulse (-t)
-            String auth = basic(password);
-            if (auth != null)
-                c.setRequestProperty("Authorization", auth);
-            c.setRequestMethod("POST");
-            c.setFixedLengthStreamingMode(0);
-            c.setDoOutput(true);
+            s.connect(new LocalSocketAddress(VectisService.WEB_SOCKET, LocalSocketAddress.Namespace.ABSTRACT));
+        } catch (IOException e) {
+            s.close();
+            throw e;
+        }
+        return s;
+    }
+
+    /** A reply: the status code and the body. */
+    static final class Reply {
+        final int code;
+        final String body;
+
+        Reply(int code, String body) {
+            this.code = code;
+            this.body = body;
+        }
+    }
+
+    /** The status code and body of a raw HTTP/1.x reply; code 0 if it is not one. */
+    static Reply parse(byte[] raw, int len) {
+        String r = new String(raw, 0, len, StandardCharsets.UTF_8);
+        int sp = r.indexOf(' ');
+        int code = 0;
+        if (r.startsWith("HTTP/1.") && sp > 0 && r.length() >= sp + 4) {
             try {
-                int code = c.getResponseCode();
-                if (code < 400)
-                    return null;
-                try (InputStream in = c.getErrorStream()) {
-                    ByteArrayOutputStream b = new ByteArrayOutputStream();
-                    byte[] buf = new byte[1024];
-                    int n;
-                    while (in != null && (n = in.read(buf)) > 0 && b.size() < 4096)
-                        b.write(buf, 0, n);
-                    String e = new JSONObject(new String(b.toByteArray(), StandardCharsets.UTF_8))
-                            .optString("error", "");
-                    return e.isEmpty() ? "HTTP " + code : e;
-                } catch (JSONException e) {
-                    return "HTTP " + code;
-                }
-            } finally {
-                c.disconnect();
+                code = Integer.parseInt(r.substring(sp + 1, sp + 4));
+            } catch (NumberFormatException e) {
+                code = 0;
+            }
+        }
+        int b = r.indexOf("\r\n\r\n");
+        return new Reply(code, b < 0 ? "" : r.substring(b + 4));
+    }
+
+    /** One request on the local socket; the reply read until vectis closes the connection. */
+    static Reply request(String method, String path, int timeoutMs) throws IOException {
+        try (LocalSocket s = connect()) {
+            s.setSoTimeout(timeoutMs);
+            OutputStream o = s.getOutputStream();
+            o.write((method + " " + path + " HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n"
+                    + "Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            o.flush();
+            InputStream in = s.getInputStream();
+            ByteArrayOutputStream b = new ByteArrayOutputStream();
+            byte[] buf = new byte[2048];
+            int n;
+            while ((n = in.read(buf)) > 0 && b.size() < 65536)
+                b.write(buf, 0, n);
+            byte[] all = b.toByteArray();
+            return parse(all, all.length);
+        }
+    }
+
+    /** POST PATH: null when vectis did it, else what went wrong (its "error", or the HTTP status). */
+    static String post(String path) {
+        try {
+            Reply r = request("POST", path, 65000);   // /power/reset answers after the pulse (-t)
+            if (r.code > 0 && r.code < 400)
+                return null;
+            try {
+                String e = new JSONObject(r.body).optString("error", "");
+                return e.isEmpty() ? "HTTP " + r.code : e;
+            } catch (JSONException e) {
+                return "HTTP " + r.code;
             }
         } catch (IOException e) {
             return e.getMessage() != null ? e.getMessage() : "no answer";
         }
     }
 
-    /** GET http://127.0.0.1:PORT/PATH and parse the JSON reply (the screen's /status). */
-    static JSONObject json(int port, String path, String password) throws IOException, JSONException {
-        HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:" + port + path)
-                .openConnection();
-        c.setConnectTimeout(800);
-        c.setReadTimeout(800);
-        String auth = basic(password);
-        if (auth != null)
-            c.setRequestProperty("Authorization", auth);
-        try (InputStream in = c.getResponseCode() < 400 ? c.getInputStream() : c.getErrorStream()) {
-            ByteArrayOutputStream b = new ByteArrayOutputStream();
-            byte[] buf = new byte[2048];
-            int n;
-            while (in != null && (n = in.read(buf)) > 0 && b.size() < 65536)
-                b.write(buf, 0, n);
-            return new JSONObject(new String(b.toByteArray(), StandardCharsets.UTF_8));
-        } finally {
-            c.disconnect();
-        }
+    /** GET PATH and parse the JSON reply (the screen's /status). */
+    static JSONObject json(String path) throws IOException, JSONException {
+        Reply r = request("GET", path, 800);
+        if (r.code != 200)
+            throw new IOException("HTTP " + r.code);
+        return new JSONObject(r.body);
     }
 }

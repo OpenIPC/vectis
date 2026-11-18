@@ -5,18 +5,21 @@
  * TV box the console is mostly read and only short confirmations are typed,
  * and the system WebView of Android 5-7 may be too old for xterm.js, so this
  * is a native screen: the output as plain text (TermBuffer), an input line
- * with Enter, keys for Ctrl+C, y and n, and the power buttons.  Works with a
- * TV remote (D-pad).
+ * with Enter, and CTRL+C, RESET, PWR ON, PWR OFF.  Works with a TV remote
+ * (D-pad).  The plate top right is the UART line (the adapter and its
+ * speed), not this screen's connection.
  *
- * It is one more client of vectis' /ws/terminal on 127.0.0.1 (WsCodec), with
- * the web page password when one is set: the history (64 KB) and the input
- * are shared with the browsers.  The connection is reopened every 2 s while
- * the screen is shown.
+ * It is one more client of vectis' /ws/terminal (WsCodec), on the app's local
+ * socket (--web-local): no password, and it works with remote access off.
+ * The history (64 KB) and the input are shared with the browsers.  The
+ * connection is reopened every 2 s while the screen is shown.
  */
 package org.openipc.vectis;
 
 import android.app.Activity;
 import android.graphics.Typeface;
+import android.hardware.usb.UsbDevice;
+import android.net.LocalSocket;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -34,8 +37,6 @@ import android.widget.Toast;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.concurrent.ExecutorService;
@@ -56,6 +57,7 @@ public class TerminalActivity extends Activity {
     /** Frames for vectis, in order; the power buttons have their own thread. */
     private ExecutorService writer, powerer;
     private TextView out, state;
+    private View stateLamp;
     private ScrollView scroll;
     private EditText input;
     /** The current reader; an older one (before a pause) sees it changed and ends. */
@@ -66,12 +68,12 @@ public class TerminalActivity extends Activity {
 
     /** One WebSocket connection: its socket, the stream to write to it and its writer. */
     private static final class Conn {
-        final Socket socket;
+        final LocalSocket socket;
         final OutputStream out;
         final ExecutorService writer;
         private final AtomicBoolean closing = new AtomicBoolean();
 
-        Conn(Socket socket, OutputStream out, ExecutorService writer) {
+        Conn(LocalSocket socket, OutputStream out, ExecutorService writer) {
             this.socket = socket;
             this.out = out;
             this.writer = writer;
@@ -140,7 +142,12 @@ public class TerminalActivity extends Activity {
         top.addView(Brass.plate(this, getString(R.string.term_title)));
         View gap = new View(this);
         top.addView(gap, new LinearLayout.LayoutParams(0, 1, 1));
-        state = Brass.plate(this, getString(R.string.term_connecting));
+        stateLamp = new View(this);
+        int ls = Brass.dp(this, 14);
+        LinearLayout.LayoutParams slp0 = new LinearLayout.LayoutParams(ls, ls);
+        slp0.setMargins(0, 0, Brass.dp(this, 8), 0);
+        top.addView(stateLamp, slp0);
+        state = Brass.plate(this, "");
         top.addView(state);
         page.addView(top);
 
@@ -182,8 +189,6 @@ public class TerminalActivity extends Activity {
         LinearLayout keys = new LinearLayout(this);
         keys.setOrientation(LinearLayout.HORIZONTAL);
         key(keys, R.string.term_ctrl_c, v -> send(new byte[] {3}));
-        key(keys, R.string.term_yes, v -> send("y\r"));
-        key(keys, R.string.term_no, v -> send("n\r"));
         key(keys, R.string.term_reset, v -> power("reset", R.string.term_reset));
         key(keys, R.string.term_on, v -> power("enable", R.string.term_on));
         key(keys, R.string.term_off, v -> power("disable", R.string.term_off));
@@ -197,12 +202,46 @@ public class TerminalActivity extends Activity {
 
     private void key(LinearLayout row, int text, View.OnClickListener l) {
         Button b = Brass.button(this, text);
+        b.setLetterSpacing(0.08f);         // four in a row: PWR OFF fits on a phone
+        b.setPadding(0, b.getPaddingTop(), 0, b.getPaddingBottom());
         b.setOnClickListener(l);
         row.addView(b, Brass.margins(this, 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
     }
 
     private Thread reader;
-    private volatile Socket connecting;   // the reader's socket before the handshake ends
+    private volatile LocalSocket connecting;   // the reader's socket before the handshake ends
+
+    /** The plate: the UART line, refreshed while the screen is shown. */
+    private final Runnable lineState = new Runnable() {
+        @Override
+        public void run() {
+            showLine();
+            handler.postDelayed(this, 1000);
+        }
+    };
+
+    /**
+     * The UART line: the adapter's chip and speed (green), no adapter or no access (red), or
+     * NO SERVICE (red) when vectis does not answer here.
+     */
+    private void showLine() {
+        VectisService s = VectisService.instance;
+        UsbDevice d = s != null ? s.adapter() : null;
+        String t;
+        boolean ok = false;
+        if (s == null || !s.isRunning() || conn == null)
+            t = getString(R.string.term_no_service);
+        else if (d == null)
+            t = getString(R.string.term_no_adapter);
+        else if (!s.hasAccess())
+            t = getString(R.string.term_no_access, VectisService.chip(d));
+        else {
+            t = VectisService.chip(d) + " · " + Settings.baud(this);
+            ok = true;
+        }
+        state.setText(t);
+        stateLamp.setBackground(Brass.lamp(this, ok ? R.color.green : R.color.red));
+    }
 
     @Override
     protected void onResume() {
@@ -213,10 +252,12 @@ public class TerminalActivity extends Activity {
         powerer = Executors.newSingleThreadExecutor();
         reader = new Thread(() -> run(gen), "vectis-terminal");
         reader.start();
+        handler.post(lineState);
     }
 
     @Override
     protected void onPause() {
+        handler.removeCallbacks(lineState);
         generation = null;
         reader.interrupt();
         Conn c = conn;
@@ -230,7 +271,7 @@ public class TerminalActivity extends Activity {
             }
             c.closeAfterWrites();
         } else {
-            Socket s = connecting;      // still connecting: nothing was sent to it
+            LocalSocket s = connecting;   // still connecting: nothing was sent to it
             if (s != null) {
                 try {
                     s.close();
@@ -282,21 +323,19 @@ public class TerminalActivity extends Activity {
     }
 
     private void power(String what, int label) {
-        int port = Settings.webPort(this);
-        String pw = Settings.password(this);
         powerer.execute(() -> {
-            String err = Http.post(port, "/power/" + what, pw);
+            String err = Http.post("/power/" + what);
             if (err != null)
                 handler.post(() -> Toast.makeText(this, getString(R.string.term_failed,
                         getString(label), err), Toast.LENGTH_LONG).show());
         });
     }
 
-    /** The label, unless a newer reader (after a pause) has taken over meanwhile. */
-    private void setState(Object gen, int text) {
+    /** The plate at once, unless a newer reader (after a pause) has taken over meanwhile. */
+    private void lineChanged(Object gen) {
         handler.post(() -> {
             if (generation == gen)
-                state.setText(text);
+                showLine();
         });
     }
 
@@ -312,30 +351,25 @@ public class TerminalActivity extends Activity {
     /** Connect, read until the connection ends, retry while this generation is current. */
     private void run(Object gen) {
         while (generation == gen) {
-            int port = Settings.webPort(this);
-            String pw = Settings.password(this);
-            boolean refused = false;
             Conn mine = null;
-            Socket s = new Socket();
+            LocalSocket s = null;
             try {
+                if (generation != gen)
+                    break;
+                s = Http.connect();
                 connecting = s;
                 if (generation != gen)
                     break;
-                s.connect(new InetSocketAddress("127.0.0.1", port), RETRY_MS);
-                s.setTcpNoDelay(true);
                 byte[] k = new byte[16];
                 random.nextBytes(k);
                 OutputStream o = s.getOutputStream();
-                o.write(WsCodec.request(port, Http.base64(k), pw));
+                o.write(WsCodec.request("localhost", Http.base64(k), null));
                 o.flush();
                 InputStream in = s.getInputStream();
                 s.setSoTimeout(2 * RETRY_MS);           // a listener that never answers: retry
                 String head = readHead(in);
                 s.setSoTimeout(0);                      // a quiet UART is not a dead connection
-                if (head.startsWith("HTTP/1.1 401")) {
-                    refused = true;
-                    setState(gen, R.string.term_password);   // kept until the next attempt succeeds
-                } else if (head.startsWith("HTTP/1.1 101") && generation == gen) {
+                if (head.startsWith("HTTP/1.1 101") && generation == gen) {
                     term.clear();                       // the history follows, if there is one
                     dirty();
                     mine = new Conn(s, o, writer);
@@ -344,7 +378,7 @@ public class TerminalActivity extends Activity {
                         conn = null;
                         break;
                     }
-                    setState(gen, R.string.term_connected);
+                    lineChanged(gen);
                     pump(in, mine, gen);
                 }
             } catch (IOException | RuntimeException e) {
@@ -352,19 +386,18 @@ public class TerminalActivity extends Activity {
             }
             if (mine != null && conn == mine)
                 conn = null;
-            if (mine == null || generation == gen) {
+            if (s != null && (mine == null || generation == gen)) {
                 try {
                     s.close();
                 } catch (IOException ignored) {
                     // closed
                 }
-            } else {
+            } else if (mine != null) {
                 mine.closeAfterWrites();        // paused: the accepted frames go out first
             }
             if (generation != gen)
                 break;
-            if (!refused)
-                setState(gen, R.string.term_reconnecting);
+            lineChanged(gen);
             try {
                 Thread.sleep(RETRY_MS);
             } catch (InterruptedException e) {

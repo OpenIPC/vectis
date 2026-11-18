@@ -8,9 +8,14 @@
  *   - vectis is the C program of the repository root, built as an
  *     executable named libvectis.so (build-native.sh) and installed in
  *     nativeLibraryDir; it runs here as a child process:
- *     vectis -U fd:@org.openipc.vectis.usb -b BAUD -l PORT -w PORT, with
- *     the web page password, if one is set, in VECTIS_WEB_PASSWORD (not on
- *     the command line, where ps would show it).
+ *     vectis -U fd:@org.openipc.vectis.usb -b BAUD
+ *     --web-local @org.openipc.vectis.web, and with remote access on also
+ *     -l PORT -w PORT and the web page password, if one is set, in
+ *     VECTIS_WEB_PASSWORD (not on the command line, where ps would show it).
+ *   - The app's own screen and terminal talk to vectis on the local socket
+ *     (Http, TerminalActivity): our own UID only, no password, and it works
+ *     with remote access off.  The web port is the setting or, when another
+ *     app holds it, the next free one (webPortInUse; ANDROID.md section 12).
  *   - Only root can open /dev/bus/usb, so the service opens the adapter with
  *     UsbManager and serves a usbfs fd on the abstract socket of -U: every
  *     connection from our own uid gets the adapter opened anew (vectis
@@ -79,6 +84,10 @@ public class VectisService extends Service {
     public static final String ACTION_USB = "org.openipc.vectis.USB";
     /** The abstract socket of -U fd:@NAME (at most 27 characters). */
     static final String SOCKET = "org.openipc.vectis.usb";
+    /** The abstract socket of --web-local: the web API and terminal for this app. */
+    static final String WEB_SOCKET = "org.openipc.vectis.web";
+    /** How many ports after the web port setting are tried when it is taken. */
+    static final int PORT_TRIES = 20;
     static final String TAG = "vectis";
     private static final String CHANNEL_ID = "vectis";
     private static final int NOTIFY_ID = 1;
@@ -98,6 +107,12 @@ public class VectisService extends Service {
     static volatile VectisService instance;
     /** What the screen and the notification say about the tunnel; "" when it is off. */
     static volatile String tunnelStatus = "";
+    /** The web port vectis was started with; 0 when it has none (stopped, remote access off). */
+    static volatile int webPortInUse;
+    /** The CamexTunnel state behind tunnelStatus, for the screen's CAMEX row. */
+    static volatile CamexTunnel.State tunnelNow = CamexTunnel.State.STOPPED;
+    /** Its address when connected, else "". */
+    static volatile String tunnelAddress = "";
     /** The notification's text about vectis (the tunnel's line is added to it). */
     private static volatile String notifyText = "";
 
@@ -349,6 +364,11 @@ public class VectisService extends Service {
             c.close();
     }
 
+    /** The chip family for the screen, by its PID (ch34x.c): CH341 or CH340. */
+    static String chip(UsbDevice d) {
+        return d.getProductId() == 0x5523 ? "CH341" : "CH340";
+    }
+
     static String describe(UsbDevice d) {
         return String.format(Locale.US, "%04x:%04x %s", d.getVendorId(), d.getProductId(), d.getDeviceName());
     }
@@ -481,18 +501,50 @@ public class VectisService extends Service {
      * web terminal are meant to be reached from the lab network (README; the
      * web page takes an optional password, the console none).
      */
-    static List<String> command(String bin, int baud, int console, int web) {
+    static List<String> command(String bin, int baud, int console, int web, boolean remote) {
         List<String> cmd = new ArrayList<>();
         cmd.add(bin);
         cmd.add("-U");
         cmd.add("fd:@" + SOCKET);
         cmd.add("-b");
         cmd.add(Integer.toString(baud));
-        cmd.add("-l");
-        cmd.add(Integer.toString(console));
-        cmd.add("-w");
-        cmd.add(Integer.toString(web));
+        cmd.add("--web-local");
+        cmd.add("@" + WEB_SOCKET);
+        if (remote) {
+            cmd.add("-l");
+            cmd.add(Integer.toString(console));
+            cmd.add("-w");
+            cmd.add(Integer.toString(web));
+        }
         return cmd;
+    }
+
+    /**
+     * The web port to listen on: the setting, or when another app holds it the next free one
+     * (never the console port), up to PORT_TRIES further; the setting if none is free (vectis
+     * then says why it cannot bind).
+     */
+    static int freePort(int wanted, int avoid, PortCheck free) {
+        for (int p = wanted; p < wanted + PORT_TRIES && p <= 65535; p++)
+            if (p != avoid && free.free(p))
+                return p;
+        return wanted;
+    }
+
+    /** Whether a port is free (java.util.function only from Android 7.0). */
+    interface PortCheck {
+        boolean free(int port);
+    }
+
+    /** True if a TCP port can be listened on, on every interface (as vectis does). */
+    static boolean portFree(int port) {
+        try (java.net.ServerSocket s = new java.net.ServerSocket()) {
+            s.setReuseAddress(true);       // as vectis: a port left in TIME_WAIT is free
+            s.bind(new java.net.InetSocketAddress(port));
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     /**
@@ -512,12 +564,21 @@ public class VectisService extends Service {
         synchronized (lock) {
             seq = settingsSeq;
         }
-        List<String> cmd = command(binary(this).getPath(), Settings.baud(this),
-                Settings.consolePort(this), Settings.webPort(this));
+        boolean remote = Settings.remoteAccess(this);
+        int console = Settings.consolePort(this), setting = Settings.webPort(this);
+        // Chosen here, after the previous vectis is gone: it no longer holds the port
+        int web = remote ? freePort(setting, console, VectisService::portFree) : 0;
+        if (remote && web != setting)
+            line("app: web port " + setting + " is taken, using " + web);
+        if (web != webPortInUse) {
+            webPortInUse = web;
+            main.post(this::startTunnel);  // the tunnel tells the server the port in use
+        }
+        List<String> cmd = command(binary(this).getPath(), Settings.baud(this), console, web, remote);
         Process p;
         try {
             ProcessBuilder pb = new ProcessBuilder(cmd);
-            environment(pb.environment(), Settings.password(this));
+            environment(pb.environment(), remote ? Settings.password(this) : "");
             p = pb.start();
         } catch (IOException | RuntimeException e) {   // RuntimeException: a bad environment value
             line("app: cannot start vectis: " + e.getMessage());
@@ -627,6 +688,7 @@ public class VectisService extends Service {
             }
         }
         closeAdapter();
+        webPortInUse = 0;
         if (wakeLock != null && wakeLock.isHeld())
             wakeLock.release();
     }
@@ -676,11 +738,13 @@ public class VectisService extends Service {
     };
 
     private void showTunnel(CamexTunnel.State st, String addr, String err) {
+        tunnelNow = st;
+        tunnelAddress = st == CamexTunnel.State.CONNECTED && addr != null ? addr : "";
         String t;
         if (!Settings.tunnelEnabled(this))
             t = "";
         else if (st == CamexTunnel.State.CONNECTED)
-            t = getString(R.string.tunnel_connected, "http://" + addr + ":" + Settings.webPort(this) + "/");
+            t = getString(R.string.tunnel_connected, "http://" + addr + ":" + webPort(this) + "/");
         else if (st == CamexTunnel.State.CONNECTING)
             t = getString(R.string.tunnel_connecting) + (err.isEmpty() ? "" : " (" + err + ")");
         else if (st == CamexTunnel.State.NEEDS_CONSENT)
@@ -717,7 +781,7 @@ public class VectisService extends Service {
     static Notification notification(Context c) {
         String text = notifyText.isEmpty() ? c.getString(R.string.notify_starting) : notifyText;
         if (!tunnelStatus.isEmpty())
-            text += "\n" + c.getString(R.string.label_tunnel).trim() + " " + tunnelStatus;
+            text += "\n" + c.getString(R.string.label_camex) + " " + tunnelStatus;
         return Compat.ongoing(c, CHANNEL_ID, c.getString(R.string.app_name), text,
                 R.drawable.ic_notify, new Intent(c, MainActivity.class));
     }
@@ -737,12 +801,20 @@ public class VectisService extends Service {
         String text;
         if (!isRunning())
             text = getString(R.string.notify_starting);
+        else if (hasAccess() && !Settings.remoteAccess(this))
+            text = getString(R.string.notify_local);
         else if (hasAccess())
-            text = getString(R.string.notify_serving, Settings.consolePort(this), Settings.webPort(this),
+            text = getString(R.string.notify_serving, Settings.consolePort(this), webPort(this),
                     getString(Settings.password(this).isEmpty() ? R.string.web_open : R.string.web_protected));
         else
             text = getString(R.string.notify_no_adapter);
         goForeground(text);
+    }
+
+    /** The web port in use, or the setting while vectis has not chosen one. */
+    static int webPort(Context c) {
+        int p = webPortInUse;
+        return p > 0 ? p : Settings.webPort(c);
     }
 
     /** A line for the screen; the app's own also to logcat (vectis logs there itself). */

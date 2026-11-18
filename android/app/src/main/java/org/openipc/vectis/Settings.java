@@ -3,9 +3,10 @@
  *
  * Settings.java — the few settings of the app, in SharedPreferences: the
  * baud rate, the two TCP ports (web 8085 as Decoder and Microsnander, which
- * camex servers expect), the web page password (empty: none), start on boot,
- * and whether the user wants vectis running (Stop clears it).  A value saved
- * before keeps winning over a new default.  And the camex tunnel (#97): on or
+ * camex servers expect), the web page password (empty: none), whether those
+ * ports open at all (remote access), start on boot (off by default), the log
+ * shown on the screen, and whether the user wants vectis running (Stop clears
+ * it).  A value saved before keeps winning over a new default.  And the camex tunnel (#97): on or
  * off and the fields of the tunnel library, the same as in Microsnander.
  */
 package org.openipc.vectis;
@@ -27,7 +28,8 @@ final class Settings {
     static final int[] BAUDS = {300, 1200, 2400, 4800, 9600, 19200, 38400, 57600,
                                 115200, 230400, 460800, 921600};
     private static final String BAUD = "baud", CONSOLE = "console_port", WEB = "web_port",
-            BOOT = "start_on_boot", RUNNING = "running", PASSWORD = "web_password";
+            BOOT = "start_on_boot", RUNNING = "running", PASSWORD = "web_password",
+            REMOTE = "remote_access", SHOW_LOG = "show_log";
 
     private Settings() {}
 
@@ -85,7 +87,7 @@ final class Settings {
     }
 
     static boolean startOnBoot(Context c) {
-        return prefs(c).getBoolean(BOOT, true);
+        return prefs(c).getBoolean(BOOT, false);
     }
 
     /** True until the user presses Stop: then neither boot nor a plug-in starts vectis. */
@@ -95,6 +97,24 @@ final class Settings {
 
     static void setPorts(Context c, int baud, int console, int web) {
         prefs(c).edit().putInt(BAUD, baud).putInt(CONSOLE, console).putInt(WEB, web).apply();
+    }
+
+    /** The console and web ports open (on by default); off, vectis has no network port at all. */
+    static boolean remoteAccess(Context c) {
+        return prefs(c).getBoolean(REMOTE, true);
+    }
+
+    static void setRemoteAccess(Context c, boolean on) {
+        prefs(c).edit().putBoolean(REMOTE, on).apply();
+    }
+
+    /** The event log under the panel (off by default). */
+    static boolean showLog(Context c) {
+        return prefs(c).getBoolean(SHOW_LOG, false);
+    }
+
+    static void setShowLog(Context c, boolean on) {
+        prefs(c).edit().putBoolean(SHOW_LOG, on).apply();
     }
 
     static void setStartOnBoot(Context c, boolean on) {
@@ -125,12 +145,16 @@ final class Settings {
         return prefs(c).getBoolean(TUNNEL, false);
     }
 
-    /** The tunnel's values; the server's nginx opens the page by the client's name on the web port. */
+    /**
+     * The tunnel's values; the server's nginx opens the page by the client's name on the web
+     * port, the one vectis really listens on (the next free one when the setting is taken).
+     */
     static Map<String, String> tunnel(Context c) {
         Map<String, String> v = new HashMap<>();
         for (String k : tunnelKeys())
             v.put(k, prefs(c).getString(TUNNEL_PREFIX + k, CamexTunnel.TRANSPORT.equals(k) ? "UDP" : ""));
-        v.put(CamexTunnel.WEB_PORT, String.valueOf(webPort(c)));
+        int inUse = VectisService.webPortInUse;
+        v.put(CamexTunnel.WEB_PORT, String.valueOf(inUse > 0 ? inUse : webPort(c)));
         return v;
     }
 

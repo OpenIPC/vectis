@@ -1,24 +1,25 @@
 /*
  * Copyright (c) OpenIPC  https://openipc.org  MIT License
  *
- * MainActivity.java — the status screen: the adapter, power (RTS+DTR) from
- * vectis' /status, the addresses with the console and web ports and whether
- * the web page has a password, Start / Stop, USB access, the terminal
- * (TerminalActivity), the web console, the settings and Start on boot; the
- * camex tunnel (#97): its state, the VPN consent, and a camex link opened
+ * MainActivity.java — the status screen: a lamp board (ADAPTER, POWER from
+ * vectis' /status, VECTIS, the CONSOLE and WEB addresses with a lock for the
+ * page password, CAMEX when the tunnel is on), Start / Stop, Terminal
+ * (TerminalActivity), Settings, USB access and the VPN consent when needed,
+ * Start on boot and Show log; the settings window (VECTIS: remote access,
+ * ports, the page password; CAMEX: the tunnel, #97) and a camex link opened
  * with the app, which fills the tunnel settings.
  * Built from platform views in code: works with a TV remote (D-pad); the
- * brass look of brand (Brass.java, res/values).
+ * brass look of brand 1.3.0 (Brass.java, res/values).
  *
- * The lamp and the display follow the brass state rule: green = powered,
- * red = power off, amber = waiting for the adapter or for access, dim =
- * stopped.
+ * Each row has its own lamp, by the brass state rule: green = works, amber =
+ * waiting (starting, no access, connecting), red = an error only, dim =
+ * stopped or off.  The port rows: green = serving, dim = OFF, red = FAILED.
  */
 package org.openipc.vectis;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -27,7 +28,6 @@ import android.content.IntentFilter;
 import android.graphics.Typeface;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -61,9 +61,10 @@ public class MainActivity extends Activity {
     private static final int ASK_VPN = 2;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private View lamp;
-    private TextView display, logView;
-    private Button start, stop, access, consent, terminal, web;
+    private Brass.Row rAdapter, rPower, rVectis, rConsole, rWeb, rCamex;
+    private LinearLayout accessRow;
+    private TextView logView;
+    private Button start, stop, access, consent, terminal;
     /** The last /status of vectis, read off the UI thread; null if none. */
     private volatile JSONObject status;
     private volatile Object pollToken;
@@ -94,57 +95,76 @@ public class MainActivity extends Activity {
         page.setOrientation(LinearLayout.VERTICAL);
         page.setPadding(pad, pad, pad, pad);
 
-        page.addView(Brass.title(this, getString(R.string.app_name)));
+        page.addView(Brass.titleRow(this, getString(R.string.app_name), version()));
         TextView sub = new TextView(this);
         sub.setText(R.string.subtitle);
         sub.setTextColor(Brass.color(this, R.color.dim));
         sub.setGravity(Gravity.CENTER_HORIZONTAL);
-        page.addView(sub);
-        TextView plate = Brass.plate(this, "vectis " + version());
-        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        plp.gravity = Gravity.CENTER_HORIZONTAL;
-        plp.setMargins(0, pad / 2, 0, pad);
-        page.addView(plate, plp);
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sp.setMargins(0, 0, 0, pad);
+        page.addView(sub, sp);
 
         LinearLayout col = Brass.panel(this);
         page.addView(col);
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        lamp = new View(this);
-        int ls = Brass.dp(this, 28);
-        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(ls, ls);
-        llp.setMargins(Brass.dp(this, 6), 0, Brass.dp(this, 6), 0);
-        row.addView(lamp, llp);
-        display = Brass.display(this);
-        display.setTextSize(15);
-        row.addView(display, Brass.margins(this, 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        col.addView(row);
+        LinearLayout board = new LinearLayout(this);
+        board.setOrientation(LinearLayout.VERTICAL);
+        board.setBackgroundResource(R.drawable.display);
+        int bp = Brass.dp(this, 12);
+        board.setPadding(bp, bp - Brass.dp(this, 3), bp, bp - Brass.dp(this, 3));
+        rAdapter = new Brass.Row(this, getString(R.string.label_adapter));
+        rPower = new Brass.Row(this, getString(R.string.label_power));
+        rVectis = new Brass.Row(this, getString(R.string.label_vectis));
+        rConsole = new Brass.Row(this, getString(R.string.label_console));
+        rWeb = new Brass.Row(this, getString(R.string.label_web));
+        rCamex = new Brass.Row(this, getString(R.string.label_camex));
+        for (Brass.Row r : new Brass.Row[] {rAdapter, rPower, rVectis, rConsole, rWeb, rCamex})
+            board.addView(r.view);
+        rWeb.value.setCompoundDrawablePadding(Brass.dp(this, 10));
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        bl.setMargins(Brass.dp(this, 6), 0, Brass.dp(this, 6), Brass.dp(this, 6));
+        col.addView(board, bl);
 
-        start = button(col, R.string.btn_start, v -> {
+        // Buttons two in a row; the access row only when one of its buttons is needed
+        LinearLayout r1 = row(col), r2 = row(col);
+        accessRow = row(col);
+        start = button(r1, R.string.btn_start, v -> {
             Settings.setRunning(this, true);
             VectisService.send(this, VectisService.ACTION_START);
         });
-        stop = button(col, R.string.btn_stop, v -> {
+        stop = button(r1, R.string.btn_stop, v -> {
             Settings.setRunning(this, false);
             VectisService.send(this, VectisService.ACTION_STOP);
         });
-        access = button(col, R.string.btn_access, v -> askAccess());
-        consent = button(col, R.string.btn_consent, v -> askConsent());
-        terminal = button(col, R.string.btn_terminal,
+        terminal = button(r2, R.string.btn_terminal,
                 v -> startActivity(new Intent(this, TerminalActivity.class)));
-        web = button(col, R.string.btn_web, v -> openWeb());
-        button(col, R.string.btn_settings, v -> showSettings(null));
+        button(r2, R.string.btn_settings, v -> showSettings(null));
+        access = button(accessRow, R.string.btn_access, v -> askAccess());
+        consent = button(accessRow, R.string.btn_consent, v -> askConsent());
 
+        // Check boxes in one row, as wide as their text
+        LinearLayout checks = new LinearLayout(this);
+        checks.setOrientation(LinearLayout.HORIZONTAL);
         CheckBox boot = new CheckBox(this);
         boot.setText(R.string.start_on_boot);
         boot.setBackgroundResource(R.drawable.focus_ring);
         boot.setChecked(Settings.startOnBoot(this));
         boot.setOnCheckedChangeListener((b, on) -> Settings.setStartOnBoot(this, on));
-        col.addView(boot, Brass.margins(this, LinearLayout.LayoutParams.WRAP_CONTENT,
+        checks.addView(boot, Brass.margins(this, LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 0));
+        CheckBox showLog = new CheckBox(this);
+        showLog.setText(R.string.show_log);
+        showLog.setBackgroundResource(R.drawable.focus_ring);
+        showLog.setChecked(Settings.showLog(this));
+        showLog.setOnCheckedChangeListener((b, on) -> {
+            Settings.setShowLog(this, on);
+            update();
+        });
+        checks.addView(showLog, Brass.margins(this, LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 0));
+        col.addView(checks);
 
         logView = Brass.display(this);
         logView.setTextSize(11);
@@ -231,12 +251,21 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
-    private Button button(LinearLayout col, int text, View.OnClickListener l) {
+    /** A brass button sharing its row with the others, all the same width. */
+    private Button button(LinearLayout row, int text, View.OnClickListener l) {
         Button b = Brass.button(this, text);
         b.setOnClickListener(l);
-        col.addView(b, Brass.margins(this, LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT, 0));
+        row.addView(b, Brass.margins(this, 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         return b;
+    }
+
+    /** A row for two brass buttons across the full width. */
+    private LinearLayout row(LinearLayout col) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.HORIZONTAL);
+        col.addView(r, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        return r;
     }
 
     @Override
@@ -292,17 +321,6 @@ public class MainActivity extends Activity {
                 new Intent(ACTION_PERMISSION).setPackage(getPackageName())));
     }
 
-    private void openWeb() {
-        String url = "http://127.0.0.1:" + Settings.webPort(this) + "/";
-        try {
-            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-        } catch (ActivityNotFoundException e) {
-            List<String> a = VectisService.addresses();
-            String there = "http://" + (a.isEmpty() ? "127.0.0.1" : a.get(0)) + ":" + Settings.webPort(this) + "/";
-            Toast.makeText(this, getString(R.string.no_browser, there), Toast.LENGTH_LONG).show();
-        }
-    }
-
     private EditText field(LinearLayout box, int label, int value) {
         EditText e = field(box, label, String.format(Locale.US, "%d", value));
         e.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -321,46 +339,35 @@ public class MainActivity extends Activity {
         return e;
     }
 
-    private TextView heading(LinearLayout box, int text) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextColor(Brass.color(this, R.color.ink));
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setPadding(0, Brass.dp(this, 12), 0, 0);
-        box.addView(t);
-        return t;
-    }
-
     /** The settings; a camex link (or null) fills the tunnel's fields. */
     private void showSettings(String link) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         int pad = Brass.dp(this, 20);
         box.setPadding(pad, pad / 2, pad, 0);
-        heading(box, R.string.settings_serial);
+        // VECTIS: the app's own settings; remote access first, the page password last
+        Brass.section(box, this, getString(R.string.section_vectis), false);
+        CheckBox remoteOn = new CheckBox(this);
+        remoteOn.setText(R.string.remote_access);
+        remoteOn.setBackgroundResource(R.drawable.focus_ring);
+        remoteOn.setChecked(Settings.remoteAccess(this));
+        box.addView(remoteOn);
         EditText baud = field(box, R.string.settings_baud, Settings.baud(this));
-
-        heading(box, R.string.settings_network);
         EditText console = field(box, R.string.settings_console, Settings.consolePort(this));
         EditText webPort = field(box, R.string.settings_web, Settings.webPort(this));
-        // The camex tunnel: on or off, a link that fills it, the fields of the tunnel library
+        // shown as typed: a lab tool, set with a remote
+        EditText password = field(box, R.string.settings_password, Settings.password(this));
+        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        password.setHint(R.string.settings_password_hint);
+
+        // CAMEX: the tunnel on or off and the fields of the tunnel library; a camex link
+        // opened with the app fills them (no link field here)
+        Brass.section(box, this, getString(R.string.section_camex), true);
         CheckBox tunnelOn = new CheckBox(this);
         tunnelOn.setText(R.string.tunnel_on);
         tunnelOn.setBackgroundResource(R.drawable.focus_ring);
         tunnelOn.setChecked(Settings.tunnelEnabled(this));
         box.addView(tunnelOn);
-        TextView note = new TextView(this);
-        note.setText(R.string.tunnel_note);
-        note.setTextColor(Brass.color(this, R.color.dim));
-        note.setTextSize(12);
-        box.addView(note);
-        EditText linkField = new EditText(this);
-        linkField.setHint(R.string.tunnel_link_hint);
-        linkField.setSingleLine(true);
-        linkField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        box.addView(linkField);
-        Button apply = Brass.button(this, R.string.tunnel_link_apply);
-        box.addView(apply);
         TextView linkErrors = new TextView(this);
         linkErrors.setTextColor(Brass.color(this, R.color.red));
         linkErrors.setVisibility(View.GONE);
@@ -403,26 +410,31 @@ public class MainActivity extends Activity {
         // a link is asking for the tunnel: it turns it on
         if (link != null && fill(link, texts, choices, linkErrors))
             tunnelOn.setChecked(true);
-        apply.setOnClickListener(v -> {
-            if (fill(linkField.getText().toString().trim(), texts, choices, linkErrors))
-                tunnelOn.setChecked(true);
-        });
 
-        // Last, as in Decoder and Microsnander; shown as typed: a lab tool, set with a remote
-        EditText password = field(box, R.string.settings_password, Settings.password(this));
-        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
-        password.setHint(R.string.settings_password_hint);
-
+        // One brass window: the panel with its frame, a serif title, brass Cancel and Save
+        LinearLayout frame = Brass.panel(this);
+        TextView title = Brass.title(this, getString(R.string.settings_title));
+        title.setTextSize(20);
+        frame.addView(title);
         ScrollView sv = new ScrollView(this);
         sv.addView(box);
-        AlertDialog d = new AlertDialog.Builder(this)
-                .setTitle(R.string.settings_title)
-                .setView(sv)
-                .setPositiveButton(R.string.settings_save, null)
-                .setNegativeButton(R.string.settings_cancel, null)
-                .show();
-        // Save checks the fields first: the dialog stays with what is wrong
-        d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+        frame.addView(sv, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        LinearLayout actions = row(frame);
+        Button cancel = button(actions, R.string.settings_cancel, null);
+        Button save = button(actions, R.string.settings_save, null);
+        Dialog d = new Dialog(this, android.R.style.Theme_Material_Dialog_NoActionBar);
+        d.setContentView(frame);
+        if (d.getWindow() != null) {
+            d.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0));
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            d.getWindow().setLayout(Math.min((int) (dm.widthPixels * 0.94), Brass.dp(this, 640)),
+                    (int) (dm.heightPixels * 0.9));
+        }
+        styleFields(box);
+        d.show();
+        cancel.setOnClickListener(v -> d.dismiss());
+        // Save checks the fields first: the window stays with what is wrong
+        save.setOnClickListener(v -> {
             int b = number(baud), c = number(console), p = number(webPort);
             if (!Settings.valid(b, c, p)) {
                 Toast.makeText(this, R.string.settings_bad, Toast.LENGTH_LONG).show();
@@ -457,10 +469,13 @@ public class MainActivity extends Activity {
                     return;
                 }
             }
+            boolean remote = remoteOn.isChecked();
             boolean vectis = b != Settings.baud(this) || c != Settings.consolePort(this)
-                    || p != Settings.webPort(this) || !pw.equals(Settings.password(this));
+                    || p != Settings.webPort(this) || !pw.equals(Settings.password(this))
+                    || remote != Settings.remoteAccess(this);
             Settings.setPorts(this, b, c, p);
             Settings.setPassword(this, pw);
+            Settings.setRemoteAccess(this, remote);
             Settings.setTunnel(this, tunnelOn.isChecked(), tv);
             d.dismiss();
             // The service first, either way: without the consent it records that and retries,
@@ -506,6 +521,26 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    /** Fields, labels and check boxes of the settings window in the brass palette. */
+    private void styleFields(android.view.ViewGroup g) {
+        android.content.res.ColorStateList amber =
+                android.content.res.ColorStateList.valueOf(Brass.color(this, R.color.amber));
+        for (int i = 0; i < g.getChildCount(); i++) {
+            View v = g.getChildAt(i);
+            if (v instanceof EditText) {
+                EditText e = (EditText) v;
+                e.setTextColor(Brass.color(this, R.color.ink));
+                e.setHintTextColor(0x99b09873);   // dim at 60 %
+                e.setBackgroundTintList(amber);
+            } else if (v instanceof CheckBox || v instanceof RadioButton) {
+                ((TextView) v).setTextColor(Brass.color(this, R.color.ink));
+                ((android.widget.CompoundButton) v).setButtonTintList(amber);
+            } else if (v instanceof android.view.ViewGroup) {
+                styleFields((android.view.ViewGroup) v);
+            }
+        }
+    }
+
     private static int number(EditText e) {
         try {
             return Integer.parseInt(e.getText().toString().trim());
@@ -521,7 +556,7 @@ public class MainActivity extends Activity {
             VectisService s = VectisService.instance;
             if (s != null && s.isRunning()) {
                 try {
-                    st = Http.json(Settings.webPort(this), "/status", Settings.password(this));
+                    st = Http.json("/status");
                 } catch (Exception ignored) {
                     // vectis not listening yet
                 }
@@ -539,70 +574,74 @@ public class MainActivity extends Activity {
         VectisService s = VectisService.instance;
         UsbDevice d = s != null ? s.adapter() : VectisService.findAdapter(this);
         JSONObject st = status;
-        StringBuilder t = new StringBuilder();
-        int color;
+        boolean running = s != null && s.isRunning();
 
-        String adapter = d == null ? getString(R.string.adapter_none)
-                : s != null && s.hasAccess() ? getString(R.string.adapter_ok, VectisService.describe(d))
-                : getString(R.string.adapter_no_access, VectisService.describe(d));
-        line(t, R.string.label_adapter, adapter);
+        if (d == null)
+            rAdapter.set(R.color.dim, getString(R.string.adapter_none));
+        else if (s != null && s.hasAccess())
+            rAdapter.set(R.color.green, VectisService.chip(d) + " · " + Settings.baud(this));
+        else
+            rAdapter.set(R.color.amber, getString(R.string.adapter_no_access, VectisService.chip(d)));
 
-        String power;
-        if (s == null) {
-            power = getString(R.string.stopped);
-            color = R.color.dim;
-        } else if (!s.isRunning() && s.lastExit().isEmpty()) {
-            power = getString(R.string.starting);
-            color = R.color.amber;
-        } else if (!s.isRunning()) {
-            power = getString(R.string.restarting, s.lastExit());
-            color = R.color.red;
-        } else if (st == null || !"online".equals(st.optString("link"))) {
-            power = getString(R.string.power_unknown);
-            color = R.color.amber;
-        } else {
+        if (s == null)
+            rPower.set(R.color.dim, getString(R.string.dash));
+        else if (!running || st == null || !"online".equals(st.optString("link")))
+            rPower.set(R.color.amber, getString(R.string.power_unknown));
+        else {
             boolean on = "on".equals(st.optString("power"));
-            int rts = st.optInt("rts", -1), dtr = st.optInt("dtr", -1);
-            power = getString(on ? R.string.power_on : R.string.power_off, rts, dtr);
-            color = on ? R.color.green : R.color.red;
+            rPower.set(on ? R.color.green : R.color.dim, getString(on ? R.string.power_on : R.string.power_off,
+                    st.optInt("rts", -1), st.optInt("dtr", -1)));
         }
-        line(t, R.string.label_power, power);
 
+        boolean failed = s != null && !running && !s.lastExit().isEmpty();
+        if (s == null)
+            rVectis.set(R.color.dim, getString(R.string.stopped));
+        else if (failed)
+            rVectis.set(R.color.red, getString(R.string.restarting, s.lastExit()));
+        else if (!running)
+            rVectis.set(R.color.amber, getString(R.string.starting));
+        else
+            rVectis.set(R.color.green, getString(R.string.running));
+
+        // The port rows: green serving, dim OFF (stopped, remote access off), red FAILED
+        boolean remote = Settings.remoteAccess(this);
         List<String> a = VectisService.addresses();
         String host = a.isEmpty() ? null : a.get(0);
-        int cp = Settings.consolePort(this), wp = Settings.webPort(this);
-        StringBuilder con = new StringBuilder(), webs = new StringBuilder();
-        for (String ip : a) {
-            con.append(con.length() > 0 ? "\n           " : "").append(ip).append(':').append(cp);
-            webs.append(webs.length() > 0 ? "\n           " : "").append("http://").append(ip).append(':').append(wp).append('/');
-        }
-        line(t, R.string.label_console, host == null ? getString(R.string.no_address) : con.toString());
-        line(t, R.string.label_web, host == null ? getString(R.string.no_address) : webs.toString());
-        line(t, R.string.label_page, getString(Settings.password(this).isEmpty()
-                ? R.string.web_open : R.string.web_protected));
-        String tunnel = s != null ? VectisService.tunnelStatus : "";
-        if (!tunnel.isEmpty())
-            line(t, R.string.label_tunnel, tunnel);
+        port(rConsole, remote, running, failed, host, Settings.consolePort(this));
+        port(rWeb, remote, running, failed, host, VectisService.webPort(this));
+        rWeb.value.setCompoundDrawablesWithIntrinsicBounds(0, 0, !remote ? 0
+                : Settings.password(this).isEmpty() ? R.drawable.lock_open : R.drawable.lock_closed, 0);
 
-        display.setText(t.toString().trim());
-        display.setTextColor(Brass.color(this, color == R.color.dim ? R.color.dim : R.color.ink));
-        lamp.setBackground(Brass.lamp(this, color));
+        boolean tun = Settings.tunnelEnabled(this);
+        rCamex.view.setVisibility(tun ? View.VISIBLE : View.GONE);
+        if (tun) {
+            CamexTunnel.State ts = s != null ? VectisService.tunnelNow : CamexTunnel.State.STOPPED;
+            int c = ts == CamexTunnel.State.CONNECTED ? R.color.green : ts == CamexTunnel.State.FAILED ? R.color.red
+                    : ts == CamexTunnel.State.STOPPED ? R.color.dim : R.color.amber;
+            String addr = VectisService.tunnelAddress;
+            rCamex.set(c, ts.name().replace('_', ' ')
+                    + (ts == CamexTunnel.State.CONNECTED && !addr.isEmpty() ? " · " + addr : ""));
+        }
+
         start.setEnabled(s == null || !s.isWanted());
         stop.setEnabled(s != null);
         access.setVisibility(d != null && (s == null || !s.hasAccess()) ? View.VISIBLE : View.GONE);
-        consent.setVisibility(s != null && Settings.tunnelEnabled(this)
+        consent.setVisibility(s != null && tun
                 && CamexTunnel.state() == CamexTunnel.State.NEEDS_CONSENT ? View.VISIBLE : View.GONE);
-        web.setEnabled(s != null && s.isRunning());
-        terminal.setEnabled(s != null && s.isRunning());
+        accessRow.setVisibility(access.getVisibility() == View.VISIBLE || consent.getVisibility() == View.VISIBLE
+                ? View.VISIBLE : View.GONE);
+        terminal.setEnabled(running);
         logView.setText(s != null ? s.log.tail(LOG_SHOWN).trim() : "");
-        logView.setVisibility(s != null ? View.VISIBLE : View.GONE);
+        logView.setVisibility(s != null && Settings.showLog(this) ? View.VISIBLE : View.GONE);
     }
 
-    private void line(StringBuilder t, int label, String value) {
-        String l = getString(label);
-        t.append(l);
-        for (int i = l.length(); i < 10; i++)
-            t.append(' ');
-        t.append(' ').append(value).append('\n');
+    /** A port row: the address when vectis serves it, OFF or FAILED otherwise. */
+    private void port(Brass.Row r, boolean remote, boolean running, boolean failed, String host, int port) {
+        if (!remote || (!running && !failed))
+            r.set(R.color.dim, getString(R.string.port_off));
+        else if (failed)
+            r.set(R.color.red, getString(R.string.port_failed));
+        else
+            r.set(R.color.green, host == null ? getString(R.string.no_address) : host + ":" + port);
     }
 }

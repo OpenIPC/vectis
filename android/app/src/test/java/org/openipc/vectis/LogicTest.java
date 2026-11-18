@@ -44,8 +44,12 @@ public class LogicTest {
     @Test
     public void commandLine() {
         assertEquals(Arrays.asList("/lib/libvectis.so", "-U", "fd:@org.openipc.vectis.usb", "-b", "921600",
-                                   "-l", "2022", "-w", "8080"),
-                     VectisService.command("/lib/libvectis.so", 921600, 2022, 8080));
+                                   "--web-local", "@org.openipc.vectis.web", "-l", "2022", "-w", "8080"),
+                     VectisService.command("/lib/libvectis.so", 921600, 2022, 8080, true));
+        // remote access off: no network port at all, the app's own socket only
+        assertEquals(Arrays.asList("/lib/libvectis.so", "-U", "fd:@org.openipc.vectis.usb", "-b", "921600",
+                                   "--web-local", "@org.openipc.vectis.web"),
+                     VectisService.command("/lib/libvectis.so", 921600, 2022, 8080, false));
         // -U fd:@NAME takes 1 to 27 characters
         assertTrue(VectisService.SOCKET.length() <= 27);
     }
@@ -62,6 +66,27 @@ public class LogicTest {
         assertTrue(two.contains("line 4") && two.contains("line 5") && !two.contains("line 3"));
         String all = log.tail(10);
         assertTrue(all.contains("line 3") && !all.contains("line 2"));
+    }
+
+    @Test
+    public void aTakenWebPortMovesToTheNextFreeOne() {
+        assertEquals(8085, VectisService.freePort(8085, 2021, p -> true));
+        assertEquals(8086, VectisService.freePort(8085, 2021, p -> p != 8085));
+        // never the console port
+        assertEquals(8087, VectisService.freePort(8085, 8086, p -> p != 8085));
+        // nothing free: the setting, vectis then says why
+        assertEquals(8085, VectisService.freePort(8085, 2021, p -> false));
+        assertEquals(65535, VectisService.freePort(65535, 2021, p -> p == 65535));
+    }
+
+    @Test
+    public void localHttpReply() {
+        byte[] raw = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".getBytes(StandardCharsets.US_ASCII);
+        Http.Reply r = Http.parse(raw, raw.length);
+        assertEquals(200, r.code);
+        assertEquals("{}", r.body);
+        byte[] bad = "garbage".getBytes(StandardCharsets.US_ASCII);
+        assertEquals(0, Http.parse(bad, bad.length).code);
     }
 
     @Test
@@ -260,12 +285,12 @@ public class LogicTest {
 
     @Test
     public void websocketRequestHasPasswordAndNoOrigin() {
-        String r = new String(WsCodec.request(8085, "a2V5", "pw"), StandardCharsets.US_ASCII);
-        assertTrue(r.startsWith("GET /ws/terminal HTTP/1.1\r\nHost: 127.0.0.1:8085\r\n"));
+        String r = new String(WsCodec.request("localhost", "a2V5", "pw"), StandardCharsets.US_ASCII);
+        assertTrue(r.startsWith("GET /ws/terminal HTTP/1.1\r\nHost: localhost\r\n"));
         assertTrue(r.contains("Sec-WebSocket-Key: a2V5\r\n") && r.contains("Authorization: Basic OnB3\r\n"));
         assertFalse(r.contains("Origin"));
         assertTrue(r.endsWith("\r\n\r\n"));
-        assertFalse(new String(WsCodec.request(8085, "a2V5", ""), StandardCharsets.US_ASCII)
+        assertFalse(new String(WsCodec.request("localhost", "a2V5", null), StandardCharsets.US_ASCII)
                 .contains("Authorization"));
     }
 

@@ -21,10 +21,10 @@ final class WsCodec {
     }
 
     /** The upgrade request; no Origin, so vectis needs no token (README). */
-    static byte[] request(int port, String key, String password) {
+    static byte[] request(String host, String key, String password) {
         StringBuilder r = new StringBuilder()
                 .append("GET /ws/terminal HTTP/1.1\r\n")
-                .append("Host: 127.0.0.1:").append(port).append("\r\n")
+                .append("Host: ").append(host).append("\r\n")
                 .append("Upgrade: websocket\r\nConnection: Upgrade\r\n")
                 .append("Sec-WebSocket-Key: ").append(key).append("\r\n")
                 .append("Sec-WebSocket-Version: 13\r\n");
