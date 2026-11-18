@@ -677,10 +677,10 @@ nc 192.168.1.20 2021                        # 原始模式，逐行发送
 ## Web 电源控制台（`-w`）
 
 <p align="center">
-  <img src="screenshots/web-power-console.jpg" alt="vectis Web 电源控制台：link 与 RTS+DTR 指示灯、状态显示屏、Enable / Disable / Reset 按钮" width="720">
+  <img src="screenshots/web-power-console.jpg" alt="vectis Web 页面：link 与 RTS+DTR 指示灯、状态显示屏、Enable / Disable / Reset 按钮，UART 终端栏处于折叠状态" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.10.0，参数为 <code>-w 8080 -l 2021 -t 300</code>，用伪终端代替 UART；另一个 <code>vectis</code> 已连接到 <code>-l</code> 端口。</sub></p>
+<p align="center"><sub>vectis 1.16.2，参数为 <code>-w 19081 -l 19021 -t 300</code>，用伪终端代替 UART；终端处于折叠状态。</sub></p>
 
 `-w PORT`（或 `-w ADDR:PORT`，仅在一个 IPv4 地址上监听）会在终端会话
 之外启动一个内置 Web 服务器。它只提供一个页面，
@@ -773,13 +773,15 @@ Reset 按钮点亮、显示屏显示 `Resetting`，日志行中会注明
 ### UART 终端
 
 <p align="center">
-  <img src="screenshots/web-terminal.jpg" alt="vectis Web 页面：电源面板及其下方的 UART 终端，显示启动日志和 shell 会话" width="720">
+  <img src="screenshots/web-terminal.jpg" alt="vectis Web 页面：电源控制及其下方已展开的 UART 终端，显示启动日志和 shell 会话" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.14.0，参数 <code>-w 19081 -l 19021 -t 300</code>，用伪终端代替 OpenIPC Dev Board 的 UART；两条命令是在页面中输入的。</sub></p>
+<p align="center"><sub>vectis 1.16.2，参数 <code>-w 19081 -l 19021 -t 300</code>，用伪终端代替 OpenIPC Dev Board 的 UART；两条命令是在页面中输入的。</sub></p>
 
-页面在电源面板下方显示同一 UART 的终端：设备输出的一切，以及向设备输入的
-键盘。它是 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0，内置于
+面板底部、电源控制下方是同一 UART 的终端：设备输出的一切，以及向设备输入的
+键盘。默认折叠；点击“UART terminal”栏可展开或折叠，浏览器会记住该选择
+（`localStorage`）。连接在首次展开时建立并保持，因此折叠时输出仍在累积；栏上的
+指示灯表示有新的输出。从未展开终端的页面不占用服务器上的终端。它是 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0，内置于
 `vectis` 并由其自身提供（`/xterm-5.5.0.js`、`/xterm-5.5.0.css`，gzip 压缩，
 约 70 KB），因此浏览器无需访问互联网；`make WEBTERM=0` 不包含它。
 

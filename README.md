@@ -706,10 +706,10 @@ makes the process reopen the link automatically; it requires `-u`.
 ## Web power console (`-w`)
 
 <p align="center">
-  <img src="screenshots/web-power-console.jpg" alt="Vectis web power console: link and RTS+DTR lamps, state display, Enable / Disable / Reset buttons" width="720">
+  <img src="screenshots/web-power-console.jpg" alt="Vectis web page: link and RTS+DTR lamps, state display, Enable / Disable / Reset buttons, the UART terminal bar closed" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.10.0 with <code>-w 8080 -l 2021 -t 300</code>, a pseudo-terminal standing in for the UART; a second <code>vectis</code> is connected to the <code>-l</code> port.</sub></p>
+<p align="center"><sub>vectis 1.16.2 with <code>-w 19081 -l 19021 -t 300</code>, a pseudo-terminal standing in for the UART; the terminal section is closed.</sub></p>
 
 `-w PORT` (or `-w ADDR:PORT` to listen on one IPv4 address only) starts a
 built-in web server alongside the terminal session. It serves a single
@@ -804,13 +804,19 @@ down the `/power/` commands answer `503`; an unknown command answers
 ### UART terminal
 
 <p align="center">
-  <img src="screenshots/web-terminal.jpg" alt="Vectis web page: the power panel and, under it, the UART terminal with a boot log and a shell session" width="720">
+  <img src="screenshots/web-terminal.jpg" alt="Vectis web page: the power controls and, under them, the UART terminal opened, with a boot log and a shell session" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.14.0 with <code>-w 19081 -l 19021 -t 300</code>, a pseudo-terminal standing in for the UART of an OpenIPC Dev Board; the two commands were typed in the page.</sub></p>
+<p align="center"><sub>vectis 1.16.2 with <code>-w 19081 -l 19021 -t 300</code>, a pseudo-terminal standing in for the UART of an OpenIPC Dev Board; the two commands were typed in the page.</sub></p>
 
-Under the power panel the page shows a terminal on the same UART:
-everything the device prints, and a keyboard into it. It is
+At the bottom of the panel, under the power controls, the page has a
+terminal on the same UART: everything the device prints, and a keyboard
+into it. It is closed by default; a click on the "UART terminal" bar opens
+and closes it, and the browser remembers which (`localStorage`). The
+connection starts on the first opening and stays, so output keeps
+collecting while the section is closed; a lamp on the bar shows that new
+output arrived. A page that never opens the terminal takes no terminal on
+the server. It is
 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0, built into
 `vectis` and served by it (`/xterm-5.5.0.js`, `/xterm-5.5.0.css`,
 gzipped, about 70 KB), so the browser needs no internet; `make WEBTERM=0`
