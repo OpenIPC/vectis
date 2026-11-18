@@ -449,13 +449,11 @@ public class MainActivity extends Activity {
             Settings.setPassword(this, pw);
             Settings.setTunnel(this, tunnelOn.isChecked(), tv);
             d.dismiss();
-            if (tunnelOn.isChecked() && CamexTunnel.consentIntent(this) != null) {
-                if (vectis)
-                    restartService(true);
+            // The service first, either way: without the consent it records that and retries,
+            // so a declined dialog still leaves the TUNNEL line, the button and the retries
+            restartService(vectis);
+            if (tunnelOn.isChecked() && CamexTunnel.consentIntent(this) != null)
                 askConsent();             // the tunnel starts after the answer
-            } else {
-                restartService(vectis);
-            }
             update();
         });
     }
