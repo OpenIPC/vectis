@@ -6,6 +6,28 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.16.0 — 2026-11-18
+
+The Android app gets remote access through a camex server, built in as in Decoder and
+Microsnander (#97).
+
+- camex 4.0.1 as the submodule `bundles/camex`, its tunnel library as the gradle
+  project `:camex-tunnel`; CI checks out submodules.
+- Settings are in two sections, Serial and Network. Network takes the tunnel: on or
+  off, server, client name, UDP (default) or TCP, the server's public key and psk, or a
+  camex connect link pasted there or opened with the app (`camex://connect?…`,
+  `https://openipc.github.io/camex/connect/#…`), which also turns the tunnel on. The
+  web page password stays the last field.
+- The tunnel tells the server the web port (`--web-port`, 8085 by default), so nginx
+  on the server opens the page by the client name; the page, its terminal and the
+  password work through it.
+- VPN consent once (the system dialog after Save, a button on the screen, or `adb
+  shell appops set org.openipc.vectis ACTIVATE_VPN allow`); without it the app says so
+  and tries again every minute. The tunnel runs while vectis does and reconnects by
+  itself; the screen (TUNNEL) and the notification show its state and address.
+- The README shows the camex client next to vectis on a router or Linux host.
+- `.github/check-version.sh` counts `android/`, `bundles/` and `.gitmodules` as code.
+
 ## 1.15.1 — 2026-11-18
 
 Android terminal fixes from the review of #99:

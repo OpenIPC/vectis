@@ -268,4 +268,13 @@ public class LogicTest {
         assertFalse(new String(WsCodec.request(8085, "a2V5", ""), StandardCharsets.US_ASCII)
                 .contains("Authorization"));
     }
+
+    @Test
+    public void tunnelKeysAreTheLibrarysButTheWebPort() {
+        java.util.List<String> k = Settings.tunnelKeys();
+        assertTrue(k.contains(org.openipc.camex.tunnel.CamexTunnel.SERVER));
+        assertTrue(k.contains(org.openipc.camex.tunnel.CamexTunnel.PSK));
+        assertTrue(k.contains(org.openipc.camex.tunnel.CamexTunnel.TRANSPORT));
+        assertTrue(!k.contains(org.openipc.camex.tunnel.CamexTunnel.WEB_PORT));
+    }
 }

@@ -7,9 +7,11 @@
 # MAJOR.MINOR.PATCH without leading zeros, greater than the base one, and
 # have its section in CHANGELOG.md ("## <version> — YYYY-MM-DD") that the
 # base branch does not have yet.  The sources (web/ and webterm_assets.h,
-# the web terminal built into vectis, too), the Makefile, ci/ and the
-# build workflow (.github/workflows/build.yml: it builds the release files)
-# count as code or build, without the Markdown files in them; docs, tests,
+# the web terminal built into vectis, too), the Makefile, ci/, the build
+# workflow (.github/workflows/build.yml: it builds the release files), the
+# Android app (android/) and its camex submodule (bundles/, .gitmodules)
+# count as code or build, without the Markdown files in them and the app's
+# tests (android/app/src/test, androidTest); docs, tests,
 # screenshots and the rest of .github/ need no new version.
 # NO_RELEASE=true (the pull request's `no-release` label) lets a change to
 # the code or the build through without a new version, for changes that
@@ -25,7 +27,7 @@ set -eu
 
 base=${1:-origin/master}
 source=vectis.c
-code="vectis.c vectis-bootrom.c usbserial.c usbserial.h ch34x.c webterm_assets.h web Makefile ci .github/workflows/build.yml"
+code="vectis.c vectis-bootrom.c usbserial.c usbserial.h ch34x.c webterm_assets.h web Makefile ci .github/workflows/build.yml android bundles .gitmodules"
 
 # The one PROGRAM_VERSION definition (comments and other text do not count).
 ver() {
@@ -42,7 +44,8 @@ new=$(ver HEAD < "$source")
 old=$(git show "$base:$source" | ver "$base")
 
 # shellcheck disable=SC2086 # $code is a list of paths
-changed=$(git diff --name-only "$base"...HEAD -- $code ':(exclude,glob)**/*.md')
+changed=$(git diff --name-only "$base"...HEAD -- $code ':(exclude,glob)**/*.md' \
+	':(exclude)android/app/src/test' ':(exclude)android/app/src/androidTest')
 
 if [ "$new" = "$old" ]; then
 	if [ -n "$changed" ] && [ "${NO_RELEASE:-}" = true ]; then

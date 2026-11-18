@@ -25,6 +25,11 @@
  *     -U on Linux: the target keeps its power.
  *   - vectis' messages (stderr) go to logcat and the screen; device output
  *     (stdout) is read and dropped, so the pipe never fills.
+ *   - With the camex tunnel on (#97), the box joins the camex server of the
+ *     settings (org.openipc.camex.tunnel, bundles/camex) while the service
+ *     runs: the server's nginx opens the page by the client's name on the web
+ *     port.  It reconnects by itself and shares this service's notification;
+ *     without the VPN consent it says so and tries again every minute.
  */
 package org.openipc.vectis;
 
@@ -41,7 +46,9 @@ import android.hardware.usb.UsbManager;
 import android.net.LocalServerSocket;
 import android.net.LocalSocket;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.PowerManager;
 import android.text.TextUtils;
@@ -61,6 +68,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import org.openipc.camex.tunnel.CamexTunnel;
 
 public class VectisService extends Service {
     public static final String ACTION_START = "org.openipc.vectis.START";
@@ -75,6 +84,8 @@ public class VectisService extends Service {
     private static final int LOG_LINES = 200;
     private static final int RESTART_DELAY_MS = 3000;
     private static final int STOP_TIMEOUT_MS = 3000;
+    /** A tunnel without the consent (or refused) is started again this often. */
+    private static final int TUNNEL_RETRY_MS = 60000;
     /** VID:PID pairs vectis drives (ch34x.c, res/xml/device_filter.xml). */
     private static final int[][] IDS = {
         {0x1a86, 0x5523}, {0x1a86, 0x7522}, {0x1a86, 0x7523}, {0x2184, 0x0057}, {0x4348, 0x5523}, {0x9986, 0x7523},
@@ -82,6 +93,10 @@ public class VectisService extends Service {
 
     /** The running service, for the activity; null if none. */
     static volatile VectisService instance;
+    /** What the screen and the notification say about the tunnel; "" when it is off. */
+    static volatile String tunnelStatus = "";
+    /** The notification's text about vectis (the tunnel's line is added to it). */
+    private static volatile String notifyText = "";
 
     final LogBuffer log = new LogBuffer(LOG_LINES);
     private final Object lock = new Object();
@@ -95,6 +110,8 @@ public class VectisService extends Service {
     private volatile String lastExit = "";
     private boolean askedAccess;          // guarded by this: the access dialog was shown in this run
     private int settingsSeq;              // guarded by lock: bumped by every settings change
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private Map<String, String> tunnelValues;   // main thread: the values the tunnel was started with
 
     private final BroadcastReceiver usbEvents = new BroadcastReceiver() {
         @Override
@@ -160,13 +177,18 @@ public class VectisService extends Service {
         IntentFilter f = new IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED);
         f.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
         registerReceiver(usbEvents, f);
+        // the tunnel's foreground service posts this service's notification: one for both
+        CamexTunnel.setNotification(NOTIFY_ID, (ctx, st, addr, err) -> notification(ctx));
+        CamexTunnel.addListener(tunnelState);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null && intent.getAction() != null ? intent.getAction() : ACTION_START;
         if (action.equals(ACTION_STOP)) {
-            stopVectis();
+            stopVectis();                 // first: the tunnel's last state then posts no notification
+            stopTunnel();
+            dropNotificationLater(getApplicationContext());
             Compat.stopForeground(this);
             stopSelf();
             return START_NOT_STICKY;
@@ -184,6 +206,7 @@ public class VectisService extends Service {
             openAdapter();
             startVectis();
         }
+        startTunnel();
         updateNotification();
         return START_STICKY;
     }
@@ -191,7 +214,10 @@ public class VectisService extends Service {
     @Override
     public void onDestroy() {
         unregisterReceiver(usbEvents);
+        CamexTunnel.removeListener(tunnelState);
         stopVectis();
+        stopTunnel();
+        dropNotificationLater(getApplicationContext());
         instance = null;
         super.onDestroy();
     }
@@ -562,9 +588,98 @@ public class VectisService extends Service {
 
     // ── notification and log ─────────────────────────────────────
 
+    // ── the camex tunnel ─────────────────────────────────────────
+
+    /** The tunnel of the settings, when it is on; a start refused now is tried again later. */
+    private void startTunnel() {
+        main.removeCallbacks(retryTunnel);
+        // Settings.running too: a start that arrives after Stop (queued, or a sticky restart)
+        // must not bring the tunnel back
+        if (!Settings.tunnelEnabled(this) || !Settings.running(this) || !isWanted()) {
+            stopTunnel();
+            return;
+        }
+        Map<String, String> v = Settings.tunnel(this);
+        if (CamexTunnel.running() && v.equals(tunnelValues))
+            return;                       // up with these values: a vectis restart does not cut it
+        tunnelValues = v;
+        if (!CamexTunnel.start(this, v))
+            main.postDelayed(retryTunnel, TUNNEL_RETRY_MS);   // no consent yet: adb may give it meanwhile
+    }
+
+    private void stopTunnel() {
+        main.removeCallbacks(retryTunnel);
+        tunnelValues = null;
+        if (CamexTunnel.running() || CamexTunnel.state() != CamexTunnel.State.STOPPED)
+            CamexTunnel.stop();
+        showTunnel(CamexTunnel.State.STOPPED, "", "");
+    }
+
+    private final Runnable retryTunnel = () -> {
+        CamexTunnel.State s = CamexTunnel.state();
+        if (s == CamexTunnel.State.NEEDS_CONSENT || s == CamexTunnel.State.FAILED || s == CamexTunnel.State.STOPPED)
+            startTunnel();
+    };
+
+    private final CamexTunnel.Listener tunnelState = (st, addr, err) -> {
+        showTunnel(st, addr, err);
+        if ((st == CamexTunnel.State.NEEDS_CONSENT || st == CamexTunnel.State.FAILED)
+                && Settings.tunnelEnabled(this) && Settings.running(this) && isWanted()) {
+            main.removeCallbacks(retryTunnel);   // consent revoked while it ran, or refused
+            main.postDelayed(retryTunnel, TUNNEL_RETRY_MS);
+        }
+    };
+
+    private void showTunnel(CamexTunnel.State st, String addr, String err) {
+        String t;
+        if (!Settings.tunnelEnabled(this))
+            t = "";
+        else if (st == CamexTunnel.State.CONNECTED)
+            t = getString(R.string.tunnel_connected, "http://" + addr + ":" + Settings.webPort(this) + "/");
+        else if (st == CamexTunnel.State.CONNECTING)
+            t = getString(R.string.tunnel_connecting) + (err.isEmpty() ? "" : " (" + err + ")");
+        else if (st == CamexTunnel.State.NEEDS_CONSENT)
+            t = getString(R.string.tunnel_needs_consent);
+        else if (st == CamexTunnel.State.FAILED)
+            t = getString(R.string.tunnel_failed, err);
+        else
+            t = getString(R.string.tunnel_stopped);
+        if (!t.equals(tunnelStatus)) {
+            tunnelStatus = t;
+            if (!t.isEmpty())
+                line("app: camex tunnel: " + t);
+        }
+        if (instance != null && isWanted())
+            goForeground(notifyText);     // not while stopping: that would post it again
+    }
+
+    /**
+     * The tunnel's service leaves the shared notification behind when it stops (it is the
+     * app's, so it detaches it): once it has, and unless vectis runs again, remove it.
+     */
+    private static void dropNotificationLater(Context app) {
+        Handler h = new Handler(Looper.getMainLooper());
+        Runnable drop = () -> {
+            VectisService s = instance;
+            if (s == null || !s.isWanted())
+                ((android.app.NotificationManager) app.getSystemService(NOTIFICATION_SERVICE)).cancel(NOTIFY_ID);
+        };
+        h.postDelayed(drop, 1000);
+        h.postDelayed(drop, 3000);
+    }
+
+    /** The one notification of vectis and its tunnel. */
+    static Notification notification(Context c) {
+        String text = notifyText.isEmpty() ? c.getString(R.string.notify_starting) : notifyText;
+        if (!tunnelStatus.isEmpty())
+            text += "\n" + c.getString(R.string.label_tunnel).trim() + " " + tunnelStatus;
+        return Compat.ongoing(c, CHANNEL_ID, c.getString(R.string.app_name), text,
+                R.drawable.ic_notify, new Intent(c, MainActivity.class));
+    }
+
     private void goForeground(String text) {
-        Notification n = Compat.ongoing(this, CHANNEL_ID, getString(R.string.app_name), text,
-                R.drawable.ic_notify, new Intent(this, MainActivity.class));
+        notifyText = text;
+        Notification n = notification(this);
         if (Build.VERSION.SDK_INT >= 34)
             startForeground(NOTIFY_ID, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else

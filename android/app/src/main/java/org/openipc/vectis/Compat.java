@@ -48,6 +48,7 @@ final class Compat {
         }
         return b.setContentTitle(title)
                 .setContentText(text)
+                .setStyle(new Notification.BigTextStyle().bigText(text))   // the tunnel's line too
                 .setSmallIcon(icon)
                 .setContentIntent(pi)
                 .setOngoing(true)
