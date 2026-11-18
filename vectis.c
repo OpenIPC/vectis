@@ -113,8 +113,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.15.0"
-#define PROGRAM_RELEASE_DATE "2026-11-17"
+#define PROGRAM_VERSION      "1.15.1"
+#define PROGRAM_RELEASE_DATE "2026-11-18"
 
 #define RECONNECT_DELAY_S 5
 

@@ -6,6 +6,15 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.15.1 — 2026-11-18
+
+Android terminal fixes from the review of #99:
+
+- ST (U+009C) ends an OSC or DCS string, and CAN or SUB cancels an escape sequence;
+  before, the text after them stayed hidden.
+- Leaving the terminal screen right after Enter no longer drops the command: frames
+  already accepted are written before the connection closes.
+
 ## 1.15.0 — 2026-11-17
 
 The Android app gets the web terminal and password of 1.14.0 (#96).
