@@ -543,6 +543,12 @@ def test_web_terminal(tmp):
         check("/xterm-5.5.0.js" in page and "/xterm-5.5.0.css" in page and "/ws/terminal" in page,
               "web page: loads the built-in xterm.js, opens /ws/terminal")
         check("cdn" not in page.lower(), "web page: nothing from a CDN")
+        # One panel; the terminal is a section behind a bar, closed by
+        # default, opened (and its WebSocket started) by the page script.
+        check(page.count("class='panel'") == 1 and "panel term" not in page,
+              "web page: one panel")
+        check("id='t-bar' aria-expanded='false'" in page and "id='t-body' hidden" in page,
+              "web page: the terminal section starts closed")
         for asset, head, ctype in (("/xterm-5.5.0.js", b"!function", "text/javascript"),
                                    ("/xterm-5.5.0.css", b"/**", "text/css")):
             code, hdr, body = http_raw(wport, asset)

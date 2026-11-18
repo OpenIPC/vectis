@@ -6,6 +6,19 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.16.2 — 2026-11-18
+
+The `-w` page is one panel (#105):
+
+- The power console and the UART terminal were two panels of different widths; now one
+  panel, about 1000 px wide, with the lamps and the readout on the left and the buttons on
+  the right (one column on a narrow screen).
+- The terminal is a section at the bottom of the panel, closed by default; a click on its
+  "UART terminal" bar opens and closes it. The WebSocket opens on the first opening and
+  stays, so output collects while the section is closed, and a lamp on the bar shows that
+  new output arrived. A page that never opens the terminal takes no terminal slot.
+- The browser remembers whether the section was open (`localStorage`).
+
 ## 1.16.1 — 2026-11-18
 
 Android fixes:
