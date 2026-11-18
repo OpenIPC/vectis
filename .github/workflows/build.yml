@@ -78,14 +78,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # A stalled mirror fails the job quickly instead of holding it (#71);
-      # the install normally takes about 20 s.
+      # The runners' Ubuntu mirror is sometimes slow (160 kB/s for the
+      # 44 MB of these packages), so the .deb files are cached: one week per
+      # key, and a new week starts from the last one, so apt fetches only
+      # what changed. A stalled mirror still fails the step quickly instead
+      # of holding it (#71); a connection that stops sending is dropped
+      # after 30 s and retried.
+      - name: Week of the apt cache
+        if: matrix.platform.pkgs != ''
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache apt packages
+        if: matrix.platform.pkgs != ''
+        uses: actions/cache@v6
+        with:
+          path: .apt-archives
+          key: apt-${{ matrix.platform.runner || 'ubuntu-latest' }}-${{ matrix.platform.name }}-${{ steps.week.outputs.week }}
+          restore-keys: apt-${{ matrix.platform.runner || 'ubuntu-latest' }}-${{ matrix.platform.name }}-
+
       - name: Install cross-compiler
         if: matrix.platform.pkgs != ''
         timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ${{ matrix.platform.pkgs }}
+          mkdir -p .apt-archives/partial
+          apt="sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 -o Dir::Cache::Archives=$PWD/.apt-archives"
+          $apt update
+          $apt install -y ${{ matrix.platform.pkgs }}
+          $apt autoclean
+          sudo rm -rf .apt-archives/partial .apt-archives/lock
 
       - name: Build
         shell: bash
@@ -191,11 +212,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # The apt cache works as in the linux job above.
+      - name: Week of the apt cache
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache apt packages
+        uses: actions/cache@v6
+        with:
+          path: .apt-archives
+          key: apt-ubuntu-latest-qemu-user-${{ steps.week.outputs.week }}
+          restore-keys: apt-ubuntu-latest-qemu-user-
+
       - name: Install qemu-user
         timeout-minutes: 5
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user
+          mkdir -p .apt-archives/partial
+          apt="sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 -o Dir::Cache::Archives=$PWD/.apt-archives"
+          $apt update
+          $apt install -y qemu-user
+          $apt autoclean
+          sudo rm -rf .apt-archives/partial .apt-archives/lock
 
       - name: Cache toolchain
         uses: actions/cache@v6
