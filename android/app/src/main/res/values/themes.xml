@@ -2,7 +2,7 @@
 <!--
     Copyright (c) OpenIPC  https://openipc.org  MIT License
 
-    themes.xml — the brass theme of the app screen (brand brass 1.1.0, after
+    themes.xml — the brass theme of the app screen (brand brass 1.4.0, after
     microsnander and pusher); the icon and the TV banner stay blue and white
 -->
 <resources>
@@ -14,6 +14,20 @@
         <item name="android:textColor">@color/ink</item>
         <item name="android:textColorPrimary">@color/ink</item>
         <item name="android:textColorSecondary">@color/dim</item>
+        <item name="android:checkboxStyle">@style/BrassCheck</item>
+        <item name="android:radioButtonStyle">@style/BrassRadio</item>
+    </style>
+    <!-- brass 1.4.0: own check and radio drawables, no tint (a tinted system one fills its mark
+         under the remote's focus); the focus ring around the row -->
+    <style name="BrassCheck" parent="android:Widget.Material.CompoundButton.CheckBox">
+        <item name="android:background">@drawable/focus_ring</item>
+        <item name="android:button">@drawable/brass_check</item>
+        <item name="android:buttonTint">@null</item>
+    </style>
+    <style name="BrassRadio" parent="android:Widget.Material.CompoundButton.RadioButton">
+        <item name="android:background">@drawable/focus_ring</item>
+        <item name="android:button">@drawable/brass_radio</item>
+        <item name="android:buttonTint">@null</item>
     </style>
     <style name="Brass" parent="android:Widget.Material.Button">
         <item name="android:background">@drawable/brass_button</item>
