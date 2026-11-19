@@ -103,6 +103,15 @@ Easy to break and not obvious from one function — read the surrounding block c
    falls `WT_OUT_MAX` behind is dropped. Input is verbatim: no session keys, `Ctrl+P` is a
    byte (the page's button resets). The password (`-W`) guards every `-w` request, the
    upgrade included; `-l` stays without one (invariant 1).
+8. **Device writes never block the poll loop for long.** `link_write()` only queues
+   (`g_txq`, the "Transmit queue for the device" block); `txq_pump()` sends one piece per
+   pass (a `usbs_out_chunk()` of about 10 ms with `-U`, a non-blocking `write()` otherwise).
+   Sources (`-l` client, web terminals, stdin) are polled and read only within `txq_room()`.
+   Anything that changes the line or writes to it directly (settings, break, RTS/DTR,
+   `write_all()` to `g_fd`) calls `txq_flush()` first, so it keeps its place after earlier
+   data; a transmit purge and `disconnect()` empty the queue. A device that takes nothing for
+   `TXQ_STALL_MS` (1 s when leaving) loses the queue with a warning, so nothing waits on it
+   forever: the sources are read again and power, reset and settings still apply.
 
 ## Versioning and release
 

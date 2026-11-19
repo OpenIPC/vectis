@@ -419,18 +419,17 @@ int usbs_service(void)
     }
 }
 
-int usbs_write(const uint8_t *buf, size_t n)
+size_t usbs_out_chunk(void)
 {
-    /* About 10 ms of line time per chunk (8 bytes at least), and a
-     * timeout of twice the chunk's line time plus a second, so a slow
-     * baud rate neither times out nor holds the poll loop for long.
+    /* About 10 ms of line time per chunk (8 bytes at least).
      *
      * The chunk is short on purpose: the IN URBs are resubmitted only
-     * between chunks (usbs_service() below).  At a low baud rate the chip
-     * returns a byte or two per IN packet, so the USBS_N_IN URBs fill in
-     * a few tens of ms; a longer blocking OUT transfer then overflows the
-     * chip's receive FIFO and loses what the target echoes meanwhile
-     * (about half of every 96-byte chunk at 9600 with 100 ms chunks). */
+     * between chunks (usbs_service() in usbs_write()).  At a low baud
+     * rate the chip returns a byte or two per IN packet, so the
+     * USBS_N_IN URBs fill in a few tens of ms; a longer blocking OUT
+     * transfer then overflows the chip's receive FIFO and loses what the
+     * target echoes meanwhile (about half of every 96-byte chunk at 9600
+     * with 100 ms chunks). */
     uint32_t baud = g_dev.line.baud ? g_dev.line.baud : 115200;
     size_t chunk = baud / 1000;
 
@@ -438,6 +437,17 @@ int usbs_write(const uint8_t *buf, size_t n)
         chunk = 8;
     if (chunk > USBS_OUT_CHUNK)
         chunk = USBS_OUT_CHUNK;
+    return chunk;
+}
+
+int usbs_write(const uint8_t *buf, size_t n)
+{
+    /* Chunks of usbs_out_chunk(), each with a timeout of twice its line
+     * time plus a second, so a slow baud rate neither times out nor holds
+     * the caller for long. */
+    uint32_t baud = g_dev.line.baud ? g_dev.line.baud : 115200;
+    size_t chunk = usbs_out_chunk();
+
     while (n > 0) {
         struct usbdevfs_bulktransfer b;
         size_t len = n > chunk ? chunk : n;
@@ -752,6 +762,7 @@ void usbs_close(void)
         close(g_dev.fd);
     }
     g_dev.fd = -1;
+    g_out_len = 0;   /* a new adapter (or the same one reopened) holds nothing of ours */
     usbs_purge_rx();
 }
 

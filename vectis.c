@@ -115,7 +115,7 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.17.6"
+#define PROGRAM_VERSION      "1.17.7"
 #define PROGRAM_RELEASE_DATE "2026-11-19"
 
 #define RECONNECT_DELAY_S 5
@@ -181,6 +181,9 @@ static long long   g_pulse_end_ms = 0;
 static const char *g_pulse_source = "";
 
 static int set_serial_signal_state(int signal_flag, int active);
+static int txq_flush(void);
+static void txq_flush_leaving(void);
+static void txq_clear(void);
 static void web_shutdown(void);
 static void srv_shutdown(void);
 static void wt_broadcast(const uint8_t *data, size_t len);
@@ -302,6 +305,11 @@ static void restore_serial(void)
 
 static void disconnect(void)
 {
+    /* Leaving on purpose: what was typed last still goes out, before the
+     * lines below change. */
+    if (g_quit && g_fd >= 0)
+        txq_flush_leaving();
+    txq_clear();
     /* -u: the lines go down with the tty anyway (the kernel drops them on
      * close), so drop them first.  -U keeps them: the target's power
      * survives a restart of vectis. */
@@ -434,6 +442,10 @@ static int port_getattr(int fd, struct termios *t)
 
 static int port_setattr(int fd, const struct termios *t)
 {
+    /* New settings apply after the data sent before; a failed link does
+     * not take them (a stalled device does: its bytes are dropped). */
+    if (txq_flush() != 0 && errno != ETIMEDOUT)
+        return -1;
 #ifdef VECTIS_USB
     if (g_usb) {
         struct usbs_line l;
@@ -448,6 +460,8 @@ static int port_setattr(int fd, const struct termios *t)
 
 static int port_flush(int fd, int how)
 {
+    if (how == TCOFLUSH || how == TCIOFLUSH)
+        txq_clear();
 #ifdef VECTIS_USB
     if (g_usb) {
         if (how == TCIFLUSH || how == TCIOFLUSH)
@@ -461,6 +475,8 @@ static int port_flush(int fd, int how)
 /* Serial break, 250 ms as tcsendbreak(fd, 0) gives on Linux. */
 static int port_break(int fd)
 {
+    if (txq_flush() != 0 && errno != ETIMEDOUT)
+        return -1;
 #ifdef VECTIS_USB
     if (g_usb)
         return usbs_send_break(250);
@@ -470,14 +486,223 @@ static int port_break(int fd)
 
 static int write_all(int fd, const void *buf, size_t n);
 
-/* Bytes for the device: the local port or the RFC 2217 socket. */
+/* ---------- Transmit queue for the device ----------
+ *
+ * Bytes for the device (the local port, the USB adapter or the RFC 2217
+ * socket) wait here and leave from the poll loop a short piece at a time
+ * (txq_pump()), so a long block at a low baud rate does not hold the loop
+ * for its whole line time: the web page, the power buttons, RFC 2217
+ * replies and the device's output keep flowing meanwhile.  The sources
+ * (the -l client, web terminals, stdin) are read only while the queue is
+ * below about half a second of line time (txq_room()), and no more than
+ * that, so TCP flow control holds back a fast sender.
+ *
+ * Whatever changes the line or talks to it out of band (line settings,
+ * break, RTS/DTR, RFC 2217 commands of the client) first lets the queued
+ * bytes out (txq_flush()), so it still applies after the data sent before
+ * it, as when every write was synchronous.  A purge of the transmit side
+ * and a lost link empty the queue.
+ *
+ * A device that takes nothing for TXQ_STALL_MS (a tty held by flow
+ * control, a pty nobody reads, a stalled RFC 2217 server) loses what is
+ * queued, with a warning: the sources are read again (an RFC 2217 purge,
+ * WebSocket pongs), and a flush never waits longer than that, so power,
+ * reset and line settings still work and vectis can still exit. */
+
+#define TXQ_SIZE   (64 * 1024)
+#define TXQ_FD_MAX 256          /* bytes per write() to a tty or socket */
+#define TXQ_STALL_MS 5000       /* no byte taken for this long: drop the queue */
+
+static uint8_t   g_txq[TXQ_SIZE];
+static size_t    g_txq_head, g_txq_len;
+static long long g_txq_moved_ms;   /* the device last took bytes (or the wait began) */
+static int       g_txq_stall_ms = TXQ_STALL_MS;   /* shorter when leaving */
+
+static void txq_clear(void)
+{
+    g_txq_head = g_txq_len = 0;
+}
+
+/* Drop the queue when the device has taken nothing for TXQ_STALL_MS.
+ * Returns 1 (errno = ETIMEDOUT) when it did. */
+static int txq_drop_stalled(void)
+{
+    if (g_txq_len == 0 || now_ms() - g_txq_moved_ms < g_txq_stall_ms)
+        return 0;
+    log_message(LOG_WARNING, "device took nothing for %d s: %zu queued bytes dropped",
+                g_txq_stall_ms / 1000, g_txq_len);
+    txq_clear();
+    errno = ETIMEDOUT;
+    return 1;
+}
+
+/* The line's baud rate, 0 when unknown (RFC 2217 client: a socket). */
+static uint32_t link_baud(void)
+{
+    struct termios t;
+
+    if (g_fd < 0 || !g_serial_mode || port_getattr(g_fd, &t) != 0)
+        return 0;
+    return (uint32_t)baud_from_speed(cfgetospeed(&t));
+}
+
+/* How many more bytes the sources may hand over now: up to about 500 ms
+ * of line time queued (64 bytes at least, TXQ_SIZE / 4 at most, and that
+ * when the rate is unknown).  0: do not read the sources.  While the link
+ * is down whatever is read is dropped anyway. */
+static size_t txq_room(void)
+{
+    uint32_t baud;
+    size_t high;
+
+    if (g_fd < 0)
+        return READ_BUF_SIZE;
+    baud = link_baud();
+    high = baud ? baud / 20 : TXQ_SIZE / 4;
+    if (high < 64)
+        high = 64;
+    if (high > TXQ_SIZE / 4)
+        high = TXQ_SIZE / 4;
+    return g_txq_len >= high ? 0 : high - g_txq_len;
+}
+
+/* Read size for a source: what txq_room() allows, at most max, and 1
+ * when it allows nothing (a hangup still has to be read to be seen). */
+static size_t txq_read_size(size_t max)
+{
+    size_t room = txq_room();
+
+    if (room == 0)
+        room = 1;
+    return room < max ? room : max;
+}
+
+/* Send one piece of the queue: a usbs_out_chunk() with -U (it blocks for
+ * about 10 ms of line time), else what one write() takes of TXQ_FD_MAX.
+ * Returns 0, or -1 when the link failed (the queue is emptied). */
+static int txq_pump(void)
+{
+    size_t n = g_txq_len;
+
+    if (n == 0)
+        return 0;
+    if (g_fd < 0) {
+        txq_clear();
+        errno = ENODEV;
+        return -1;
+    }
+    if (n > TXQ_SIZE - g_txq_head)
+        n = TXQ_SIZE - g_txq_head;          /* up to the end of the ring */
+#ifdef VECTIS_USB
+    if (g_usb) {
+        if (n > usbs_out_chunk())
+            n = usbs_out_chunk();
+        if (usbs_write(g_txq + g_txq_head, n) != 0) {
+            txq_clear();
+            return -1;
+        }
+    } else
+#endif
+    {
+        ssize_t k;
+
+        int fl = fcntl(g_fd, F_GETFL);
+
+        if (n > TXQ_FD_MAX)
+            n = TXQ_FD_MAX;
+        /* Never block here: POLLOUT on a tty means some room, not room
+         * for all n bytes.  The fd stays blocking for everything else. */
+        if (fl >= 0 && !(fl & O_NONBLOCK))
+            (void)fcntl(g_fd, F_SETFL, fl | O_NONBLOCK);
+        k = write(g_fd, g_txq + g_txq_head, n);
+        if (fl >= 0 && !(fl & O_NONBLOCK)) {
+            int e = errno;
+            (void)fcntl(g_fd, F_SETFL, fl);
+            errno = e;
+        }
+        if (k < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                return 0;
+            txq_clear();
+            return -1;
+        }
+        n = (size_t)k;
+    }
+    if (n > 0)
+        g_txq_moved_ms = now_ms();
+    g_txq_head = (g_txq_head + n) % TXQ_SIZE;
+    g_txq_len -= n;
+    if (g_txq_len == 0)
+        g_txq_head = 0;
+    return 0;
+}
+
+/* Send everything queued before going on (blocking while the device takes
+ * bytes).  Returns 0; -1 with errno ETIMEDOUT when the device stalled and
+ * the rest was dropped (the caller goes on: power and line settings must
+ * work all the same); -1 with another errno when the link failed. */
+static int txq_flush(void)
+{
+    while (g_txq_len > 0) {
+        if (txq_pump() != 0)
+            return -1;
+        if (txq_drop_stalled())
+            return -1;
+        if (g_txq_len > 0 && !g_usb) {
+            struct pollfd pfd = { .fd = g_fd, .events = POLLOUT };
+            (void)poll(&pfd, 1, 100);
+        }
+    }
+    return 0;
+}
+
+/* On exit: the same, but a device that takes nothing for a second loses
+ * the rest, so vectis does not wait long to leave. */
+static void txq_flush_leaving(void)
+{
+    g_txq_stall_ms = 1000;
+    (void)txq_flush();
+    g_txq_stall_ms = TXQ_STALL_MS;
+}
+
+/* Bytes for the device: queued, sent by the poll loop.  Returns -1 only
+ * when the link is down or failed while making room. */
 static int link_write(const void *buf, size_t n)
 {
-#ifdef VECTIS_USB
-    if (g_usb)
-        return usbs_write((const uint8_t *)buf, n);
-#endif
-    return write_all(g_fd, buf, n);
+    const uint8_t *p = (const uint8_t *)buf;
+
+    if (g_fd < 0) {
+        errno = ENODEV;
+        return -1;
+    }
+    while (n > 0) {
+        size_t tail, k;
+
+        if (g_txq_len == TXQ_SIZE) {        /* more than the sources may give: */
+            if (txq_pump() != 0)            /* make room the old way */
+                return -1;
+            if (txq_drop_stalled())
+                continue;                   /* dropped: room again */
+            if (g_txq_len == TXQ_SIZE && !g_usb) {
+                struct pollfd pfd = { .fd = g_fd, .events = POLLOUT };
+                (void)poll(&pfd, 1, 100);
+            }
+            continue;
+        }
+        tail = (g_txq_head + g_txq_len) % TXQ_SIZE;
+        k = TXQ_SIZE - g_txq_len;
+        if (k > TXQ_SIZE - tail)
+            k = TXQ_SIZE - tail;
+        if (k > n)
+            k = n;
+        if (g_txq_len == 0)
+            g_txq_moved_ms = now_ms();      /* the wait for the device starts */
+        memcpy(g_txq + tail, p, k);
+        g_txq_len += k;
+        p += k;
+        n -= k;
+    }
+    return 0;
 }
 
 static int configure_serial(int fd, int baud, int data_bits, int stop_bits, char parity)
@@ -591,10 +816,14 @@ static int set_serial_signal_state(int signal_flag, int active)
     return 0;
 }
 
-/* Guaranteed write of N bytes to a file descriptor. Returns -1 on error. */
+/* Guaranteed write of N bytes to a file descriptor. Returns -1 on error.
+ * To the link (RFC 2217 commands of the client), the queued data first. */
 static int write_all(int fd, const void *buf, size_t n)
 {
     const uint8_t *p = (const uint8_t *)buf;
+
+    if (fd == g_fd && g_txq_len > 0 && txq_flush() != 0 && errno != ETIMEDOUT)
+        return -1;
     while (n > 0) {
         ssize_t k = write(fd, p, n);
         if (k < 0) {
@@ -907,6 +1136,10 @@ static int power_set(int on, const char *source)
     int was = g_power_on;
 
     if (g_fd < 0)
+        return -1;
+    /* The power follows the data sent before it; a failed link takes no
+     * command (a stalled device does: its bytes are dropped). */
+    if (txq_flush() != 0 && errno != ETIMEDOUT)
         return -1;
 #ifdef VECTIS_USB
     if (g_usb) {
@@ -2037,7 +2270,8 @@ static void wt_to_link(const uint8_t *d, size_t n)
  * taken whole. */
 static void wt_read(struct wt_client *c)
 {
-    ssize_t n = recv(c->fd, c->in + c->in_len, WT_IN_MAX - c->in_len, MSG_DONTWAIT);
+    ssize_t n = recv(c->fd, c->in + c->in_len, txq_read_size(WT_IN_MAX - c->in_len),
+                     MSG_DONTWAIT);
 
     if (n < 0) {
         if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)
@@ -2697,7 +2931,9 @@ static int web_fill_pollfds(struct pollfd *p)
     for (int i = 0; i < WT_MAX_CLIENTS; i++) {
         struct pollfd *t = &p[WEB_NLISTEN + WEB_MAX_CLIENTS + i];
         t->fd      = g_wt[i].fd;
-        t->events  = (short)(POLLIN | (g_wt[i].out_len > 0 ? POLLOUT : 0));
+        /* Typing waits while the device's queue is full. */
+        t->events  = (short)((txq_room() > 0 ? POLLIN : 0) |
+                             (g_wt[i].out_len > 0 ? POLLOUT : 0));
         t->revents = 0;
     }
 #endif
@@ -3062,6 +3298,8 @@ static void srv_set_line(int flag, int on)
 {
     int was = g_power_on;
 
+    if (txq_flush() != 0 && errno != ETIMEDOUT)
+        return;   /* the link failed: nothing changed */
     if (set_serial_signal_state(flag, on) != 0)
         return;   /* nothing changed: the state and a running pulse stay */
     if (flag == TIOCM_DTR)
@@ -3298,7 +3536,7 @@ static void srv_legacy_process(const uint8_t *in, size_t n)
 static void srv_handle_client_input(void)
 {
     static uint8_t in[READ_BUF_SIZE];
-    ssize_t n = read(g_srv_fd, in, sizeof in);
+    ssize_t n = read(g_srv_fd, in, txq_read_size(sizeof in));
 
     if (n < 0) {
         if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -3391,7 +3629,9 @@ static int srv_fill_pollfds(struct pollfd *p)
     if (g_srv_listen_fd < 0)
         return 0;
     p[0].fd = g_srv_listen_fd; p[0].events = POLLIN; p[0].revents = 0;
-    p[1].fd = g_srv_fd;        p[1].events = POLLIN; p[1].revents = 0;
+    p[1].fd = g_srv_fd;        p[1].revents = 0;
+    /* The client's bytes wait while the device's queue is full. */
+    p[1].events = txq_room() > 0 ? POLLIN : 0;
     return SRV_NPOLL;
 }
 
@@ -4188,10 +4428,13 @@ int main(int argc, char **argv)
 
             pulse_tick();
             pfds[0].fd     = g_fd;
-            /* usbfs signals completed URBs as writable. */
-            pfds[0].events = g_usb ? POLLOUT : POLLIN;
-            /* A negative fd makes poll() skip the slot (revents = 0). */
-            pfds[1].fd     = g_watch_stdin ? STDIN_FILENO : -1;
+            /* usbfs signals completed URBs as writable; a tty or socket
+             * is watched for room while bytes for it are queued. */
+            pfds[0].events = g_usb ? POLLOUT
+                                   : (short)(POLLIN | (g_txq_len > 0 ? POLLOUT : 0));
+            /* A negative fd makes poll() skip the slot (revents = 0).
+             * Input waits while the device's queue is full. */
+            pfds[1].fd     = g_watch_stdin && txq_room() > 0 ? STDIN_FILENO : -1;
             pfds[1].events = POLLIN;
             int nsrv = srv_fill_pollfds(&pfds[2]);
             int nweb = web_fill_pollfds(&pfds[2 + nsrv]);
@@ -4200,8 +4443,9 @@ int main(int argc, char **argv)
              * when a reset pulse is due to end sooner. */
             int timeout = pulse_poll_timeout(500);
 #ifdef VECTIS_USB
-            if (g_usb && usbs_pending() > 0)
-                timeout = 0;   /* received during a write: deliver it now */
+            if (g_usb && (usbs_pending() > 0 || g_txq_len > 0))
+                timeout = 0;   /* received during a write: deliver it now;
+                                * queued bytes: the next piece goes now */
 #endif
             int r = poll(pfds, 2 + nsrv + nweb, timeout);
             if (r < 0) {
@@ -4216,6 +4460,16 @@ int main(int argc, char **argv)
              * or the web page. */
             srv_handle_pollfds(&pfds[2], nsrv);
             web_handle_pollfds(&pfds[2 + nsrv], nweb);
+
+            /* The next piece of the device's queue: with -U one short
+             * chunk per pass, else when the tty or socket has room. */
+            if (g_txq_len > 0 && (g_usb || (pfds[0].revents & POLLOUT)) &&
+                txq_pump() != 0) {
+                log_errno(LOG_ERR, g_usb ? "USB write" :
+                          g_serial_mode ? "write(serial)" : "write(socket)");
+                break;
+            }
+            (void)txq_drop_stalled();
 
 #ifdef VECTIS_USB
             if (g_usb) {
@@ -4284,7 +4538,7 @@ int main(int argc, char **argv)
             if (pfds[1].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) {
                 ssize_t n = 0;
                 if (pfds[1].revents & POLLIN) {
-                    n = read(STDIN_FILENO, buf, sizeof buf);
+                    n = read(STDIN_FILENO, buf, txq_read_size(sizeof buf));
                     if (n < 0) {
                         if (errno == EINTR || errno == EAGAIN) /* signal or spurious wakeup (N3) */
                             continue;
