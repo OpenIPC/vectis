@@ -176,4 +176,59 @@ final class Brass {
         lp.setMargins(m, m, m, m);
         return lp;
     }
+
+    /**
+     * The Show log window (brass 1.3.1, as pusher's): about `rows` lines high with its own
+     * scrolling, so the page does not grow; oldest at the top; follows the last line unless
+     * scrolled up; the remote's focus with the focus ring on a frame around it.
+     */
+    static final class LogWindow {
+        final android.widget.FrameLayout view;    // the frame: display, focus ring
+        private final android.widget.ScrollView scroll;
+        private final TextView text;
+        private String shown = "";
+
+        LogWindow(Context c, int rows) {
+            text = new TextView(c);
+            text.setTypeface(Typeface.MONOSPACE);
+            text.setTextSize(11);
+            text.setTextColor(color(c, R.color.dim));
+            int pad = dp(c, 12);
+            text.setPadding(pad, pad, pad, pad);
+            scroll = new android.widget.ScrollView(c) {
+                @Override
+                public boolean onInterceptTouchEvent(android.view.MotionEvent e) {
+                    // the page scrolls too: keep the drag inside the window
+                    if (e.getActionMasked() == android.view.MotionEvent.ACTION_DOWN)
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                    return super.onInterceptTouchEvent(e);
+                }
+            };
+            scroll.setFocusable(true);
+            scroll.setScrollBarStyle(View.SCROLLBARS_INSIDE_OVERLAY);
+            scroll.addView(text);
+            // The ring on a frame around the scroll view: the foreground of a ScrollView
+            // moves with its content; the frame takes the focused state of its child
+            view = new android.widget.FrameLayout(c);
+            view.setBackgroundResource(R.drawable.display);
+            view.setAddStatesFromChildren(true);
+            view.setForeground(c.getResources().getDrawable(R.drawable.focus_ring, null));
+            view.addView(scroll, new android.widget.FrameLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT));
+            height = rows * text.getLineHeight() + 2 * pad;
+        }
+
+        /** The height for the layout parameters: `rows` lines and the padding. */
+        final int height;
+
+        void setText(String s) {
+            if (s.equals(shown))
+                return;
+            boolean atEnd = scroll.getScrollY() + scroll.getHeight() >= text.getHeight() - dp(scroll.getContext(), 4);
+            shown = s;
+            text.setText(s);
+            if (atEnd)
+                scroll.post(() -> scroll.scrollTo(0, Math.max(0, text.getHeight() - scroll.getHeight())));
+        }
+    }
 }

@@ -110,6 +110,15 @@ final class Settings {
         prefs(c).edit().putBoolean(REMOTE, on).apply();
     }
 
+    /** The service is up: set by it, cleared when it ends or at boot; an update keeps it. */
+    static boolean serviceUp(Context c) {
+        return prefs(c).getBoolean("service_up", false);
+    }
+
+    static void setServiceUp(Context c, boolean up) {
+        prefs(c).edit().putBoolean("service_up", up).apply();
+    }
+
     /** The event log under the panel (off by default). */
     static boolean showLog(Context c) {
         return prefs(c).getBoolean(SHOW_LOG, false);
