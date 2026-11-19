@@ -6,6 +6,14 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.6 — 2026-11-19
+
+- `-U`: received data is no longer lost while a longer block is sent at a low baud rate. vectis
+  sent to the adapter in blocking chunks of about 100 ms of line time and took nothing from it
+  meanwhile; at 4800 or 9600 the chip's receive buffer overflowed and the middle of an echoed
+  block was gone (a CH341A in a loopback lost about 200 of 512 bytes at 9600). The chunks are now
+  about 10 ms long (#124).
+
 ## 1.17.5 — 2026-11-19
 
 - Android: brass check boxes and radio buttons (brass 1.4.0) instead of the system ones, whose
