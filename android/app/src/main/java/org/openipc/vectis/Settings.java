@@ -148,8 +148,13 @@ final class Settings {
         prefs(c).edit().putBoolean(BOOT, on).apply();
     }
 
+    /**
+     * Written at once (commit, not apply): an update right after Stop must find it on disk,
+     * or the receiver would start the service the user stopped.
+     */
+    @android.annotation.SuppressLint("ApplySharedPref")
     static void setRunning(Context c, boolean on) {
-        prefs(c).edit().putBoolean(RUNNING, on).apply();
+        prefs(c).edit().putBoolean(RUNNING, on).commit();
     }
 
     // ── the camex tunnel ──────────────────────────────────────────
