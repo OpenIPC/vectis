@@ -14,6 +14,8 @@ import java.util.Locale;
 public final class LogBuffer {
     private final int capacity;
     private final ArrayDeque<String> lines = new ArrayDeque<>();
+    /** Lines pushed out at the top since the start: only grows. */
+    private long removed;
     private final SimpleDateFormat stamp = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US);
 
     public LogBuffer(int capacity) {
@@ -21,9 +23,26 @@ public final class LogBuffer {
     }
 
     public synchronized void add(String line) {
-        if (lines.size() >= capacity)
+        if (lines.size() >= capacity) {
             lines.removeFirst();
+            removed++;
+        }
         lines.addLast(stamp.format(new Date()) + " " + line);
+    }
+
+    /** All the lines, oldest first, and how many left the top before them, taken together. */
+    public static final class Snapshot {
+        public final String text;
+        public final long removed;
+
+        Snapshot(String text, long removed) {
+            this.text = text;
+            this.removed = removed;
+        }
+    }
+
+    public synchronized Snapshot snapshot() {
+        return new Snapshot(tail(lines.size()), removed);
     }
 
     /** The last n lines, oldest first. */

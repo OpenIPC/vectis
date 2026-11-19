@@ -57,13 +57,14 @@ import org.openipc.camex.tunnel.Field;
 public class MainActivity extends Activity {
     private static final String ACTION_PERMISSION = "org.openipc.vectis.PERMISSION";
     private static final int REFRESH_MS = 1000;
-    private static final int LOG_SHOWN = 8;
+    /** The log window: this many lines high (brass 1.3.1), the whole buffer inside. */
+    private static final int LOG_ROWS = 12;
     private static final int ASK_VPN = 2;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Brass.Row rAdapter, rPower, rVectis, rConsole, rWeb, rCamex;
     private LinearLayout accessRow;
-    private TextView logView;
+    private Brass.LogWindow logWindow;
     private Button start, stop, access, consent, terminal;
     /** The last /status of vectis, read off the UI thread; null if none. */
     private volatile JSONObject status;
@@ -161,17 +162,19 @@ public class MainActivity extends Activity {
         showLog.setOnCheckedChangeListener((b, on) -> {
             Settings.setShowLog(this, on);
             update();
+            if (on)
+                logWindow.shown();        // opened: at the end, however long the log is
         });
         checks.addView(showLog, Brass.margins(this, LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 0));
         col.addView(checks);
 
-        logView = Brass.display(this);
-        logView.setTextSize(11);
+        // The log (Show log, brass 1.3.1): Brass.LogWindow, as in pusher
+        logWindow = new Brass.LogWindow(this, LOG_ROWS);
         LinearLayout.LayoutParams lgp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                LinearLayout.LayoutParams.MATCH_PARENT, logWindow.height);
         lgp.setMargins(0, pad, 0, 0);
-        page.addView(logView, lgp);
+        page.addView(logWindow.view, lgp);
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(page);
@@ -653,8 +656,9 @@ public class MainActivity extends Activity {
         accessRow.setVisibility(access.getVisibility() == View.VISIBLE || consent.getVisibility() == View.VISIBLE
                 ? View.VISIBLE : View.GONE);
         terminal.setEnabled(running);
-        logView.setText(s != null ? s.log.tail(LOG_SHOWN).trim() : "");
-        logView.setVisibility(s != null && Settings.showLog(this) ? View.VISIBLE : View.GONE);
+        LogBuffer.Snapshot log = s != null ? s.log.snapshot() : null;
+        logWindow.setText(log != null ? log.text.trim() : "", log != null ? log.removed : 0);
+        logWindow.view.setVisibility(s != null && Settings.showLog(this) ? View.VISIBLE : View.GONE);
     }
 
     /** A port row: the address when vectis serves it, OFF or FAILED otherwise. */

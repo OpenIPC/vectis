@@ -110,6 +110,31 @@ final class Settings {
         prefs(c).edit().putBoolean(REMOTE, on).apply();
     }
 
+    /**
+     * The service is up: set by it, cleared when it ends or at boot; an update keeps it.  Null
+     * when never written (an install from before the mark).
+     */
+    static Boolean serviceUp(Context c) {
+        SharedPreferences p = prefs(c);
+        return p.contains("service_up") ? p.getBoolean("service_up", false) : null;
+    }
+
+    static void setServiceUp(Context c, boolean up) {
+        prefs(c).edit().putBoolean("service_up", up).apply();
+    }
+
+    /**
+     * Something saved by a user of the app (Start or Stop, Start on boot, the settings, the
+     * tunnel): an install from before the service mark that was set up, not one never opened.
+     */
+    static boolean usedBefore(Context c) {
+        SharedPreferences p = prefs(c);
+        for (String k : new String[] {RUNNING, BOOT, BAUD, CONSOLE, WEB, PASSWORD, TUNNEL})
+            if (p.contains(k))
+                return true;
+        return false;
+    }
+
     /** The event log under the panel (off by default). */
     static boolean showLog(Context c) {
         return prefs(c).getBoolean(SHOW_LOG, false);

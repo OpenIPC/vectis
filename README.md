@@ -1014,7 +1014,8 @@ kept. When another app already holds it, vectis takes the next free one
   and `CAMEX` when the tunnel is on. Under it the buttons Start, Stop,
   Terminal and Settings, two in a row (**Allow USB access** and the VPN
   consent only when needed), and the check boxes **Start on boot** and
-  **Show log** (the event log under the panel; both off by default).
+  **Show log** (the event log under the panel, a window of about 12
+  lines with its own scrolling that follows the newest; both off by default).
 - **Settings** is one window in two sections. **VECTIS**: **Allow remote
   access**, the baud rate, the two ports (1024 and up: lower ones need
   root) and the web page password; **CAMEX**: the tunnel (below).
@@ -1044,6 +1045,8 @@ kept. When another app already holds it, vectis takes the next free one
   adapter that was already plugged in, so the access dialog comes up on
   the screen: press OK on the remote. On a box without a screen, unplug
   the adapter and plug it back in.
+- **After an update** of the app the service and the camex tunnel come
+  back by themselves if the service ran before it.
 - **Stop** keeps vectis stopped until Start: boot and plug-in events
   leave it alone.
 - Both ports listen on every interface of the box, as `-l PORT` and

@@ -90,6 +90,43 @@ public class LogicTest {
     }
 
     @Test
+    public void startAfterBootOrUpdate() {
+        // boot: Start on boot and not stopped
+        assertTrue(BootReceiver.shouldStart(true, true, true, true, true));
+        assertFalse(BootReceiver.shouldStart(true, true, true, true, false));
+        assertFalse(BootReceiver.shouldStart(true, true, true, false, true));
+        // update: the service was up and not stopped
+        assertTrue(BootReceiver.shouldStart(false, true, true, true, false));
+        assertFalse(BootReceiver.shouldStart(false, false, true, true, true));
+        assertFalse(BootReceiver.shouldStart(false, true, true, false, true));
+        // update from an install without the mark: only one that was set up
+        assertTrue(BootReceiver.shouldStart(false, null, true, true, false));
+        assertFalse(BootReceiver.shouldStart(false, null, false, true, false));   // never opened
+        assertFalse(BootReceiver.shouldStart(false, null, true, false, false));   // stopped
+    }
+
+    @Test
+    public void logLinesGoneFromTheTop() {
+        // counted by the buffer, not by the text: equal lines repeat
+        LogBuffer log = new LogBuffer(3);
+        log.add("x");
+        log.add("x");
+        assertEquals(0, log.snapshot().removed);
+        log.add("x");
+        log.add("x");
+        log.add("y");
+        LogBuffer.Snapshot s = log.snapshot();
+        assertEquals(2, s.removed);
+        assertEquals(3, s.text.split("\n").length);
+        // and their text, line ends included
+        assertEquals(0, Brass.LogWindow.charsOfLines("ab\ncd\n", 0));
+        assertEquals(3, Brass.LogWindow.charsOfLines("ab\ncd\n", 1));
+        assertEquals(6, Brass.LogWindow.charsOfLines("ab\ncd\n", 2));
+        assertEquals(6, Brass.LogWindow.charsOfLines("ab\ncd\n", 5));
+        assertEquals(5, Brass.LogWindow.charsOfLines("ab\ncd", 2));
+    }
+
+    @Test
     public void webPortDefaultIs8085() {
         assertEquals(8085, Settings.DEFAULT_WEB);   // camex servers and Decoder expect it
     }

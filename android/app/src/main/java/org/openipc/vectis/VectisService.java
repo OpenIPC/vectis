@@ -198,6 +198,7 @@ public class VectisService extends Service {
     public void onCreate() {
         super.onCreate();
         instance = this;
+        Settings.setServiceUp(this, true);
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vectis:serve");
         wakeLock.setReferenceCounted(false);
@@ -245,6 +246,7 @@ public class VectisService extends Service {
         stopVectis();
         stopTunnel();
         dropNotificationLater(getApplicationContext());
+        Settings.setServiceUp(this, false);
         instance = null;
         super.onDestroy();
     }
