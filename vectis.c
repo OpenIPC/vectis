@@ -1262,10 +1262,14 @@ static const char web_page[] =
     "}\n"
     "function row(c,k,v,title,vc){return '<div class=r'+(title?' title=\\''+esc(title).replace(/'/g,'&#39;')+'\\'':'')+'><span class=\\'bulb '+(c||'none')+'\\'></span><span class=k>'+k+'</span><span class=\\'v '+(vc||'')+'\\'>'+v+'</span></div>'}\n"
     /* The terminal bar shows the UART line, not the page's link (brass 1.3.0). */
-    "function uart(online,dead,mode){var p=$('t-state'),l=$('t-act');if(!p)return;\n"
-    " if(noTerm){p.textContent='No terminal';p.className='plate bad';l.className='bulb bad';return}\n"
+#ifdef VECTIS_WEBTERM
+    "function uart(online,dead,mode){var p=$('t-state'),l=$('t-act');\n"
+    " if(noTerm){p.textContent='No xterm';p.className='plate bad';l.className='bulb bad';return}\n"
     " p.innerHTML=dead?'No service':online?esc(mode)+' &middot; online':'No adapter';\n"
     " p.className='plate'+(online?' on':' bad');l.className='bulb'+(online?' ok':' bad')}\n"
+#else
+    "function uart(){}\n"
+#endif
     "function remote(e){\n"
     " if(!e){return}\n"
     " if(lastSeq<0){lastSeq=e.seq;return}\n"
