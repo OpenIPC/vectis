@@ -79,8 +79,9 @@ static uint8_t g_rx[USBS_RX_SIZE];
 static size_t  g_rx_head, g_rx_len;
 static int     g_rx_overflow;       /* logged once per overflow */
 
-/* The last bulk OUT: when it completed and how long it was, so a break
- * can wait until those bytes have left the chip's FIFO. */
+/* The last bulk OUT: when it completed and how many bytes may still be in
+ * the chip at that moment (that transfer and what is left of earlier
+ * ones), so a break can wait until they have left the chip's FIFO. */
 static struct timespec g_out_done;
 static size_t          g_out_len;
 
@@ -459,8 +460,20 @@ int usbs_write(const uint8_t *buf, size_t n)
         }
         buf += r;
         n   -= (size_t)r;
+        /* The chip may still hold bytes of earlier chunks: carry over
+         * what their line time has not drained yet (at the real frame
+         * length, so the estimate does not grow over a long stream), so
+         * a break waits for all of it. */
+        if (g_out_len > 0) {
+            long long bits = 1 + g_dev.line.data_bits + g_dev.line.stop_bits +
+                             (g_dev.line.parity != 'N');
+            if (g_dev.line.data_bits == 0)
+                bits = 10;                     /* line not set yet: 8N1 */
+            long long gone = ms_since(&g_out_done) * (long long)baud / (bits * 1000);
+            g_out_len = gone >= (long long)g_out_len ? 0 : g_out_len - (size_t)gone;
+        }
         clock_gettime(CLOCK_MONOTONIC, &g_out_done);
-        g_out_len = (size_t)r;
+        g_out_len += (size_t)r;
         /* Keep the IN side drained while the chip is busy sending. */
         if (usbs_service() != 0)
             return -1;
@@ -789,8 +802,8 @@ int usbs_send_break(int ms)
         errno = ENODEV;
         return -1;
     }
-    /* A finished bulk OUT only means the chip has the bytes: let the
-     * last chunk leave the wire first (12 bits per byte at most), as
+    /* A finished bulk OUT only means the chip has the bytes: let what
+     * it may still hold leave the wire first (12 bits per byte at most), as
      * tcsendbreak() drains a tty. */
     if (g_out_len > 0) {
         long long left = (long long)g_out_len * 12 * 1000 / baud + 5 - ms_since(&g_out_done);
