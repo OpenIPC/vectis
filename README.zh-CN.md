@@ -763,7 +763,9 @@ Telnet 客户端的 `SET-CONTROL`）或 `link`（打开串口时拉高），`seq
 随每个事件递增，`ago_ms` 表示事件发生在多久之前。`terminals` 是已打开的
 Web 终端数量（在 `make WEBTERM=0` 构建中为 `null`），`terminal_token` 是页面
 打开终端时使用的令牌（每个进程随机生成；`WEBTERM=0` 构建中没有）。
-页面借此显示在别处触发的复位：来自键盘或来自
+`GET /status?term=ID` 会在最近一分钟内 vectis 断开或拒绝了页面以 `&term=ID`
+打开的终端时（直到它再次打开）附加 `"terminal_closed":"too slow"` 或
+`"busy"`，以便页面说明原因。页面借助 `event` 显示在别处触发的复位：来自键盘或来自
 `vectis -h HOST -p PORT` 客户端的 `Ctrl+P` 会使
 RESET 按钮点亮、标签页标题显示 `Resetting`，日志行中会注明
 来源。最近一次事件还会保留在面板的 `LAST` 行中，例如
@@ -786,8 +788,10 @@ RESET 按钮点亮、标签页标题显示 `Resetting`，日志行中会注明
 面板底部、电源控制下方是同一 UART 的终端：设备输出的一切，以及向设备输入的
 键盘。默认折叠；点击“UART terminal”栏可展开或折叠，浏览器会记住该选择
 （`localStorage`）。连接在首次展开时建立并保持，因此折叠时输出仍在累积。栏上的
-指示灯和铭牌显示 UART 线路，而不是页面的连接：绿色 `USB · ONLINE`、红色
-`NO ADAPTER`，vectis 不应答时为 `NO SERVICE`。从未展开终端的页面不占用服务器上的终端。它是 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0，内置于
+指示灯和铭牌显示终端自身的连接（UART 线路见上方的面板）：绿色 `CONNECTED`，
+琥珀色 `RECONNECTING`（网络、vectis 重启），红色 `CLOSED · TOO SLOW` /
+`CLOSED · BUSY` / `CLOSED · PASSWORD`：终端落后被 vectis 断开、终端已满或密码
+不再匹配。从未展开终端的页面不占用服务器上的终端。它是 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0，内置于
 `vectis` 并由其自身提供（`/xterm-5.5.0.js`、`/xterm-5.5.0.css`，gzip 压缩，
 约 70 KB），因此浏览器无需访问互联网；`make WEBTERM=0` 不包含它。
 

@@ -769,6 +769,52 @@ def test_web_terminal(tmp):
           "the log names opened, dropped and refused terminals")
 
 
+def test_web_terminal_closed(tmp):
+    print("== web terminal: the bar shows the terminal's own link (brass 1.4.2)")
+    dev = FakeDevice(os.path.join(tmp, "dev-wtc"))
+    wport = free_port()
+    p, log = start_quiet([VECTIS, "-u", dev.link, "-w", "127.0.0.1:%d" % wport, "-n"],
+                         os.path.join(tmp, "wtc.log"))
+    socks = []
+    try:
+        check(wait_listen(wport), "web up")
+        st = wait_status(wport, "link", "online")
+        if st.get("terminals", 0) is None:
+            return                                   # make WEBTERM=0
+        page = http_raw(wport, "/")[2].decode()
+        check("'Connected'" in page and "'Reconnecting'" in page and "Closed \\u00b7 " in page
+              and "/status?term=" in page and "&term=" in page,
+              "web page: Connected / Reconnecting / Closed \u00b7 <reason>, the page's terminal id")
+        check("No adapter" not in page and "function uart" not in page,
+              "web page: the bar no longer repeats the UART line of the board")
+        check("id='t-act'" in page and "bulb dim" in page and ">Closed</span>" in page,
+              "web page: before the first opening the bar reads Closed with a dim lamp")
+        check("terminal_closed" not in http(wport, "/status?term=pg1"),
+              "/status?term=: nothing for an id with no history")
+        for i in range(8):
+            socks.append(Ws(wport, query="?term=t%d" % i))
+        check(all(w.status == 101 for w in socks), "8 terminals open")
+        extra = Ws(wport, query="?term=pg1")
+        check(extra.status == 503, "a 9th terminal is refused (%d)" % extra.status)
+        extra.close()
+        check(http(wport, "/status?term=pg1").get("terminal_closed") == "busy",
+              "/status?term=: the refused page learns why (busy)")
+        check("terminal_closed" not in http(wport, "/status?term=t0") and
+              "terminal_closed" not in http(wport, "/status"),
+              "/status: no reason for another id or without one")
+        socks.pop().close()
+        time.sleep(0.3)
+        again = Ws(wport, query="?term=pg1")
+        check(again.status == 101, "the page gets a terminal once one is free")
+        check("terminal_closed" not in http(wport, "/status?term=pg1"),
+              "/status?term=: the reason is gone once the page's terminal is open again")
+        socks.append(again)
+    finally:
+        for w in socks:
+            w.close()
+        stop_quiet(p, log)
+
+
 def test_web_terminal_idle(tmp, results):
     """Runs in a thread beside the other tests (it waits ~35 s): a terminal
     that vanished without a FIN is closed, one that answers pings stays."""
@@ -1223,6 +1269,7 @@ def main():
         idle = threading.Thread(target=test_web_terminal_idle, args=(tmp, idle_results))
         idle.start()
         test_web_terminal(tmp)
+        test_web_terminal_closed(tmp)
         test_web_password(tmp)
         test_web_local(tmp)
         test_stdin_eof(tmp)

@@ -794,8 +794,11 @@ Telnet client) or `link` (asserted when the port was opened), `seq`
 grows with every event and `ago_ms` says how long ago it happened.
 `terminals` is the number of open web terminals (`null` in a
 `make WEBTERM=0` build), `terminal_token` the token the page opens the
-terminal with (random per process; not in a `WEBTERM=0` build). The
-page uses it to show a reset that was triggered elsewhere: a `Ctrl+P`
+terminal with (random per process; not in a `WEBTERM=0` build).
+`GET /status?term=ID` adds `"terminal_closed":"too slow"` or `"busy"` when
+vectis dropped or refused the terminal the page opened with `&term=ID` in
+the last minute (until it opens again), so the page can say why. The
+page uses the event to show a reset that was triggered elsewhere: a `Ctrl+P`
 from the keyboard or from a `vectis -h HOST -p PORT` client makes the
 RESET button light up and the tab title show `Resetting`, and the log
 line names the source. The last event also stays on the board in a
@@ -822,9 +825,11 @@ into it. It is closed by default; a click on the "UART terminal" bar opens
 and closes it, and the browser remembers which (`localStorage`). The
 connection starts on the first opening and stays, so output keeps
 collecting while the section is closed. The lamp and the plate on the
-bar show the UART line, not the page's connection: `USB · ONLINE` in
-green, `NO ADAPTER` in red, `NO SERVICE` when vectis does not answer. A
-page that never opens the terminal takes no terminal on the server. It is
+bar show the terminal's own connection (the UART line is on the board
+above): `CONNECTED` in green, `RECONNECTING` in amber (network, a vectis
+restart), `CLOSED · TOO SLOW` / `CLOSED · BUSY` / `CLOSED · PASSWORD` in
+red when vectis dropped it for falling behind, all terminals are taken
+or the password no longer matches. A page that never opens the terminal takes no terminal on the server. It is
 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0, built into
 `vectis` and served by it (`/xterm-5.5.0.js`, `/xterm-5.5.0.css`,
 gzipped, about 70 KB), so the browser needs no internet; `make WEBTERM=0`

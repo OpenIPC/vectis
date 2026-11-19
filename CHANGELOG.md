@@ -6,6 +6,16 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.8 — 2026-11-19
+
+- Web page: the lamp and plate on the UART TERMINAL bar show the terminal's own connection
+  (brass 1.4.2) instead of repeating the board's ADAPTER row: `CONNECTED` (green), `RECONNECTING`
+  (amber), `CLOSED · TOO SLOW` / `CLOSED · BUSY` / `CLOSED · PASSWORD` (red); `CLOSED` with a dim
+  lamp before the terminal is first opened. A dropped or refused terminal used to leave the board
+  green and the terminal silent. `GET /status?term=ID` tells the page why vectis dropped or
+  refused its terminal (`terminal_closed`) (#127).
+- Android: `focus_ring.xml` and `colors.xml` headers to brass 1.4.2 (comments only).
+
 ## 1.17.7 — 2026-11-19
 
 - Bytes for the device are queued and leave from the poll loop a short piece at a time, so a long
