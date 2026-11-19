@@ -17,14 +17,27 @@ public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context c, Intent intent) {
         String a = intent.getAction();
-        if (Intent.ACTION_BOOT_COMPLETED.equals(a)) {
+        boolean boot = Intent.ACTION_BOOT_COMPLETED.equals(a);
+        if (!boot && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(a))
+            return;
+        boolean start = shouldStart(boot, Settings.serviceUp(c), Settings.running(c), Settings.startOnBoot(c));
+        if (boot)
             Settings.setServiceUp(c, false);  // a reboot ends the service: nothing to bring back
-            if (Settings.startOnBoot(c) && Settings.running(c))
-                VectisService.send(c, VectisService.ACTION_START);
-        } else if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(a)) {
-            // The update killed a running service (no onDestroy): start it again, the tunnel too
-            if (Settings.serviceUp(c) && Settings.running(c))
-                VectisService.send(c, VectisService.ACTION_START);
-        }
+        if (start)
+            VectisService.send(c, VectisService.ACTION_START);
+    }
+
+    /**
+     * Whether to start the service.  At boot: Start on boot and not stopped.  After an update
+     * (which killed a running service without onDestroy): it was up and not stopped; serviceUp
+     * null is an install from before the mark (1.17.2 and older), where not stopped is all
+     * there is to go by.
+     */
+    static boolean shouldStart(boolean boot, Boolean serviceUp, boolean running, boolean startOnBoot) {
+        if (!running)
+            return false;                 // Stop was pressed: nothing starts it but Start
+        if (boot)
+            return startOnBoot;
+        return serviceUp == null || serviceUp;
     }
 }

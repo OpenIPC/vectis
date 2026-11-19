@@ -90,6 +90,21 @@ public class LogicTest {
     }
 
     @Test
+    public void startAfterBootOrUpdate() {
+        // boot: Start on boot and not stopped
+        assertTrue(BootReceiver.shouldStart(true, true, true, true));
+        assertFalse(BootReceiver.shouldStart(true, true, true, false));
+        assertFalse(BootReceiver.shouldStart(true, true, false, true));
+        // update: the service was up and not stopped
+        assertTrue(BootReceiver.shouldStart(false, true, true, false));
+        assertFalse(BootReceiver.shouldStart(false, false, true, true));
+        assertFalse(BootReceiver.shouldStart(false, true, false, true));
+        // update from an install without the mark: not stopped is enough
+        assertTrue(BootReceiver.shouldStart(false, null, true, false));
+        assertFalse(BootReceiver.shouldStart(false, null, false, false));
+    }
+
+    @Test
     public void webPortDefaultIs8085() {
         assertEquals(8085, Settings.DEFAULT_WEB);   // camex servers and Decoder expect it
     }

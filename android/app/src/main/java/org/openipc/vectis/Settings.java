@@ -110,9 +110,13 @@ final class Settings {
         prefs(c).edit().putBoolean(REMOTE, on).apply();
     }
 
-    /** The service is up: set by it, cleared when it ends or at boot; an update keeps it. */
-    static boolean serviceUp(Context c) {
-        return prefs(c).getBoolean("service_up", false);
+    /**
+     * The service is up: set by it, cleared when it ends or at boot; an update keeps it.  Null
+     * when never written (an install from before the mark).
+     */
+    static Boolean serviceUp(Context c) {
+        SharedPreferences p = prefs(c);
+        return p.contains("service_up") ? p.getBoolean("service_up", false) : null;
     }
 
     static void setServiceUp(Context c, boolean up) {
