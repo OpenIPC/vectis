@@ -58,7 +58,7 @@ public class MainActivity extends Activity {
     private static final String ACTION_PERMISSION = "org.openipc.vectis.PERMISSION";
     private static final int REFRESH_MS = 1000;
     /** The log window: this many lines high (brass 1.3.1), the whole buffer inside. */
-    private static final int LOG_ROWS = 12, LOG_KEPT = 200;
+    private static final int LOG_ROWS = 12;
     private static final int ASK_VPN = 2;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -656,7 +656,8 @@ public class MainActivity extends Activity {
         accessRow.setVisibility(access.getVisibility() == View.VISIBLE || consent.getVisibility() == View.VISIBLE
                 ? View.VISIBLE : View.GONE);
         terminal.setEnabled(running);
-        logWindow.setText(s != null ? s.log.tail(LOG_KEPT).trim() : "");
+        LogBuffer.Snapshot log = s != null ? s.log.snapshot() : null;
+        logWindow.setText(log != null ? log.text.trim() : "", log != null ? log.removed : 0);
         logWindow.view.setVisibility(s != null && Settings.showLog(this) ? View.VISIBLE : View.GONE);
     }
 

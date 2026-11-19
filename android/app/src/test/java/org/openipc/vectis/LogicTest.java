@@ -106,13 +106,24 @@ public class LogicTest {
     }
 
     @Test
-    public void logCharsGoneFromTheTop() {
-        assertEquals(0, Brass.LogWindow.droppedChars("", "a\nb"));
-        assertEquals(0, Brass.LogWindow.droppedChars("a\nb", "a\nb\nc"));
-        assertEquals(2, Brass.LogWindow.droppedChars("a\nb\nc", "b\nc\nd"));
-        // a long line counts by its characters, whatever it wraps to
-        assertEquals(10, Brass.LogWindow.droppedChars("long line\nb\nc", "b\nc\nd"));
-        assertEquals(5, Brass.LogWindow.droppedChars("a\nb\nc", "x\ny"));
+    public void logLinesGoneFromTheTop() {
+        // counted by the buffer, not by the text: equal lines repeat
+        LogBuffer log = new LogBuffer(3);
+        log.add("x");
+        log.add("x");
+        assertEquals(0, log.snapshot().removed);
+        log.add("x");
+        log.add("x");
+        log.add("y");
+        LogBuffer.Snapshot s = log.snapshot();
+        assertEquals(2, s.removed);
+        assertEquals(3, s.text.split("\n").length);
+        // and their text, line ends included
+        assertEquals(0, Brass.LogWindow.charsOfLines("ab\ncd\n", 0));
+        assertEquals(3, Brass.LogWindow.charsOfLines("ab\ncd\n", 1));
+        assertEquals(6, Brass.LogWindow.charsOfLines("ab\ncd\n", 2));
+        assertEquals(6, Brass.LogWindow.charsOfLines("ab\ncd\n", 5));
+        assertEquals(5, Brass.LogWindow.charsOfLines("ab\ncd", 2));
     }
 
     @Test

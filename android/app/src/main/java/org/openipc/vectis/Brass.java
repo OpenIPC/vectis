@@ -253,8 +253,9 @@ final class Brass {
             toEnd();
         }
 
-        void setText(String s) {
-            if (s.equals(shown))
+        /** The log and its count of lines gone from the top (LogBuffer.snapshot()). */
+        void setText(String s, long removed) {
+            if (s.equals(shown) && removed == shownRemoved)
                 return;
             if (!listening) {
                 listening = true;
@@ -269,16 +270,17 @@ final class Brass {
                 });
             }
             // Lines gone from the top (the buffer is full): a reader scrolled up stays on the
-            // same lines.  Measured on the layout of the old text: long lines wrap (pusher 0.22.2)
+            // same lines.  How many: the buffer's count, not a comparison of the text (equal
+            // lines repeat); how far: the layout of their text, as long lines wrap (brass 1.3.1)
+            long gone = removed - shownRemoved;
             int dy = 0;
-            if (!follow && text.getLayout() != null) {
-                int chars = droppedChars(shown, s);
-                if (chars > 0) {
-                    android.text.Layout lay = text.getLayout();
-                    dy = lay.getLineTop(lay.getLineForOffset(Math.min(chars, shown.length())));
-                }
+            if (!follow && gone > 0 && text.getLayout() != null) {
+                int chars = charsOfLines(shown, gone);
+                android.text.Layout lay = text.getLayout();
+                dy = lay.getLineTop(lay.getLineForOffset(Math.min(chars, shown.length())));
             }
             shown = s;
+            shownRemoved = removed;
             text.setText(s);
             if (follow) {
                 toEnd();
@@ -288,21 +290,20 @@ final class Brass {
             }
         }
 
+        private long shownRemoved;
+
         private boolean listening;
 
-        /**
-         * The length of the head of {@code old} that left the top to make {@code now} (a FIFO
-         * log): whole lines, 0 when nothing left, all of it when nothing is shared.
-         */
-        static int droppedChars(String old, String now) {
-            if (old.isEmpty() || now.startsWith(old))
-                return 0;
-            for (int i = old.indexOf('\n'); i >= 0; i = old.indexOf('\n', i + 1)) {
-                int rest = old.length() - i - 1;
-                if (rest <= now.length() && now.regionMatches(0, old, i + 1, rest))
-                    return i + 1;
+        /** The length of the first n lines of {@code text} with their line ends (all of it if fewer). */
+        static int charsOfLines(String text, long n) {
+            int at = 0;
+            for (long k = 0; k < n; k++) {
+                int nl = text.indexOf('\n', at);
+                if (nl < 0)
+                    return text.length();
+                at = nl + 1;
             }
-            return old.length();
+            return at;
         }
     }
 }

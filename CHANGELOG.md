@@ -10,8 +10,9 @@ up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 
 
 - Android: the Show log window (brass 1.3.1): a fixed height of about 12 lines with its own
   scrolling, so the page no longer grows; the whole kept log (200 lines, oldest at the top)
-  is inside; it follows the last line unless scrolled up; it takes the remote's focus with
-  the focus ring (#118).
+  is inside; it follows the last line unless scrolled up, and a reader scrolled up keeps
+  his lines when old ones leave the top (counted by the log buffer); it takes the remote's
+  focus with the focus ring (#118).
 - Android: after an update of the app, the service and the camex tunnel come back by
   themselves when the service ran before it (`MY_PACKAGE_REPLACED`); before, the app had
   to be opened once (#119).
