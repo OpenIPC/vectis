@@ -163,6 +163,18 @@ final class Brass {
         box.addView(t, lp);
     }
 
+    /**
+     * A check box or radio button in brass (1.4.0): the brass drawable, no tint, the focus ring
+     * around the row, 6dp to the text and room for the ring after it.  For those made outside the theme (the settings window).
+     */
+    static void check(android.widget.CompoundButton b) {
+        Context c = b.getContext();
+        b.setButtonDrawable(b instanceof android.widget.RadioButton ? R.drawable.brass_radio : R.drawable.brass_check);
+        b.setButtonTintList(null);
+        b.setBackgroundResource(R.drawable.focus_ring);
+        b.setPadding(dp(c, 6), b.getPaddingTop(), dp(c, 6), b.getPaddingBottom());   // the ring clears the last letter
+    }
+
     static Button button(Context c, int text) {
         Button b = new Button(c, null, 0, R.style.Brass);
         b.setText(text);

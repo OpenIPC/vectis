@@ -6,6 +6,13 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.5 — 2026-11-19
+
+- Android: brass check boxes and radio buttons (brass 1.4.0) instead of the system ones, whose
+  amber tint filled the whole mark under the remote's focus, so on and off looked the same:
+  Start on boot, Show log, Allow remote access, Join a camex server, Show the key and Proto
+  (#122).
+
 ## 1.17.4 — 2026-11-19
 
 - Android: Start and Stop are written to disk at once, so an update right after Stop

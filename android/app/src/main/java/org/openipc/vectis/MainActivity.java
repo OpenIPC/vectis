@@ -150,14 +150,14 @@ public class MainActivity extends Activity {
         checks.setOrientation(LinearLayout.HORIZONTAL);
         CheckBox boot = new CheckBox(this);
         boot.setText(R.string.start_on_boot);
-        boot.setBackgroundResource(R.drawable.focus_ring);
+        Brass.check(boot);
         boot.setChecked(Settings.startOnBoot(this));
         boot.setOnCheckedChangeListener((b, on) -> Settings.setStartOnBoot(this, on));
         checks.addView(boot, Brass.margins(this, LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 0));
         CheckBox showLog = new CheckBox(this);
         showLog.setText(R.string.show_log);
-        showLog.setBackgroundResource(R.drawable.focus_ring);
+        Brass.check(showLog);
         showLog.setChecked(Settings.showLog(this));
         showLog.setOnCheckedChangeListener((b, on) -> {
             Settings.setShowLog(this, on);
@@ -559,7 +559,7 @@ public class MainActivity extends Activity {
                 e.setBackgroundTintList(amber);
             } else if (v instanceof CheckBox || v instanceof RadioButton) {
                 ((TextView) v).setTextColor(Brass.color(this, R.color.ink));
-                ((android.widget.CompoundButton) v).setButtonTintList(amber);
+                Brass.check((android.widget.CompoundButton) v);
             } else if (v instanceof android.view.ViewGroup) {
                 styleFields((android.view.ViewGroup) v);
             }
