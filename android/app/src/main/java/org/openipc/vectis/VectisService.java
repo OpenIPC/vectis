@@ -449,6 +449,7 @@ public class VectisService extends Service {
                 return;
             wanted = true;
             gen = ++generation;
+            lastExit = "";                // a new Start: an older run's failure is not this one's
         }
         try {
             server = new LocalServerSocket(SOCKET);
