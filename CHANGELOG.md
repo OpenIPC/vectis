@@ -6,6 +6,17 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.7 — 2026-11-19
+
+- Bytes for the device are queued and leave from the poll loop a short piece at a time, so a long
+  block at a low baud rate no longer holds vectis for its whole line time: the web page, the power
+  buttons, RFC 2217 replies and the device's echo keep flowing meanwhile (2048 bytes at 2400 baud
+  used to freeze everything for about 8.5 s; the first echoed byte now comes back after 0.2–0.3 s).
+  The `-l` client, web terminals and stdin are read only while less than about half a second of
+  line time is queued, so a fast sender is held back by TCP flow control. Line settings, break,
+  RTS/DTR and the RFC 2217 client's commands still apply after the data sent before them; a purge
+  of the transmit side empties the queue (#126).
+
 ## 1.17.6 — 2026-11-19
 
 - `-U`: received data is no longer lost while a longer block is sent at a low baud rate. vectis

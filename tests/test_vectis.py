@@ -436,6 +436,48 @@ def test_server(tmp):
           "the outage is logged once")
 
 
+def test_tx_queue(tmp):
+    print("== a device that does not take bytes does not stall the loop")
+    dev = FakeDevice(os.path.join(tmp, "txq"))
+    lport, wport = free_port(), free_port()
+    p = start([VECTIS, "-u", dev.link, "-l", "127.0.0.1:%d" % lport,
+               "-w", "127.0.0.1:%d" % wport, "-n"])
+    try:
+        check(wait_listen(lport) and wait_listen(wport), "listeners come up")
+        check(wait_status(wport, "link", "online").get("link") == "online", "/status: online")
+        # Raw -l mode: no LF/CR (turned into CR), no Ctrl+P (reset), no IAC.
+        alphabet = bytes(b for b in range(256) if b not in (0x0A, 0x0D, 0x10, 0xFF))
+        data = (alphabet * (512 * 1024 // len(alphabet) + 1))[:512 * 1024]
+        c = socket.create_connection(("127.0.0.1", lport), 2)
+        sent = []
+        def push():
+            try:
+                c.sendall(data)
+                sent.append(True)
+            except OSError:
+                pass
+        th = threading.Thread(target=push, daemon=True)
+        th.start()
+        time.sleep(1.0)           # the pty and the queue are full by now
+        t0 = time.time()
+        try:
+            st = http(wport, "/status")
+        except OSError:
+            st = {}
+        check(st.get("link") == "online" and time.time() - t0 < 1.0,
+              "/status answers while the device takes nothing (%.2f s)" % (time.time() - t0))
+        got = b""
+        end = time.time() + 20
+        while len(got) < len(data) and time.time() < end:
+            got += dev.read(0.5)
+        th.join(5)
+        check(got == data, "every byte reaches the device in order once it reads (%d of %d)"
+              % (len(got), len(data)))
+        c.close()
+    finally:
+        stop(p)
+
+
 def test_client(tmp):
     print("== RFC 2217 client (-h/-p) against the -l server")
     dev = FakeDevice(os.path.join(tmp, "dev2"))
@@ -1144,6 +1186,7 @@ def main():
         sys.exit("no %s; build first (make)" % VECTIS)
     with tempfile.TemporaryDirectory() as tmp:
         test_server(tmp)
+        test_tx_queue(tmp)
         test_client(tmp)
         idle_results = []
         idle = threading.Thread(target=test_web_terminal_idle, args=(tmp, idle_results))

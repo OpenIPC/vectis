@@ -99,6 +99,11 @@ size_t usbs_read(uint8_t *buf, size_t n);
  * Returns 0, or -1 with errno set. */
 int usbs_write(const uint8_t *buf, size_t n);
 
+/* Bytes in one chunk of usbs_write() at the current baud rate (about
+ * 10 ms of line time): what a caller hands over at a time to keep its
+ * own loop responsive. */
+size_t usbs_out_chunk(void);
+
 int usbs_set_line(const struct usbs_line *l);
 int usbs_get_line(struct usbs_line *l);
 /* -1 leaves a line as it is. */
