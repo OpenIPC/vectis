@@ -182,6 +182,7 @@ static const char *g_pulse_source = "";
 
 static int set_serial_signal_state(int signal_flag, int active);
 static int txq_flush(void);
+static void txq_flush_leaving(void);
 static void txq_clear(void);
 static void web_shutdown(void);
 static void srv_shutdown(void);
@@ -307,7 +308,7 @@ static void disconnect(void)
     /* Leaving on purpose: what was typed last still goes out, before the
      * lines below change. */
     if (g_quit && g_fd >= 0)
-        (void)txq_flush();
+        txq_flush_leaving();
     txq_clear();
     /* -u: the lines go down with the tty anyway (the kernel drops them on
      * close), so drop them first.  -U keeps them: the target's power
@@ -441,7 +442,10 @@ static int port_getattr(int fd, struct termios *t)
 
 static int port_setattr(int fd, const struct termios *t)
 {
-    (void)txq_flush();   /* new settings apply after the data sent before */
+    /* New settings apply after the data sent before; a failed link does
+     * not take them (a stalled device does: its bytes are dropped). */
+    if (txq_flush() != 0 && errno != ETIMEDOUT)
+        return -1;
 #ifdef VECTIS_USB
     if (g_usb) {
         struct usbs_line l;
@@ -471,7 +475,8 @@ static int port_flush(int fd, int how)
 /* Serial break, 250 ms as tcsendbreak(fd, 0) gives on Linux. */
 static int port_break(int fd)
 {
-    (void)txq_flush();
+    if (txq_flush() != 0 && errno != ETIMEDOUT)
+        return -1;
 #ifdef VECTIS_USB
     if (g_usb)
         return usbs_send_break(250);
@@ -496,17 +501,39 @@ static int write_all(int fd, const void *buf, size_t n);
  * break, RTS/DTR, RFC 2217 commands of the client) first lets the queued
  * bytes out (txq_flush()), so it still applies after the data sent before
  * it, as when every write was synchronous.  A purge of the transmit side
- * and a lost link empty the queue. */
+ * and a lost link empty the queue.
+ *
+ * A device that takes nothing for TXQ_STALL_MS (a tty held by flow
+ * control, a pty nobody reads, a stalled RFC 2217 server) loses what is
+ * queued, with a warning: the sources are read again (an RFC 2217 purge,
+ * WebSocket pongs), and a flush never waits longer than that, so power,
+ * reset and line settings still work and vectis can still exit. */
 
 #define TXQ_SIZE   (64 * 1024)
 #define TXQ_FD_MAX 256          /* bytes per write() to a tty or socket */
+#define TXQ_STALL_MS 5000       /* no byte taken for this long: drop the queue */
 
-static uint8_t g_txq[TXQ_SIZE];
-static size_t  g_txq_head, g_txq_len;
+static uint8_t   g_txq[TXQ_SIZE];
+static size_t    g_txq_head, g_txq_len;
+static long long g_txq_moved_ms;   /* the device last took bytes (or the wait began) */
+static int       g_txq_stall_ms = TXQ_STALL_MS;   /* shorter when leaving */
 
 static void txq_clear(void)
 {
     g_txq_head = g_txq_len = 0;
+}
+
+/* Drop the queue when the device has taken nothing for TXQ_STALL_MS.
+ * Returns 1 (errno = ETIMEDOUT) when it did. */
+static int txq_drop_stalled(void)
+{
+    if (g_txq_len == 0 || now_ms() - g_txq_moved_ms < g_txq_stall_ms)
+        return 0;
+    log_message(LOG_WARNING, "device took nothing for %d s: %zu queued bytes dropped",
+                g_txq_stall_ms / 1000, g_txq_len);
+    txq_clear();
+    errno = ETIMEDOUT;
+    return 1;
 }
 
 /* The line's baud rate, 0 when unknown (RFC 2217 client: a socket). */
@@ -601,6 +628,8 @@ static int txq_pump(void)
         }
         n = (size_t)k;
     }
+    if (n > 0)
+        g_txq_moved_ms = now_ms();
     g_txq_head = (g_txq_head + n) % TXQ_SIZE;
     g_txq_len -= n;
     if (g_txq_len == 0)
@@ -608,11 +637,16 @@ static int txq_pump(void)
     return 0;
 }
 
-/* Send everything queued before going on (blocking). */
+/* Send everything queued before going on (blocking while the device takes
+ * bytes).  Returns 0; -1 with errno ETIMEDOUT when the device stalled and
+ * the rest was dropped (the caller goes on: power and line settings must
+ * work all the same); -1 with another errno when the link failed. */
 static int txq_flush(void)
 {
     while (g_txq_len > 0) {
         if (txq_pump() != 0)
+            return -1;
+        if (txq_drop_stalled())
             return -1;
         if (g_txq_len > 0 && !g_usb) {
             struct pollfd pfd = { .fd = g_fd, .events = POLLOUT };
@@ -620,6 +654,15 @@ static int txq_flush(void)
         }
     }
     return 0;
+}
+
+/* On exit: the same, but a device that takes nothing for a second loses
+ * the rest, so vectis does not wait long to leave. */
+static void txq_flush_leaving(void)
+{
+    g_txq_stall_ms = 1000;
+    (void)txq_flush();
+    g_txq_stall_ms = TXQ_STALL_MS;
 }
 
 /* Bytes for the device: queued, sent by the poll loop.  Returns -1 only
@@ -638,6 +681,8 @@ static int link_write(const void *buf, size_t n)
         if (g_txq_len == TXQ_SIZE) {        /* more than the sources may give: */
             if (txq_pump() != 0)            /* make room the old way */
                 return -1;
+            if (txq_drop_stalled())
+                continue;                   /* dropped: room again */
             if (g_txq_len == TXQ_SIZE && !g_usb) {
                 struct pollfd pfd = { .fd = g_fd, .events = POLLOUT };
                 (void)poll(&pfd, 1, 100);
@@ -650,6 +695,8 @@ static int link_write(const void *buf, size_t n)
             k = TXQ_SIZE - tail;
         if (k > n)
             k = n;
+        if (g_txq_len == 0)
+            g_txq_moved_ms = now_ms();      /* the wait for the device starts */
         memcpy(g_txq + tail, p, k);
         g_txq_len += k;
         p += k;
@@ -775,7 +822,7 @@ static int write_all(int fd, const void *buf, size_t n)
 {
     const uint8_t *p = (const uint8_t *)buf;
 
-    if (fd == g_fd && g_txq_len > 0 && txq_flush() != 0)
+    if (fd == g_fd && g_txq_len > 0 && txq_flush() != 0 && errno != ETIMEDOUT)
         return -1;
     while (n > 0) {
         ssize_t k = write(fd, p, n);
@@ -1090,7 +1137,10 @@ static int power_set(int on, const char *source)
 
     if (g_fd < 0)
         return -1;
-    (void)txq_flush();   /* the power follows the data sent before it */
+    /* The power follows the data sent before it; a failed link takes no
+     * command (a stalled device does: its bytes are dropped). */
+    if (txq_flush() != 0 && errno != ETIMEDOUT)
+        return -1;
 #ifdef VECTIS_USB
     if (g_usb) {
         /* Both lines in one request. */
@@ -3248,7 +3298,8 @@ static void srv_set_line(int flag, int on)
 {
     int was = g_power_on;
 
-    (void)txq_flush();
+    if (txq_flush() != 0 && errno != ETIMEDOUT)
+        return;   /* the link failed: nothing changed */
     if (set_serial_signal_state(flag, on) != 0)
         return;   /* nothing changed: the state and a running pulse stay */
     if (flag == TIOCM_DTR)
@@ -4418,6 +4469,7 @@ int main(int argc, char **argv)
                           g_serial_mode ? "write(serial)" : "write(socket)");
                 break;
             }
+            (void)txq_drop_stalled();
 
 #ifdef VECTIS_USB
             if (g_usb) {

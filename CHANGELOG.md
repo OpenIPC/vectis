@@ -15,7 +15,8 @@ up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 
   The `-l` client, web terminals and stdin are read only while less than about half a second of
   line time is queued, so a fast sender is held back by TCP flow control. Line settings, break,
   RTS/DTR and the RFC 2217 client's commands still apply after the data sent before them; a purge
-  of the transmit side empties the queue (#126).
+  of the transmit side empties the queue. A device that takes nothing for 5 s (flow control, a
+  stalled server) loses what is queued, with a warning, instead of hanging vectis (#126).
 
 ## 1.17.6 — 2026-11-19
 

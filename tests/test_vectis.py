@@ -478,6 +478,36 @@ def test_tx_queue(tmp):
         stop(p)
 
 
+def test_tx_stall(tmp):
+    print("== a device that takes nothing for 5 s loses the queue, not the loop")
+    dev = FakeDevice(os.path.join(tmp, "txs"))
+    lport, wport = free_port(), free_port()
+    p = start([VECTIS, "-u", dev.link, "-l", "127.0.0.1:%d" % lport,
+               "-w", "127.0.0.1:%d" % wport, "-n"])
+    out = ""
+    try:
+        check(wait_listen(lport) and wait_listen(wport), "listeners come up")
+        check(wait_status(wport, "link", "online").get("link") == "online", "/status: online")
+        c = socket.create_connection(("127.0.0.1", lport), 2)
+        c.setblocking(False)
+        try:
+            for _ in range(64):                 # fill the pty, the queue and the socket
+                c.send(b"a" * 65536)
+        except BlockingIOError:
+            pass
+        time.sleep(7.0)                         # past TXQ_STALL_MS
+        dev.read(2.0)                           # the device wakes up: take the backlog
+        c.setblocking(True)
+        c.sendall(b"<MARK>")
+        got = dev.read(5.0, until=b"<MARK>")
+        check(got.endswith(b"<MARK>"), "after the drop the client's next bytes reach the device")
+        check(http(wport, "/status").get("link") == "online", "/status answers")
+        c.close()
+    finally:
+        out = stop(p)
+    check("queued bytes dropped" in out, "the drop is logged")
+
+
 def test_client(tmp):
     print("== RFC 2217 client (-h/-p) against the -l server")
     dev = FakeDevice(os.path.join(tmp, "dev2"))
@@ -1187,6 +1217,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_server(tmp)
         test_tx_queue(tmp)
+        test_tx_stall(tmp)
         test_client(tmp)
         idle_results = []
         idle = threading.Thread(target=test_web_terminal_idle, args=(tmp, idle_results))

@@ -109,7 +109,9 @@ Easy to break and not obvious from one function — read the surrounding block c
    Sources (`-l` client, web terminals, stdin) are polled and read only within `txq_room()`.
    Anything that changes the line or writes to it directly (settings, break, RTS/DTR,
    `write_all()` to `g_fd`) calls `txq_flush()` first, so it keeps its place after earlier
-   data; a transmit purge and `disconnect()` empty the queue.
+   data; a transmit purge and `disconnect()` empty the queue. A device that takes nothing for
+   `TXQ_STALL_MS` (1 s when leaving) loses the queue with a warning, so nothing waits on it
+   forever: the sources are read again and power, reset and settings still apply.
 
 ## Versioning and release
 
