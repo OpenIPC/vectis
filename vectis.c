@@ -1544,23 +1544,28 @@ static const char web_page[] =
      * dropped or refused this page's terminal, or the password no longer
      * matches) stays red until the terminal is back; without one (network,
      * a vectis restart) it reads Reconnecting. */
-    " var tid=(Math.random().toString(36)+'00000000').slice(2,10)+Date.now().toString(36).slice(-6),why='',up=false;\n"
+    " var tid=(Math.random().toString(36)+'00000000').slice(2,10)+Date.now().toString(36).slice(-6),why='',up=false,open=false;\n"
     " function tstate(c,text){$('t-act').className='bulb '+c;var p=$('t-state');p.textContent=text;p.className='plate'+(c==='ok'?' on':c==='bad'?' bad':'')}\n"
     " function lost(text){why=text;tstate('bad','Closed \\u00b7 '+text)}\n"
     " function waiting(){if(!why)tstate('on',up?'Reconnecting':'Connecting')}\n"
     " function retry(){waiting();setTimeout(connect,2000)}\n"
+    /* /status with this page's id; a request that hangs gives up after 5 s. */
+    " function st(){var a=window.AbortController?new AbortController():null;if(a)setTimeout(function(){a.abort()},5000);\n"
+    "  return fetch(url('/status?term='+tid),{cache:'no-store',signal:a?a.signal:undefined})}\n"
     " function connect(){\n"
     "  waiting();\n"
-    "  fetch(url('/status?term='+tid),{cache:'no-store'}).then(function(r){\n"
+    "  st().then(function(r){\n"
     "   if(r.status===401){lost('Password');throw 0}return r.json()}).then(function(s){\n"
     "   if(s.terminal_closed){lost(s.terminal_closed)}\n"
     "   ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/terminal?token='+s.terminal_token+'&term='+tid);\n"
     "   ws.binaryType='arraybuffer';\n"
-    "   ws.onopen=function(){up=true;why='';tstate('ok','Connected');term.reset()};\n"
+    "   ws.onopen=function(){up=open=true;why='';tstate('ok','Connected');term.reset()};\n"
     "   ws.onmessage=function(e){if(typeof e.data!=='string')term.write(new Uint8Array(e.data))};\n"
-    "   ws.onclose=function(){fetch(url('/status?term='+tid),{cache:'no-store'}).then(function(r){\n"
-    "    if(r.status===401){lost('Password');return}return r.json().then(function(s){if(s.terminal_closed)lost(s.terminal_closed)})})\n"
-    "    .catch(function(){}).then(retry)};\n"
+    /* Closed: say so and schedule the next attempt at once; the reason
+     * comes when /status answers, unless the terminal is back by then. */
+    "   ws.onclose=function(){open=false;retry();st().then(function(r){if(open)return;\n"
+    "    if(r.status===401){lost('Password');return}return r.json().then(function(s){if(!open&&s.terminal_closed)lost(s.terminal_closed)})})\n"
+    "    .catch(function(){})};\n"
     "  }).catch(retry);\n"
     " }\n"
     /* The terminal and its WebSocket start on the first opening and stay:
