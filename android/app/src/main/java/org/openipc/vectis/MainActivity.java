@@ -162,6 +162,8 @@ public class MainActivity extends Activity {
         showLog.setOnCheckedChangeListener((b, on) -> {
             Settings.setShowLog(this, on);
             update();
+            if (on)
+                logWindow.shown();        // opened: at the end, however long the log is
         });
         checks.addView(showLog, Brass.margins(this, LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 0));
