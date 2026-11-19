@@ -6,6 +6,11 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.4 — 2026-11-19
+
+- Android: Start and Stop are written to disk at once, so an update right after Stop
+  does not bring the service back (review of #120).
+
 ## 1.17.3 — 2026-11-19
 
 - Android: the Show log window (brass 1.3.1): a fixed height of about 12 lines with its own
