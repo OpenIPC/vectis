@@ -105,12 +105,13 @@ public class LogicTest {
     }
 
     @Test
-    public void logLinesGoneFromTheTop() {
-        assertEquals(0, Brass.LogWindow.dropped("", "a\nb"));
-        assertEquals(0, Brass.LogWindow.dropped("a\nb", "a\nb\nc"));
-        assertEquals(1, Brass.LogWindow.dropped("a\nb\nc", "b\nc\nd"));
-        assertEquals(2, Brass.LogWindow.dropped("a\nb\nc", "c\nd\ne"));
-        assertEquals(3, Brass.LogWindow.dropped("a\nb\nc", "x\ny"));
+    public void logCharsGoneFromTheTop() {
+        assertEquals(0, Brass.LogWindow.droppedChars("", "a\nb"));
+        assertEquals(0, Brass.LogWindow.droppedChars("a\nb", "a\nb\nc"));
+        assertEquals(2, Brass.LogWindow.droppedChars("a\nb\nc", "b\nc\nd"));
+        // a long line counts by its characters, whatever it wraps to
+        assertEquals(10, Brass.LogWindow.droppedChars("long line\nb\nc", "b\nc\nd"));
+        assertEquals(5, Brass.LogWindow.droppedChars("a\nb\nc", "x\ny"));
     }
 
     @Test
