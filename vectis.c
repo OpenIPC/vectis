@@ -115,7 +115,7 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.17.7"
+#define PROGRAM_VERSION      "1.17.8"
 #define PROGRAM_RELEASE_DATE "2026-11-19"
 
 #define RECONNECT_DELAY_S 5
@@ -1461,13 +1461,13 @@ static const char web_page[] =
     "<div class='log' id='log'>&nbsp;</div>\n"
 #ifdef VECTIS_WEBTERM
     "<button class='tbar' id='t-bar' aria-expanded='false' aria-controls='t-body'><span class='arrow'>&#9656;</span><span class='plate'>UART terminal</span>"
-    "<span class='bulb' id='t-act'></span><span class='plate' id='t-state'>&hellip;</span></button>\n"
+    "<span class='bulb dim' id='t-act'></span><span class='plate' id='t-state'>Closed</span></button>\n"
     "<div class='screen' id='t-body' hidden><div id='term'></div></div>\n"
 #endif
     "</div>\n"
     "<div class='foot'>Vectis &middot; OpenIPC &middot; MIT License</div>\n"
     "<script>\n"
-    "var busy=false,lastSeq=-1,noTerm=false;\n"
+    "var busy=false,lastSeq=-1;\n"
     "function $(i){return document.getElementById(i)}\n"
     /* Absolute URLs: a page opened as http://user:pass@host/ may not
      * fetch() a relative path (it would carry the credentials). */
@@ -1488,21 +1488,11 @@ static const char web_page[] =
     "  +(s.tcp_client?row('','Client',esc(s.tcp_client)):'')\n"
     "  +(online&&s.event?row('','Last',last(s.event),'','off'):'');\n"
     " if(s.version)$('ver').textContent=s.version;\n"
-    " uart(online,dead,s.mode);\n"
     " $('b-on').classList.toggle('engaged',online&&on);$('b-off').classList.toggle('engaged',online&&!on);\n"
     " var d=!online||busy;$('b-on').disabled=d;$('b-off').disabled=d;$('b-reset').disabled=d;\n"
     " remote(s.event);\n"
     "}\n"
     "function row(c,k,v,title,vc){return '<div class=r'+(title?' title=\\''+esc(title).replace(/'/g,'&#39;')+'\\'':'')+'><span class=\\'bulb '+(c||'none')+'\\'></span><span class=k>'+k+'</span><span class=\\'v '+(vc||'')+'\\'>'+v+'</span></div>'}\n"
-    /* The terminal bar shows the UART line, not the page's link (brass 1.3.0). */
-#ifdef VECTIS_WEBTERM
-    "function uart(online,dead,mode){var p=$('t-state'),l=$('t-act');\n"
-    " if(noTerm){p.textContent='No xterm';p.className='plate bad';l.className='bulb bad';return}\n"
-    " p.innerHTML=dead?'No service':online?esc(mode)+' &middot; online':'No adapter';\n"
-    " p.className='plate'+(online?' on':' bad');l.className='bulb'+(online?' ok':' bad')}\n"
-#else
-    "function uart(){}\n"
-#endif
     "function remote(e){\n"
     " if(!e){return}\n"
     " if(lastSeq<0){lastSeq=e.seq;return}\n"
@@ -1549,21 +1539,40 @@ static const char web_page[] =
     " function remember(v){try{localStorage.setItem(KEY,v?'open':'closed')}catch(e){}}\n"
     " function send(b){if(ws&&ws.readyState===1)for(var i=0;i<b.length;i+=2048)ws.send(b.subarray(i,i+2048))}\n"
     /* The token from /status proves the page is this server's own. */
-    " function retry(){setTimeout(connect,2000)}\n"
+    /* The bar shows the terminal's own link (brass 1.4.2): the UART line
+     * is on the board just above.  A closed link with a reason (the server
+     * dropped or refused this page's terminal, or the password no longer
+     * matches) stays red until the terminal is back; without one (network,
+     * a vectis restart) it reads Reconnecting. */
+    " var tid=(Math.random().toString(36)+'00000000').slice(2,10)+Date.now().toString(36).slice(-6),why='',up=false,open=false;\n"
+    " function tstate(c,text){$('t-act').className='bulb '+c;var p=$('t-state');p.textContent=text;p.className='plate'+(c==='ok'?' on':c==='bad'?' bad':'')}\n"
+    " function lost(text){why=text;tstate('bad','Closed \\u00b7 '+text)}\n"
+    " function waiting(){if(!why)tstate('on',up?'Reconnecting':'Connecting')}\n"
+    " function retry(){waiting();setTimeout(connect,2000)}\n"
+    /* /status with this page's id; a request that hangs gives up after 5 s. */
+    " function st(){var a=window.AbortController?new AbortController():null;if(a)setTimeout(function(){a.abort()},5000);\n"
+    "  return fetch(url('/status?term='+tid),{cache:'no-store',signal:a?a.signal:undefined})}\n"
     " function connect(){\n"
-    "  fetch(url('/status'),{cache:'no-store'}).then(function(r){return r.json()}).then(function(s){\n"
-    "   ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/terminal?token='+s.terminal_token);\n"
+    "  waiting();\n"
+    "  st().then(function(r){\n"
+    "   if(r.status===401){lost('Password');throw 0}return r.json()}).then(function(s){\n"
+    "   if(s.terminal_closed){lost(s.terminal_closed)}\n"
+    "   ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/terminal?token='+s.terminal_token+'&term='+tid);\n"
     "   ws.binaryType='arraybuffer';\n"
-    "   ws.onopen=function(){term.reset()};\n"
+    "   ws.onopen=function(){up=open=true;why='';tstate('ok','Connected');term.reset()};\n"
     "   ws.onmessage=function(e){if(typeof e.data!=='string')term.write(new Uint8Array(e.data))};\n"
-    "   ws.onclose=retry;\n"
+    /* Closed: say so and schedule the next attempt at once; the reason
+     * comes when /status answers, unless the terminal is back by then. */
+    "   ws.onclose=function(){open=false;retry();st().then(function(r){if(open)return;\n"
+    "    if(r.status===401){lost('Password');return}return r.json().then(function(s){if(!open&&s.terminal_closed)lost(s.terminal_closed)})})\n"
+    "    .catch(function(){})};\n"
     "  }).catch(retry);\n"
     " }\n"
     /* The terminal and its WebSocket start on the first opening and stay:
      * a closed section keeps collecting output, a page that never opens
      * it takes no terminal on the server. */
     " function start(){\n"
-    "  if(!window.Terminal||!window.FitAddon){noTerm=true;poll();return false}\n"
+    "  if(!window.Terminal||!window.FitAddon){lost('No xterm');return false}\n"
     "  term=new Terminal({cursorBlink:true,convertEol:true,fontSize:13,scrollback:5000,\n"
     "   theme:{background:'#120d0a',foreground:'#e8d9b8',cursor:'#ffb347',cursorAccent:'#120d0a',selectionBackground:'rgba(201,162,77,.4)'}});\n"
     "  fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open($('term'));\n"
@@ -2085,6 +2094,7 @@ struct wt_client {
     long long rx_ms;       /* when the browser last sent anything */
     long long ping_ms;     /* when we last pinged it */
     char    peer[INET_ADDRSTRLEN];
+    char    tid[17];       /* the page's terminal id (?term=), "" if none */
     size_t  in_len;
     size_t  out_off, out_len;
     uint8_t in[WT_IN_MAX];
@@ -2092,6 +2102,55 @@ struct wt_client {
 };
 
 static struct wt_client g_wt[WT_MAX_CLIENTS];
+
+/* Why the server ended or refused a page's terminal, by the page's
+ * terminal id, so the page can say it (GET /status?term=<id> answers
+ * "terminal_closed").  A browser only sees a WebSocket close without a
+ * reason when the server drops it, and nothing at all of a refused
+ * upgrade.  The last few, for WT_GONE_MS. */
+#define WT_GONE_N   8
+#define WT_GONE_MS  60000
+static struct { char tid[17]; const char *why; long long ms; } g_wt_gone[WT_GONE_N];
+static int g_wt_gone_next;
+
+/* The terminal id in a query (term=<1..16 letters or digits>), "" if none. */
+static void wt_term_id(const char *query, char *id, size_t cap)
+{
+    const char *t = query ? strstr(query, "term=") : NULL;
+    size_t n = 0;
+
+    if (t != NULL && (t == query || t[-1] == '&'))
+        for (t += 5; n + 1 < cap && n < 16 && isalnum((unsigned char)t[n]); n++)
+            id[n] = t[n];
+    id[n] = '\0';
+}
+
+static void wt_gone(const char *tid, const char *why)
+{
+    if (tid[0] == '\0')
+        return;
+    snprintf(g_wt_gone[g_wt_gone_next].tid, sizeof g_wt_gone[0].tid, "%s", tid);
+    g_wt_gone[g_wt_gone_next].why = why;
+    g_wt_gone[g_wt_gone_next].ms  = now_ms();
+    g_wt_gone_next = (g_wt_gone_next + 1) % WT_GONE_N;
+}
+
+/* The latest reason recorded for this id, NULL if none (or too old). */
+static const char *wt_gone_why(const char *tid)
+{
+    const char *why = NULL;
+    long long best = 0, now = now_ms();
+
+    if (tid[0] == '\0')
+        return NULL;
+    for (int i = 0; i < WT_GONE_N; i++)
+        if (g_wt_gone[i].why != NULL && strcmp(g_wt_gone[i].tid, tid) == 0 &&
+            now - g_wt_gone[i].ms < WT_GONE_MS && g_wt_gone[i].ms >= best) {
+            best = g_wt_gone[i].ms;
+            why = g_wt_gone[i].why;
+        }
+    return why;
+}
 static uint8_t g_wt_hist[WT_HIST_SIZE];          /* ring of device output */
 static size_t  g_wt_hist_start, g_wt_hist_len;
 
@@ -2183,6 +2242,7 @@ static int wt_frame(struct wt_client *c, uint8_t opcode,
         c->out_off = 0;
     }
     if (c->out_len + hl + len > WT_OUT_MAX) {
+        wt_gone(c->tid, "too slow");
         wt_close(c, "too slow, dropped");
         return -1;
     }
@@ -2380,7 +2440,7 @@ static void wt_read(struct wt_client *c)
 /* A request for /ws/terminal that passed the checks: answer 101, move
  * its socket to a terminal slot (the web slot is freed) and send the
  * history first. */
-static void wt_open(struct web_client *wc, const char *key)
+static void wt_open(struct web_client *wc, const char *key, const char *query)
 {
     struct sha1_ctx s;
     uint8_t digest[20];
@@ -2395,6 +2455,10 @@ static void wt_open(struct web_client *wc, const char *key)
         }
     }
     if (c == NULL) {
+        char tid[17];
+
+        wt_term_id(query, tid, sizeof tid);
+        wt_gone(tid, "busy");
         web_reply(wc, 503, "Service Unavailable", "application/json",
                   WEB_TEXT("{\"error\":\"too many terminals open\"}"), 0);
         return;
@@ -2414,6 +2478,10 @@ static void wt_open(struct web_client *wc, const char *key)
     c->fd = wc->fd;
     wc->fd = -1;
     memcpy(c->peer, wc->peer, sizeof c->peer);
+    wt_term_id(query, c->tid, sizeof c->tid);
+    for (int i = 0; i < WT_GONE_N; i++)        /* open again: the old reason is past */
+        if (c->tid[0] != '\0' && strcmp(g_wt_gone[i].tid, c->tid) == 0)
+            g_wt_gone[i].why = NULL;
     c->frag = 0;
     c->fwd = 0;
     c->left = c->pos = 0;
@@ -2529,7 +2597,7 @@ static void web_terminal(struct web_client *c, size_t hdr_len, int is_get,
                   WEB_TEXT("the terminal opens from this server's own page only\n"), 0);
         return;
     }
-    wt_open(c, key);
+    wt_open(c, key, query);
 }
 
 #else /* !VECTIS_WEBTERM */
@@ -2564,7 +2632,8 @@ static void json_escape(const char *in, char *out, size_t cap)
  * -u mode, the last state set in -U mode (-1 when the ioctl is
  * unavailable or in RFC 2217 mode);
  * "power" is the last state this process commanded. */
-static size_t web_status_json(char *out, size_t cap)
+/* query: that of GET /status, for "terminal_closed" (NULL elsewhere). */
+static size_t web_status_json(char *out, size_t cap, const char *query)
 {
     char target[sizeof(g_web_target) * 6];
     int rts = -1, dtr = -1;
@@ -2582,12 +2651,19 @@ static size_t web_status_json(char *out, size_t cap)
             dtr = (st & TIOCM_DTR) ? 1 : 0;
         }
     }
-    char event[128], terminals[64];
+    char event[128], terminals[128];
 
 #ifdef VECTIS_WEBTERM
-    snprintf(terminals, sizeof terminals, "%d,\"terminal_token\":\"%s\"",
-             wt_count(), g_wt_token);
+    char tid[17];
+    const char *gone;
+
+    wt_term_id(query, tid, sizeof tid);
+    gone = wt_gone_why(tid);
+    snprintf(terminals, sizeof terminals, "%d,\"terminal_token\":\"%s\"%s%s%s",
+             wt_count(), g_wt_token, gone ? ",\"terminal_closed\":\"" : "",
+             gone ? gone : "", gone ? "\"" : "");
 #else
+    (void)query;
     snprintf(terminals, sizeof terminals, "null");   /* built with WEBTERM=0 */
 #endif
     if (g_ev_seq == 0)
@@ -2672,7 +2748,7 @@ static void web_power_action(struct web_client *c, const char *what)
     }
     /* Not a reset, or too many clients wait already: answer now, so
      * slots stay free for /status and the page. */
-    n = web_status_json(json, sizeof json);
+    n = web_status_json(json, sizeof json, NULL);
     web_reply(c, 200, "OK", "application/json", json, n, 0);
 }
 
@@ -2692,7 +2768,7 @@ static void web_answer_pending(void)
                       WEB_TEXT("{\"error\":\"link offline\"}"), 0);
         } else {
             if (n == 0)
-                n = web_status_json(json, sizeof json);
+                n = web_status_json(json, sizeof json, NULL);
             web_reply(c, 200, "OK", "application/json", json, n, 0);
         }
         web_client_close(c);
@@ -2740,7 +2816,7 @@ static void web_process_request(struct web_client *c, size_t hdr_len)
                       WEB_TEXT("{\"error\":\"GET only\"}"), 0);
             return;
         }
-        n = web_status_json(json, sizeof json);
+        n = web_status_json(json, sizeof json, q ? q + 1 : NULL);
         web_reply(c, 200, "OK", "application/json", json, n, is_head);
         return;
     }
