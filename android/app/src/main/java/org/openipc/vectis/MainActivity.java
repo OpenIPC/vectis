@@ -375,11 +375,12 @@ public class MainActivity extends Activity {
         Map<String, String> saved = Settings.tunnel(this);
         Map<String, EditText> texts = new LinkedHashMap<>();
         Map<String, RadioGroup> choices = new HashMap<>();
-        for (Field f : CamexTunnel.fields()) {
+        // Order, labels, kinds, hints and the default client name: the library's, as in every app
+        for (Field f : CamexTunnel.fields(this, Settings.APP)) {
             if (CamexTunnel.WEB_PORT.equals(f.key) || f.kind == Field.Kind.FLAG)
                 continue;                 // the web port is the one above
             TextView label = new TextView(this);
-            label.setText(f.required ? f.label : getString(R.string.tunnel_optional, f.label));
+            label.setText(f.label);
             label.setTextColor(Brass.color(this, R.color.dim));
             box.addView(label);
             String value = saved.get(f.key) != null && !saved.get(f.key).isEmpty() ? saved.get(f.key) : f.initial;
@@ -400,11 +401,29 @@ public class MainActivity extends Activity {
                 EditText e = new EditText(this);
                 e.setSingleLine(true);
                 e.setTypeface(Typeface.MONOSPACE);
-                // shown, not dotted: typed with a TV remote, read back before Save
-                e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+                boolean secret = f.kind == Field.Kind.SECRET;
+                // the key hidden, with Show the key under it; the rest shown as typed
+                e.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD
+                        : InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
+                e.setTypeface(Typeface.MONOSPACE);   // setInputType resets it for a password
+                if (!f.hint.isEmpty())
+                    e.setHint(f.hint);
                 e.setText(value == null ? "" : value);
                 texts.put(f.key, e);
                 box.addView(e);
+                if (secret) {
+                    CheckBox show = new CheckBox(this);
+                    show.setText(Field.SHOW_SECRET);
+                    show.setBackgroundResource(R.drawable.focus_ring);
+                    show.setOnCheckedChangeListener((b, on) -> {
+                        int at = e.getSelectionEnd();
+                        e.setInputType(InputType.TYPE_CLASS_TEXT | (on ? InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                                : InputType.TYPE_TEXT_VARIATION_PASSWORD));
+                        e.setTypeface(Typeface.MONOSPACE);
+                        e.setSelection(Math.max(0, Math.min(at, e.length())));
+                    });
+                    box.addView(show);
+                }
             }
         }
         // a link is asking for the tunnel: it turns it on
@@ -453,6 +472,9 @@ public class MainActivity extends Activity {
                 View r = e.getValue().findViewById(e.getValue().getCheckedRadioButtonId());
                 tv.put(e.getKey(), r instanceof RadioButton ? ((RadioButton) r).getText().toString() : "");
             }
+            String name = tv.get(CamexTunnel.NAME);
+            if (name == null || name.isEmpty())   // emptied: back to the default name
+                tv.put(CamexTunnel.NAME, CamexTunnel.defaultName(this, Settings.APP));
             if (tunnelOn.isChecked()) {
                 tv.put(CamexTunnel.WEB_PORT, String.valueOf(p));
                 String[] bad = CamexTunnel.check(tv);

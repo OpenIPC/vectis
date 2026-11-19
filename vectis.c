@@ -115,7 +115,7 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.17.0"
+#define PROGRAM_VERSION      "1.17.1"
 #define PROGRAM_RELEASE_DATE "2026-11-19"
 
 #define RECONNECT_DELAY_S 5
@@ -2186,7 +2186,8 @@ static void wt_open(struct web_client *wc, const char *key)
     c->rx_ms = c->ping_ms = now_ms();
     c->in_len = 0;
     c->out_off = c->out_len = 0;
-    if (setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) != 0)
+    /* TCP only: a --web-local terminal is a unix socket, which has no Nagle */
+    if (!wc->local && setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one) != 0)
         log_errno(LOG_WARNING, "setsockopt(TCP_NODELAY)");
     (void)setsockopt(c->fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);   /* backstop */
     memcpy(c->out, resp, (size_t)rl);
