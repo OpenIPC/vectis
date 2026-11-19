@@ -6,6 +6,12 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.2 — 2026-11-19
+
+- Android: after a quick Stop and Start, the end of the old vectis run could erase the
+  failure a newer run had just reported; only the current run sets it now (review of
+  #116).
+
 ## 1.17.1 — 2026-11-19
 
 - Android: camex 4.2.0 (`bundles/camex`). The CAMEX settings take their fields, labels

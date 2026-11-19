@@ -613,16 +613,14 @@ public class VectisService extends Service {
         synchronized (lock) {
             if (process == p)
                 process = null;
-            // Stopped, replaced or restarted for new settings: not a failure to show
+            // Stopped, replaced or restarted for new settings: not a failure to show.  Only the
+            // current run speaks for the screen: an older one ending late must not erase what a
+            // newer run reported.
             meant = !wanted || gen != generation || seq != settingsSeq;
+            if (gen == generation)
+                lastExit = meant ? "" : "vectis exited with code " + code;
         }
-        if (meant) {
-            lastExit = "";
-            line("app: vectis stopped (code " + code + ")");
-        } else {
-            lastExit = "vectis exited with code " + code;
-            line("app: " + lastExit);
-        }
+        line("app: " + (meant ? "vectis stopped (code " + code + ")" : "vectis exited with code " + code));
         updateNotification();
     }
 
