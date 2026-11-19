@@ -21,8 +21,8 @@ Vectis 是一款串口控制台，用于在配合 OpenIPC Vectis 38x38 板开发
   另一个 `vectis`、pyserial 或 nc，支持 Telnet/RFC 2217 协商、
   二进制安全的数据传输，以及对波特率、线路参数和 RTS/DTR 的带外
   控制；
-- **Web** —— `-w PORT` 提供一个电源控制页面（通过 RTS+DTR 实现 Enable /
-  Disable / Reset），页面上带有浏览器中的 UART 终端，以及一个供脚本使用的
+- **Web** —— `-w PORT` 提供一个电源控制页面（通过 RTS+DTR 实现 PWR ON /
+  PWR OFF / RESET），页面上带有浏览器中的 UART 终端，以及一个供脚本使用的
   小型 JSON API。
 
 它既可以在终端中交互运行，也可以作为守护进程运行（`systemd`，无需
@@ -294,7 +294,7 @@ flowchart LR
     PSU(["⚡ 电源"])
 
     T <-->|"TCP/IP · Telnet / RFC 2217"| V
-    B -->|"HTTP · Enable / Disable / Reset"| V
+    B -->|"HTTP · PWR ON / PWR OFF / RESET"| V
     V <==>|USB| U
     U <-->|"UART · TX / RX / GND"| C
     U -.->|"RTS + DTR · Ctrl+P, /power/*"| SW
@@ -369,7 +369,7 @@ sequenceDiagram
 ### RTS + DTR 随时间的变化
 
 ```text
-                            vectis    Disable   Enable    Reset           vectis
+                            vectis    PWR OFF   PWR ON    RESET           vectis
                             启动                         Ctrl+P           退出
                               │         │         │         │               │
  -u                           ┌─────────┐         ┌─────────┐    ┌──────────┐
@@ -541,6 +541,9 @@ USB 模式（`make USB=0` 构建中没有）：
 - `-W PASSWORD`、`--web-password PASSWORD` —— `-w` 页面的密码（HTTP
   Basic，用户名任意）。环境变量 `VECTIS_WEB_PASSWORD` 的作用相同；
   `-W` 优先。未设置或为空：页面开放。参见下文“密码”
+- `--web-local @NAME` —— 同样的 Web 页面、API 和终端也在抽象 unix 套接字
+  `NAME` 上提供，供同一设备上的应用使用（Android 应用自己的界面）。只服务
+  与 vectis 自身 uid 相同的客户端，无需密码；不加 `-w` 也可使用
 - `-v`、`--version` —— 打印版本号和发布日期
 - `--help`、`-?` —— 帮助
 
@@ -677,24 +680,26 @@ nc 192.168.1.20 2021                        # 原始模式，逐行发送
 ## Web 电源控制台（`-w`）
 
 <p align="center">
-  <img src="screenshots/web-power-console.jpg" alt="vectis Web 页面：link 与 RTS+DTR 指示灯、状态显示屏、Enable / Disable / Reset 按钮，UART 终端栏处于折叠状态" width="720">
+  <img src="screenshots/web-power-console.jpg" alt="vectis Web 页面：带 Adapter、Power、Pulse、Last 行的指示灯面板，PWR ON / PWR OFF / RESET 按钮，UART 终端栏处于折叠状态" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.16.2，参数为 <code>-w 19081 -l 19021 -t 300</code>，用伪终端代替 UART；终端处于折叠状态。</sub></p>
+<p align="center"><sub>vectis 1.17.0，参数为 <code>-w 19081 -l 19021 -t 300</code>，用伪终端代替 UART；终端处于折叠状态。</sub></p>
 
 `-w PORT`（或 `-w ADDR:PORT`，仅在一个 IPv4 地址上监听）会在终端会话
 之外启动一个内置 Web 服务器。它只提供一个页面，
 外观是一块黄铜铆钉风格的控制面板，标题为
-**Vectis Web Server**，上面有三个锁存按钮：
+**Vectis**，旁边是版本号，上面有三个锁存按钮：
 
 | 按钮      | 操作                                                | 指示灯                         |
 |-----------|-----------------------------------------------------|--------------------------------|
-| `Enable`  | 拉高 RTS+DTR（设备上电）                            | 通电期间点亮                   |
-| `Disable` | 释放 RTS+DTR（设备断电）                            | 断电期间点亮                   |
-| `Reset`   | 持续 `-t` 毫秒的 RTS+DTR 脉冲，与 `Ctrl+P` 完全相同 | 脉冲期间点亮，并显示旋转的齿轮 |
+| `PWR ON`  | 拉高 RTS+DTR（设备上电）                            | 通电期间点亮                   |
+| `PWR OFF` | 释放 RTS+DTR（设备断电）                            | 断电期间点亮                   |
+| `RESET`   | 持续 `-t` 毫秒的 RTS+DTR 脉冲，与 `Ctrl+P` 完全相同 | 脉冲期间点亮，并显示旋转的齿轮 |
 
-按下按钮时会播放动画，指示灯（链路、RTS+DTR）和状态显示屏
-跟随设备状态变化，浏览器标签页标题和标签页上的指示灯图标显示相同的状态
+按钮上方是指示灯面板，每种状态一行，各有自己的指示灯：`ADAPTER`
+（`ONLINE · USB`，或红色的 `NO LINK`）、`POWER`（`ON` 绿色，`OFF` 暗色）、
+`PULSE`（`-t` 的长度）、`CLIENT`（有 `-l` 客户端时）和 `LAST`（最近一次电源
+事件）。按下按钮时会播放动画，面板跟随设备状态变化，浏览器标签页标题和标签页上的指示灯图标显示相同的状态
 （`Power enabled · Vectis`，绿色），页面每两秒轮询一次该状态，
 因此来自键盘的 `Ctrl+P` 或在另一个浏览器中的按键
 也会显示出来。这些按钮使用与终端会话完全相同的传输方式：
@@ -708,7 +713,7 @@ nc 192.168.1.20 2021                        # 原始模式，逐行发送
 并且无论在哪种模式下，只要链路失败或断开，都会自动（重新）建立，
 因此页面可以立即访问，并在摄像机被拔出或服务器重启期间
 保持可用。在此期间，页面显示
-`Link offline`，按钮拒绝执行操作。一次中断只记录
+`NO LINK`，按钮拒绝执行操作。一次中断只记录
 第一次失败。
 
 页面所做的一切都可以通过普通 URL 完成，因此 `curl`、shell
@@ -760,8 +765,8 @@ Web 终端数量（在 `make WEBTERM=0` 构建中为 `null`），`terminal_token
 打开终端时使用的令牌（每个进程随机生成；`WEBTERM=0` 构建中没有）。
 页面借此显示在别处触发的复位：来自键盘或来自
 `vectis -h HOST -p PORT` 客户端的 `Ctrl+P` 会使
-Reset 按钮点亮、显示屏显示 `Resetting`，日志行中会注明
-来源。最近一次事件还会保留在页面的 `LAST` 行中，例如
+RESET 按钮点亮、标签页标题显示 `Resetting`，日志行中会注明
+来源。最近一次事件还会保留在面板的 `LAST` 行中，例如
 `reset by web, 12 s ago`；尚无事件或链路离线时不显示该行。裸 `telnet` 会把 `Ctrl+P` 当作数据发送，因此这种情况下
 设备和页面上都不会有任何反应。命令 URL 对
 所有客户端（包括浏览器）都以 JSON 应答，因此从
@@ -776,12 +781,13 @@ Reset 按钮点亮、显示屏显示 `Resetting`，日志行中会注明
   <img src="screenshots/web-terminal.jpg" alt="vectis Web 页面：电源控制及其下方已展开的 UART 终端，显示启动日志和 shell 会话" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.16.2，参数 <code>-w 19081 -l 19021 -t 300</code>，用伪终端代替 OpenIPC Dev Board 的 UART；两条命令是在页面中输入的。</sub></p>
+<p align="center"><sub>vectis 1.17.0，参数 <code>-w 19081 -l 19021 -t 300</code>，用伪终端代替 OpenIPC Dev Board 的 UART；两条命令是在页面中输入的。</sub></p>
 
 面板底部、电源控制下方是同一 UART 的终端：设备输出的一切，以及向设备输入的
 键盘。默认折叠；点击“UART terminal”栏可展开或折叠，浏览器会记住该选择
-（`localStorage`）。连接在首次展开时建立并保持，因此折叠时输出仍在累积；栏上的
-指示灯表示有新的输出。从未展开终端的页面不占用服务器上的终端。它是 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0，内置于
+（`localStorage`）。连接在首次展开时建立并保持，因此折叠时输出仍在累积。栏上的
+指示灯和铭牌显示 UART 线路，而不是页面的连接：绿色 `USB · ONLINE`、红色
+`NO ADAPTER`，vectis 不应答时为 `NO SERVICE`。从未展开终端的页面不占用服务器上的终端。它是 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0，内置于
 `vectis` 并由其自身提供（`/xterm-5.5.0.js`、`/xterm-5.5.0.css`，gzip 压缩，
 约 70 KB），因此浏览器无需访问互联网；`make WEBTERM=0` 不包含它。
 
@@ -913,46 +919,58 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 
 `android/` 中的应用在带 USB host 的 Android 电视盒或手机上实现上述功能，
 无需 root（Android 5.0 及以上，32 位和 64 位 ARM）。前台服务持有适配器，
-并以 `vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 8085`
+并以 `vectis -U fd:@org.openipc.vectis.usb -b 115200 --web-local @org.openipc.vectis.web -l 2021 -w 8085`
 运行 vectis：控制台和 Web 页面（电源和 UART 终端）位于盒子的这些 TCP 端口上，
-与 Linux 相同。Web 端口默认为 8085，与 Decoder 和 Microsnander 相同；之前在
-设置中保存的端口保持不变。
+与 Linux 相同；应用自己的界面和终端通过本地套接字与 vectis 通信。Web 端口默认为
+8085，与 Decoder 和 Microsnander 相同；之前在设置中保存的端口保持不变。
+如果该端口已被其他应用占用，vectis 会使用下一个空闲端口（8086、8087……），
+WEB 行和日志中会显示实际端口。
 
 <p align="center">
-  <img src="screenshots/android-main.jpg" alt="电视盒上的 Vectis 应用：适配器、电源、控制台和 Web 地址、页面密码状态，按钮 Start、Stop、Terminal、Open web console、Settings，以及 camex 隧道地址" width="49%">
-  <img src="screenshots/android-terminal.jpg" alt="Vectis 应用的终端界面：纯文本的 UART 输出、带 Enter 的输入行，Ctrl+C、y、n、Reset、Power on、Power off 按钮" width="49%">
+  <img src="screenshots/android-main.jpg" alt="电视盒上的 Vectis 应用：带 Adapter、Power、Vectis、Console、Web 行的指示灯面板，每行两个的按钮 Start、Stop、Terminal、Settings，复选框 Start on boot 和 Show log" width="49%">
+  <img src="screenshots/android-terminal.jpg" alt="Vectis 应用的终端界面：右上角为 UART 线路 CH340 · 115200，纯文本的 UART 输出、带 Enter 的输入行，CTRL+C、RESET、PWR ON、PWR OFF 按钮" width="49%">
 </p>
 
-<p align="center"><sub>Android 10 电视盒上的 vectis 1.16.0（主屏幕，camex 隧道已连接）和 1.15.0（终端）（adb 截图）。该测试台的 UART 是回环的，因此终端中的文本是从同一页面的浏览器终端发送并回显的。</sub></p>
+<p align="center"><sub>Android 10 电视盒上的 vectis 1.17.0（adb 截图）。该测试台的 UART 是回环的，因此终端中的文本是在盒子上输入并回显的。</sub></p>
 
 - **安装**：从 `latest` 发布下载 [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   （Android 询问时，允许从此来源安装）。
 - **首次启动。** 插入适配器（CH340/CH341）。Android 会提示用 Vectis 打开它：
   勾选 “Always open Vectis when USB Serial is connected” 并按 OK。
   也可以打开应用并按 **Allow USB access**。
-- **界面**显示适配器、带指示灯的电源状态（RTS+DTR）、盒子的地址及控制台和
-  Web 端口、Web 页面是否设有密码，以及按钮 Start、Stop、Terminal、Open web
-  console（在盒子的浏览器中打开）和 Settings（波特率、两个端口——1024 及以上，
-  更低的端口需要 root——以及 Web 页面密码）。
+- **界面**是一块指示灯面板，每种状态一行，各有自己的指示灯：`ADAPTER`
+  （芯片和波特率）、`POWER`（RTS+DTR；`OFF` 为暗色而非红色）、`VECTIS`（服务）、
+  `CONSOLE` 和 `WEB`（盒子地址和端口；绿色表示正在服务，暗色 `OFF`，红色
+  `FAILED`），Web 地址后有一把锁（锁上：页面设有密码），隧道开启时还有
+  `CAMEX`。下方是每行两个的按钮 Start、Stop、Terminal 和 Settings（**Allow USB
+  access** 和 VPN 授权仅在需要时出现），以及复选框 **Start on boot** 和
+  **Show log**（面板下方的事件日志；两者默认均关闭）。
+- **Settings** 是一个窗口，分两部分。**VECTIS**：**Allow remote access**、
+  波特率、两个端口（1024 及以上，更低的端口需要 root）和 Web 页面密码；
+  **CAMEX**：隧道（见下文）。
+- **Allow remote access**（默认开启）。关闭时 vectis 不打开任何网络端口：
+  既没有控制台（`-l`），也没有 Web 页面（`-w`）；CONSOLE 和 WEB 行显示 `OFF`。
+  应用的界面和终端照常工作：它们使用本地套接字。
 - **Terminal** 在盒子自己的屏幕上显示 UART：输出为纯文本（去掉颜色），带
-  **Enter** 的输入行，以及 **Ctrl+C**、**y**、**n**（各自带 Enter）、**Reset**、
-  **Power on** 和 **Power off** 按钮，都可以用电视遥控器操作。它是页面终端的
-  又一个客户端：先收到最近 64 KB 的输出，在这里或浏览器中输入的内容都发往
-  同一个 UART。
-- **Web 页面密码**（Settings 中的最后一项；默认为空：页面开放）。设置后，
-  页面、`/status`、`/power/*` 和终端都会要求输入（HTTP Basic，用户名任意，
-  `curl -u :密码`）。应用通过 `VECTIS_WEB_PASSWORD` 把它传给 vectis，并在自己的
-  请求中使用；它保存在应用的私有存储中。
+  **Enter** 的输入行，以及 **CTRL+C**、**RESET**、**PWR ON** 和 **PWR OFF**
+  按钮，都可以用电视遥控器操作；右上角的铭牌显示 UART 线路（`CH340 · 115200`、
+  `NO ADAPTER`、`NO SERVICE`）。它是页面终端的又一个客户端：先收到最近 64 KB
+  的输出，在这里或浏览器中输入的内容都发往同一个 UART。
+- **Web 页面密码**（Settings 中 VECTIS 部分的最后一项；默认为空：页面开放）。
+  设置后，页面、`/status`、`/power/*` 和终端都会要求输入（HTTP Basic，用户名
+  任意，`curl -u :密码`）。应用通过 `VECTIS_WEB_PASSWORD` 把它传给 vectis；
+  应用自己的界面不需要它（本地套接字只接受应用的 uid）。它保存在应用的私有
+  存储中。
 - **拔出适配器**时 vectis 及其端口继续运行。适配器插回后，服务重新打开它，
   vectis 在下一次重试时接管。停止应用或 vectis 时 RTS/DTR 保持不变，
   与 Linux 上的 `-U` 相同。
-- **重启后**服务会自动启动（“Start on boot”，默认开启）。Android 10
+- **重启后**如果勾选了“Start on boot”（默认关闭），服务会自动启动。Android 10
   在启动时不会为已经插着的适配器授予 USB 访问权限，因此屏幕上会出现
   访问对话框：用遥控器按 OK。没有屏幕的盒子：拔下适配器再插回。
 - **Stop** 会让 vectis 保持停止状态直到按 Start：启动和插入事件不会启动它。
 - 两个端口都在盒子的所有网络接口上监听，与 Linux 上的 `-l PORT`、`-w PORT`
   相同。没有密码时，该网络中的任何人都可以使用控制台并切换电源；控制台端口
-  （`-l`）根本没有密码。请将盒子放在可信网络中。
+  （`-l`）根本没有密码。请将盒子放在可信网络中，或关闭远程访问。
 
 ### 通过 camex 服务器远程访问
 
@@ -963,13 +981,11 @@ Microsnander 相同：盒子连接到 camex 服务器，操作员可以在任何
 （[camex：客户端前面的 nginx](https://github.com/OpenIPC/camex/blob/master/docs/nginx.md)）。
 盒子不需要开放端口，也不需要公网地址。
 
-- **Settings → Network**：勾选“Remote access through a camex server”，
-  填写服务器（`host:port`）、客户端名称、UDP 或 TCP（默认 UDP）、服务器公钥
-  和 psk。或者粘贴 camex 的 `install.sh` 打印的链接
-  （`https://openipc.github.io/camex/connect/#…`）并按 **Fill from the
-  link**；在盒子上打开这样的链接（或 `camex://connect?…`）会打开已填好并勾选
-  了隧道的设置。Web 页面密码仍是该部分的最后一个字段。
-- 隧道会把 Web 端口告诉服务器（默认 8085：`--web-port`，需要 camex 3.19.0
+- **Settings → CAMEX**：勾选“Join a camex server”，填写服务器（`host:port`）、
+  客户端名称、UDP 或 TCP（默认 UDP）、服务器公钥和 psk。或者在盒子上打开
+  camex 的 `install.sh` 打印的链接（`https://openipc.github.io/camex/connect/#…`
+  或 `camex://connect?…`）：设置会以已填好、已勾选隧道的状态打开。
+- 隧道会把实际使用的 Web 端口告诉服务器（默认 8085：`--web-port`，需要 camex 3.19.0
   或更高版本），nginx 就在这个端口上访问页面。无论有无密码，页面都能通过
   nginx 使用：它的终端不依赖 nginx 发送的 Host 头。
 - **VPN 授权**只需一次：保存后应用会询问（系统对话框，用遥控器按 OK），
@@ -977,7 +993,7 @@ Microsnander 相同：盒子连接到 camex 服务器，操作员可以在任何
   `adb shell appops set org.openipc.vectis ACTIVATE_VPN allow` 和
   `adb shell appops write-settings`。只有隧道网络和服务器的路由走 VPN，
   盒子的其他流量不走。
-- 屏幕和通知显示隧道的状态和页面在隧道中的地址（**TUNNEL**）。隧道随 vectis
+- 屏幕和通知显示隧道的状态和盒子在隧道中的地址（**CAMEX**）。隧道在远程访问开启时随 vectis
   一起运行，会自动重连，并在重启后随服务一起恢复。
 - 隧道把盒子加入服务器的网络：如果页面没有密码，任何通过 nginx 打开页面的人
   以及该网络的任何客户端都可以使用电源和终端；控制台端口（`-l`，始终没有密码）
@@ -1209,7 +1225,7 @@ vectis -h 127.0.0.1 -p 2021      # 通过该服务使用交互式控制台
 请在 `ExecStart` 中加上 `-n`：LF→CR+LF
 转换是为原始终端准备的，而不是为日志文件准备的。该单元
 有意没有绑定到设备：即使适配器不在，守护进程也会在开机时启动，
-Web 页面显示 `Link offline`，一旦适配器出现，链路
+Web 页面显示 `NO LINK`，一旦适配器出现，链路
 就会被打开。`/dev/vectis1` 来自上一节中的
 udev 规则；如果没有这样的规则，请使用
 `/dev/serial/by-id/...` 路径，单个适配器时也可以使用 `/dev/ttyUSB0`。对于 RFC 2217

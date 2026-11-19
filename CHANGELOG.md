@@ -6,6 +6,36 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.0 — 2026-11-19
+
+The interface review of 2026-11-18 (brand brass 1.3.0), and the app no longer needs the
+network to reach vectis.
+
+- New option `--web-local @NAME`: the `-w` page, API and terminal also on an abstract unix
+  socket, for an app on the same device. Only a peer with vectis' own uid is served
+  (`SO_PEERCRED`), without the page password; it works without `-w` (#111).
+- The `-w` page: the title is "Vectis" with the version number beside it, the subtitle
+  "USB-UART console and RTS / DTR power"; a lamp board (Adapter, Power, Pulse, Client,
+  Last; a lamp per row) replaces the two lamps and the state display; the buttons are
+  PWR ON, PWR OFF and RESET, three in a row on a phone too; the terminal bar's lamp and
+  plate show the UART line (`USB · ONLINE`, `NO ADAPTER`, `NO SERVICE`) (#113).
+- Android, main screen: the lamp board (ADAPTER, POWER, VECTIS, CONSOLE, WEB with a lock
+  for the page password, CAMEX when the tunnel is on), the version number beside the
+  title, buttons two in a row, no **Open web console** button, the check boxes **Start
+  on boot** (now off by default) and **Show log** (the log is hidden by default) (#108).
+- Android, terminal: CTRL+C, RESET, PWR ON, PWR OFF across the row (no `y` and `n`); the
+  plate shows the UART line (`CH340 · 115200`, `NO ADAPTER`, `NO SERVICE`) (#109).
+- Android, settings: one brass SETTINGS window with the sections VECTIS (**Allow remote
+  access**, baud, ports, the page password last) and CAMEX (no link field: a camex link
+  opened on the box still fills it). Remote access off: vectis opens no network port, the
+  CONSOLE and WEB rows read OFF, and the camex tunnel stays down: there is no page to
+  offer the server (#110).
+- Android: the screen, the power buttons and the terminal talk to vectis on
+  `--web-local @org.openipc.vectis.web` instead of TCP on 127.0.0.1, and check that the
+  socket's owner is the app's own uid (#111).
+- Android: when another app holds the web port, vectis takes the next free one; the WEB
+  row, the log and the camex tunnel use the port in use (#112).
+
 ## 1.16.2 — 2026-11-18
 
 The `-w` page is one panel (#105):

@@ -22,8 +22,8 @@ development and integration of embedded systems with the OpenIPC UART
   another `vectis`, pyserial or nc, with Telnet/RFC 2217 negotiation,
   binary-safe data and out-of-band control of baud rate, line settings
   and RTS/DTR;
-- **web** — `-w PORT` serves a power-control page (Enable / Disable /
-  Reset on RTS+DTR) with a UART terminal in the browser, and a small JSON
+- **web** — `-w PORT` serves a power-control page (PWR ON / PWR OFF /
+  RESET on RTS+DTR) with a UART terminal in the browser, and a small JSON
   API for scripts.
 
 It runs interactively in a terminal or as a daemon (`systemd`, no
@@ -314,7 +314,7 @@ flowchart LR
     PSU(["⚡ Power supply"])
 
     T <-->|"TCP/IP · Telnet / RFC 2217"| V
-    B -->|"HTTP · Enable / Disable / Reset"| V
+    B -->|"HTTP · PWR ON / PWR OFF / RESET"| V
     V <==>|USB| U
     U <-->|"UART · TX / RX / GND"| C
     U -.->|"RTS + DTR · Ctrl+P, /power/*"| SW
@@ -390,7 +390,7 @@ started elsewhere, and `/status` names its source.
 ### RTS + DTR over time
 
 ```text
-                            vectis    Disable   Enable    Reset           vectis
+                            vectis    PWR OFF   PWR ON    RESET           vectis
                             starts                       Ctrl+P           exits
                               │         │         │         │               │
  -u                           ┌─────────┐         ┌─────────┐    ┌──────────┐
@@ -569,6 +569,10 @@ Connection options:
   (HTTP Basic, any user name). The environment variable
   `VECTIS_WEB_PASSWORD` does the same; `-W` wins. Unset or empty: the
   page is open. See "Password" below
+- `--web-local @NAME` — the same web page, API and terminal also on the
+  abstract unix socket `NAME`, for an app on the same device (the Android
+  app's own screen). Only a peer with vectis' own uid is served, and it
+  needs no password; it works without `-w`
 - `-v`, `--version` — print version and release date
 - `--help`, `-?` — help
 
@@ -706,24 +710,27 @@ makes the process reopen the link automatically; it requires `-u`.
 ## Web power console (`-w`)
 
 <p align="center">
-  <img src="screenshots/web-power-console.jpg" alt="Vectis web page: link and RTS+DTR lamps, state display, Enable / Disable / Reset buttons, the UART terminal bar closed" width="720">
+  <img src="screenshots/web-power-console.jpg" alt="Vectis web page: the lamp board with Adapter, Power, Pulse and Last rows, PWR ON / PWR OFF / RESET buttons, the UART terminal bar closed" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.16.2 with <code>-w 19081 -l 19021 -t 300</code>, a pseudo-terminal standing in for the UART; the terminal section is closed.</sub></p>
+<p align="center"><sub>vectis 1.17.0 with <code>-w 19081 -l 19021 -t 300</code>, a pseudo-terminal standing in for the UART; the terminal section is closed.</sub></p>
 
 `-w PORT` (or `-w ADDR:PORT` to listen on one IPv4 address only) starts a
 built-in web server alongside the terminal session. It serves a single
 page, styled as a brass-and-rivets control panel with the heading
-**Vectis Web Server**, carrying three latching buttons:
+**Vectis** and the version number beside it, carrying three latching buttons:
 
 | Button    | Action                                                         | Indicator                                       |
 |-----------|----------------------------------------------------------------|-------------------------------------------------|
-| `Enable`  | assert RTS+DTR (device powered)                                | lit while power is on                           |
-| `Disable` | deassert RTS+DTR (device unpowered)                            | lit while power is off                          |
-| `Reset`   | RTS+DTR pulse of `-t` milliseconds, exactly what `Ctrl+P` does | lit, with a spinning gear, while the pulse runs |
+| `PWR ON`  | assert RTS+DTR (device powered)                                | lit while power is on                           |
+| `PWR OFF` | deassert RTS+DTR (device unpowered)                            | lit while power is off                          |
+| `RESET`   | RTS+DTR pulse of `-t` milliseconds, exactly what `Ctrl+P` does | lit, with a spinning gear, while the pulse runs |
 
-A press animates the button, the lamps (link, RTS+DTR) and the state
-display follow the device state, the browser tab title and a lamp icon
+Above them a lamp board shows a row per state, each with its own lamp:
+`ADAPTER` (`ONLINE · USB`, or `NO LINK` in red), `POWER` (`ON` green,
+`OFF` dim), `PULSE` (the `-t` length), `CLIENT` (the `-l` client, when
+there is one) and `LAST` (the last power event). A press animates the
+button, the board follows the device state, the browser tab title and a lamp icon
 in the tab show the same state (`Power enabled · Vectis`, green), and the
 page polls that state every two seconds, so a `Ctrl+P` from the keyboard or a press in another
 browser shows up too. The buttons use the very same transport as the
@@ -737,7 +744,7 @@ With `-w` the web server is listening before the device link is opened,
 and the link is (re)established automatically whenever it fails or drops,
 in both modes, so the page is reachable immediately and stays up while a
 camera is unplugged or the server restarts. Meanwhile the page reports
-`Link offline` and the buttons refuse to act. Only the first failure of
+`NO LINK` and the buttons refuse to act. Only the first failure of
 an outage is logged.
 
 Everything the page does is available as plain URLs, so `curl`, a shell
@@ -790,9 +797,9 @@ grows with every event and `ago_ms` says how long ago it happened.
 terminal with (random per process; not in a `WEBTERM=0` build). The
 page uses it to show a reset that was triggered elsewhere: a `Ctrl+P`
 from the keyboard or from a `vectis -h HOST -p PORT` client makes the
-Reset button light up and the display show `Resetting`, and the log
-line names the source. The last event also stays on the page in a
-`LAST` line such as `reset by web, 12 s ago`, which is hidden while
+RESET button light up and the tab title show `Resetting`, and the log
+line names the source. The last event also stays on the board in a
+`LAST` row such as `reset by web, 12 s ago`, which is hidden while
 there is no event or the link is offline. A bare `telnet` sends `Ctrl+P` as data, so nothing happens on
 the device or on the page in that case. The command URLs answer JSON to
 every client, a browser included, so `/power/reset` opened from a
@@ -807,16 +814,17 @@ down the `/power/` commands answer `503`; an unknown command answers
   <img src="screenshots/web-terminal.jpg" alt="Vectis web page: the power controls and, under them, the UART terminal opened, with a boot log and a shell session" width="720">
 </p>
 
-<p align="center"><sub>vectis 1.16.2 with <code>-w 19081 -l 19021 -t 300</code>, a pseudo-terminal standing in for the UART of an OpenIPC Dev Board; the two commands were typed in the page.</sub></p>
+<p align="center"><sub>vectis 1.17.0 with <code>-w 19081 -l 19021 -t 300</code>, a pseudo-terminal standing in for the UART of an OpenIPC Dev Board; the two commands were typed in the page.</sub></p>
 
 At the bottom of the panel, under the power controls, the page has a
 terminal on the same UART: everything the device prints, and a keyboard
 into it. It is closed by default; a click on the "UART terminal" bar opens
 and closes it, and the browser remembers which (`localStorage`). The
 connection starts on the first opening and stays, so output keeps
-collecting while the section is closed; a lamp on the bar shows that new
-output arrived. A page that never opens the terminal takes no terminal on
-the server. It is
+collecting while the section is closed. The lamp and the plate on the
+bar show the UART line, not the page's connection: `USB · ONLINE` in
+green, `NO ADAPTER` in red, `NO SERVICE` when vectis does not answer. A
+page that never opens the terminal takes no terminal on the server. It is
 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0, built into
 `vectis` and served by it (`/xterm-5.5.0.js`, `/xterm-5.5.0.css`,
 gzipped, about 70 KB), so the browser needs no internet; `make WEBTERM=0`
@@ -976,17 +984,20 @@ vectis -U fd:@vectis-usb -l 2021 -w 2081
 `android/` holds an app that does the above on an Android TV box or a
 phone with a USB host, without root (Android 5.0 and later, 32- and
 64-bit ARM). A foreground service owns the adapter and runs vectis as
-`vectis -U fd:@org.openipc.vectis.usb -b 115200 -l 2021 -w 8085`: the
-console and the web page (power and the UART terminal) are on those TCP
-ports of the box, as on Linux. The web port is 8085 by default, as in
-Decoder and Microsnander; a port saved in the settings before is kept.
+`vectis -U fd:@org.openipc.vectis.usb -b 115200 --web-local @org.openipc.vectis.web -l 2021 -w 8085`:
+the console and the web page (power and the UART terminal) are on those
+TCP ports of the box, as on Linux, and the app's own screen and terminal
+talk to vectis on the local socket. The web port is 8085 by default, as
+in Decoder and Microsnander; a port saved in the settings before is
+kept. When another app already holds it, vectis takes the next free one
+(8086, 8087, …): the WEB row and the log show which.
 
 <p align="center">
-  <img src="screenshots/android-main.jpg" alt="Vectis app on a TV box: adapter, power, console and web addresses, page password state, buttons Start, Stop, Terminal, Open web console, Settings, and the camex tunnel address" width="49%">
-  <img src="screenshots/android-terminal.jpg" alt="Vectis app terminal screen: UART output as plain text, input line with Enter, keys Ctrl+C, y, n, Reset, Power on, Power off" width="49%">
+  <img src="screenshots/android-main.jpg" alt="Vectis app on a TV box: the lamp board with Adapter, Power, Vectis, Console and Web rows, buttons Start, Stop, Terminal, Settings two in a row, check boxes Start on boot and Show log" width="49%">
+  <img src="screenshots/android-terminal.jpg" alt="Vectis app terminal screen: the UART line CH340 · 115200 top right, UART output as plain text, input line with Enter, keys CTRL+C, RESET, PWR ON, PWR OFF" width="49%">
 </p>
 
-<p align="center"><sub>vectis 1.16.0 (the main screen, with the camex tunnel up) and 1.15.0 (the terminal) on an Android 10 TV box (adb screenshots). The UART of this bench loops back, so the text in the terminal was sent from a browser's terminal on the same page and came back.</sub></p>
+<p align="center"><sub>vectis 1.17.0 on an Android 10 TV box (adb screenshots). The UART of this bench loops back, so the text in the terminal was typed on the box and came back.</sub></p>
 
 - **Install** [`vectis-android.apk`](https://github.com/OpenIPC/vectis/releases/latest/download/vectis-android.apk)
   from the `latest` release (allow installing from this source when
@@ -995,28 +1006,41 @@ Decoder and Microsnander; a port saved in the settings before is kept.
   open Vectis for it: tick "Always open Vectis when USB Serial is
   connected" and press OK. Or open the app and press **Allow USB
   access**.
-- **The screen** shows the adapter, power (RTS+DTR) with a lamp, the
-  box's addresses with the console and web ports, whether the web page
-  has a password, and the buttons Start, Stop, Terminal, Open web
-  console (in the box's browser) and Settings (baud rate, the two ports,
-  1024 and up: lower ones need root, and the web page password).
+- **The screen** is a lamp board, a row per state with its own lamp:
+  `ADAPTER` (the chip and the baud rate), `POWER` (RTS+DTR; `OFF` is
+  dim, not red), `VECTIS` (the service), `CONSOLE` and `WEB` (the box's
+  address with the port; green when served, dim `OFF`, red `FAILED`),
+  with a lock after the web address (closed: the page has a password),
+  and `CAMEX` when the tunnel is on. Under it the buttons Start, Stop,
+  Terminal and Settings, two in a row (**Allow USB access** and the VPN
+  consent only when needed), and the check boxes **Start on boot** and
+  **Show log** (the event log under the panel; both off by default).
+- **Settings** is one window in two sections. **VECTIS**: **Allow remote
+  access**, the baud rate, the two ports (1024 and up: lower ones need
+  root) and the web page password; **CAMEX**: the tunnel (below).
+- **Allow remote access** (on by default). Off, vectis opens no network
+  port at all: neither the console (`-l`) nor the web page (`-w`); the
+  CONSOLE and WEB rows read `OFF`. The app's screen and terminal keep
+  working: they use the local socket.
 - **Terminal** shows the UART on the box's own screen: the output as
   plain text (colours dropped), an input line with **Enter**, and keys
-  for **Ctrl+C**, **y**, **n** (each followed by Enter), **Reset**,
-  **Power on** and **Power off**, all usable with a TV remote. It is one
-  more client of the page's terminal: the last 64 KB of output come
-  first, and what is typed here or in a browser goes to the same UART.
-- **Web page password** (Settings, the last field; empty by default:
-  the page is open). When set, the page, `/status`, `/power/*` and the
-  terminal ask for it (HTTP Basic, any user name, `curl -u :PASSWORD`).
-  The app passes it to vectis in `VECTIS_WEB_PASSWORD` and uses it for
-  its own requests; it is kept in the app's private storage.
+  **CTRL+C**, **RESET**, **PWR ON** and **PWR OFF**, all usable with a TV
+  remote; the plate top right shows the UART line (`CH340 · 115200`,
+  `NO ADAPTER`, `NO SERVICE`). It is one more client of the page's
+  terminal: the last 64 KB of output come first, and what is typed here
+  or in a browser goes to the same UART.
+- **Web page password** (Settings, the last field of VECTIS; empty by
+  default: the page is open). When set, the page, `/status`, `/power/*`
+  and the terminal ask for it (HTTP Basic, any user name,
+  `curl -u :PASSWORD`). The app passes it to vectis in
+  `VECTIS_WEB_PASSWORD`; its own screen needs none (the local socket
+  takes only the app's uid). It is kept in the app's private storage.
 - **Unplugging** leaves vectis and its ports running. When the adapter
   is back, the service opens it again and vectis picks it up on its
   next retry. Stopping the app or vectis leaves RTS/DTR as they are, as
   `-U` does on Linux.
-- **After a reboot** the service starts by itself ("Start on boot", on
-  by default). Android 10 does not grant USB access at boot to an
+- **After a reboot** the service starts by itself when "Start on boot"
+  is ticked (off by default). Android 10 does not grant USB access at boot to an
   adapter that was already plugged in, so the access dialog comes up on
   the screen: press OK on the remote. On a box without a screen, unplug
   the adapter and plug it back in.
@@ -1025,7 +1049,8 @@ Decoder and Microsnander; a port saved in the settings before is kept.
 - Both ports listen on every interface of the box, as `-l PORT` and
   `-w PORT` do on Linux. Without a password anyone on that network can
   use the console and switch the power; the console port (`-l`) has no
-  password at all. Keep the box on a trusted network.
+  password at all. Keep the box on a trusted network, or switch remote
+  access off.
 
 ### Remote access through a camex server
 
@@ -1036,15 +1061,13 @@ the client name: `http://<client name>.<server domain>/` through nginx on
 the server ([camex: nginx in front of the clients](https://github.com/OpenIPC/camex/blob/master/docs/nginx.md)).
 The box needs no open port and no public address.
 
-- **Settings → Network**: tick "Remote access through a camex server"
-  and fill in the server (`host:port`), the client name, UDP or TCP
-  (UDP by default), the server's public key and the psk. Or paste the
-  link that camex's `install.sh` prints
-  (`https://openipc.github.io/camex/connect/#…`) and press **Fill from
-  the link**; opening such a link (or `camex://connect?…`) on the box
-  opens the settings filled in and the tunnel ticked. The web page
-  password stays the last field of the section.
-- The tunnel tells the server the web port (8085 by default:
+- **Settings → CAMEX**: tick "Join a camex server" and fill in the
+  server (`host:port`), the client name, UDP or TCP (UDP by default),
+  the server's public key and the psk. Or open the link that camex's
+  `install.sh` prints (`https://openipc.github.io/camex/connect/#…`, or
+  `camex://connect?…`) on the box: the settings open filled in, with the
+  tunnel ticked.
+- The tunnel tells the server the web port in use (8085 by default:
   `--web-port`, camex 3.19.0 or later), so nginx reaches the page on it.
   The page works through nginx with and without the password: its
   terminal does not depend on the Host header nginx sends.
@@ -1054,8 +1077,9 @@ The box needs no open port and no public address.
   org.openipc.vectis ACTIVATE_VPN allow` and `adb shell appops
   write-settings`. Only the tunnel network and the server's routes go
   through the VPN, never the box's other traffic.
-- The screen shows the tunnel's state and the page's address in it
-  (**TUNNEL**), the notification too. The tunnel runs while vectis does,
+- The screen shows the tunnel's state and the box's address in it
+  (**CAMEX**), the notification too. The tunnel runs while vectis does
+  with remote access on (off, there is no page to offer the server),
   reconnects by itself, and comes back after a reboot with the service.
 - The tunnel puts the box on the server's network: whoever reaches the
   page through nginx, and every client of that network, can use the
@@ -1294,7 +1318,7 @@ deasserting RTS/DTR and restoring the port before exiting. Add `-n` to
 `ExecStart` if the journal shows stray `CR` characters: the LF→CR+LF
 translation exists for raw terminals, not for log files. The unit is
 not bound to the device on purpose: the daemon starts at boot even when
-the adapter is absent, the web page shows `Link offline` and the link is
+the adapter is absent, the web page shows `NO LINK` and the link is
 opened as soon as the adapter appears. `/dev/vectis1` comes from the
 udev rule in the previous section; without such a rule use a
 `/dev/serial/by-id/...` path, or `/dev/ttyUSB0` for a single adapter. For the RFC 2217

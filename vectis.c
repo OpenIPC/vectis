@@ -26,6 +26,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -38,6 +39,7 @@
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <poll.h>
 #include <netdb.h>
 #include <arpa/inet.h>
@@ -113,8 +115,8 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.16.2"
-#define PROGRAM_RELEASE_DATE "2026-11-18"
+#define PROGRAM_VERSION      "1.17.0"
+#define PROGRAM_RELEASE_DATE "2026-11-19"
 
 #define RECONNECT_DELAY_S 5
 
@@ -1082,7 +1084,8 @@ static int on_stdin_eof(void)
 #define WT_MAX_CLIENTS         0
 #endif
 #define WEB_MAX_CLIENTS        8
-#define WEB_NPOLL              (1 + WEB_MAX_CLIENTS + WT_MAX_CLIENTS)  /* listener, requests, terminals */
+#define WEB_NLISTEN            2      /* -w (TCP) and --web-local (unix socket) */
+#define WEB_NPOLL              (WEB_NLISTEN + WEB_MAX_CLIENTS + WT_MAX_CLIENTS)  /* listeners, requests, terminals */
 #define WEB_REQ_MAX            4096   /* request (headers + body) we are willing to buffer */
 #define WEB_CLIENT_TIMEOUT_MS  5000   /* drop a client that never completes its request */
 #define WEB_SEND_TIMEOUT_MS    3000   /* give up on a client that will not read the reply */
@@ -1092,6 +1095,7 @@ struct web_client {
     int       fd;
     int       pending;      /* waits for the running reset pulse to end */
     int       rd_closed;    /* pending, and the client shut its write side */
+    int       local;        /* came through --web-local: our own UID, no password */
     size_t    len;
     long long started_ms;
     const uint8_t *body;    /* a static body still being sent (POLLOUT) */
@@ -1102,6 +1106,7 @@ struct web_client {
 };
 
 static int g_web_listen_fd = -1;
+static int g_web_local_fd = -1;    /* --web-local @NAME, an abstract unix socket */
 static int  g_srv_fd;               /* -l client socket, defined with the listener below */
 static char g_srv_peer[INET_ADDRSTRLEN];
 static struct web_client g_web_clients[WEB_MAX_CLIENTS];
@@ -1133,7 +1138,7 @@ static const char web_page[] =
     "<head>\n"
     "<meta charset='utf-8'>\n"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>\n"
-    "<title>Vectis Web Server</title>\n"
+    "<title>Vectis</title>\n"
     "<link rel='icon' id='icon' type='image/svg+xml' href='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%276.5%27 stroke=%27%236e5320%27 fill=%27%23b09873%27/%3E%3C/svg%3E'>\n"
     "<style>\n"
     ":root{--panel:#2c2119;--panel2:#3d2d22;--brass:#c9a24d;--brass2:#8c6a2a;--amber:#ffb347;--ember:#ff6a1a;--ink:#e8d9b8;--dim:#b09873;--red:#c8452c;--green:#5ad38f;--foot:#a08a69}\n"
@@ -1141,28 +1146,32 @@ static const char web_page[] =
     "body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 50% 0,#3b2c22 0,#1a1512 55%,#0f0b09 100%);color:var(--ink);font-family:Georgia,'Times New Roman',serif;display:flex;flex-direction:column;align-items:center;padding:28px 12px}\n"
     "h1{font-size:clamp(22px,4.5vw,40px);letter-spacing:.2em;text-transform:uppercase;margin:0 0 6px;text-align:center;color:var(--brass);text-shadow:0 1px 0 #f3d78a,0 -1px 0 #3d2a0c,0 0 22px rgba(201,162,77,.35)}\n"
     ".sub{font-family:'Courier New',monospace;font-size:12px;color:var(--dim);letter-spacing:.3em;text-transform:uppercase;margin-bottom:24px;text-align:center}\n"
+    /* The title centred, the version number alone beside it (brass 1.3.0). */
+    ".ttl{position:relative;display:inline-block}\n"
+    ".ttl .ver{position:absolute;left:100%;bottom:.24em;margin-left:.6em;font:12px/1 'Courier New',monospace;letter-spacing:.12em;color:var(--dim);text-shadow:none;white-space:nowrap}\n"
+    "@media (max-width:620px){.ttl .ver{bottom:.1em}.sub .br{display:block}}\n"
     ".panel{position:relative;width:min(1000px,100%);background:linear-gradient(180deg,var(--panel2),var(--panel));border:3px solid var(--brass2);border-radius:16px;box-shadow:inset 0 0 0 2px #1a1210,inset 0 0 50px rgba(0,0,0,.6),0 24px 48px rgba(0,0,0,.65);padding:30px 24px 24px}\n"
     ".rivet{position:absolute;width:14px;height:14px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#f1d38b,#8c6a2a 60%,#3a2a10);box-shadow:0 1px 2px #000,inset 0 -1px 1px rgba(0,0,0,.5)}\n"
     ".rivet.tl{top:8px;left:8px}.rivet.tr{top:8px;right:8px}.rivet.bl{bottom:8px;left:8px}.rivet.br{bottom:8px;right:8px}\n"
     ".plate{font-family:'Courier New',monospace;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:#2a1c10;background:linear-gradient(180deg,#e2c377,#a88237);border:1px solid #5b4416;border-radius:4px;padding:4px 10px;display:inline-block;box-shadow:inset 0 1px 0 #fbe6a8,0 1px 2px #000}\n"
     ".top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}\n"
-    ".lamps{display:flex;gap:18px;flex-wrap:wrap;margin-top:20px;padding:14px 16px;border:1px solid #574123;border-radius:10px;background:rgba(0,0,0,.25);box-shadow:inset 0 2px 8px rgba(0,0,0,.6)}\n"
-    ".lamp{display:flex;align-items:center;gap:8px;font-family:'Courier New',monospace;font-size:12px;letter-spacing:.15em;text-transform:uppercase;color:var(--dim)}\n"
     ".bulb{width:18px;height:18px;border-radius:50%;border:2px solid #6e5320;background:#2a2118;box-shadow:inset 0 0 6px #000;transition:background .3s,box-shadow .3s}\n"
     ".bulb.on{background:radial-gradient(circle at 40% 35%,#fff3c4,var(--amber) 45%,#a24d0a);box-shadow:0 0 14px var(--amber),0 0 30px rgba(255,179,71,.45)}\n"
     ".bulb.ok{background:radial-gradient(circle at 40% 35%,#d8ffe8,var(--green) 45%,#155b34);box-shadow:0 0 14px var(--green)}\n"
     ".bulb.bad{background:radial-gradient(circle at 40% 35%,#ffd0c4,var(--red) 45%,#5a1a0e);box-shadow:0 0 14px var(--red);animation:blink 1.2s infinite}\n"
     "@keyframes blink{50%{box-shadow:0 0 2px var(--red)}}\n"
-    ".mid{margin-top:22px}\n"
-    /* Wide screens: lamps and readout on the left, the buttons on the right. */
-    ".deck{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 28px;align-items:end}\n"
-    "@media (max-width:760px){.deck{display:block}}\n"
-    ".readout{font-family:'Courier New',monospace}\n"
-    ".state{font-size:clamp(18px,3vw,26px);letter-spacing:.18em;text-transform:uppercase;color:var(--amber);text-shadow:0 0 12px rgba(255,179,71,.5);padding:14px 16px;border:2px solid #574123;border-radius:8px;background:#120d0a;box-shadow:inset 0 0 20px rgba(0,0,0,.8);transition:color .3s}\n"
-    ".state.off{color:var(--dim);text-shadow:none}\n"
-    ".state.bad{color:var(--red);text-shadow:0 0 12px rgba(200,69,44,.5)}\n"
-    ".meta{margin-top:10px;font-size:12px;color:var(--dim);letter-spacing:.08em;line-height:1.7;word-break:break-all}\n"
-    ".btns{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:24px}\n"
+    /* The lamp board: a row per state, each with its own lamp (brass 1.3.0). */
+    ".board{margin-top:18px;padding:10px 16px;border:2px solid #574123;border-radius:8px;background:#120d0a;box-shadow:inset 0 0 20px rgba(0,0,0,.8);font-family:'Courier New',monospace;font-size:14px}\n"
+    ".board .r{display:grid;grid-template-columns:22px 120px minmax(0,1fr);align-items:center;padding:5px 0;gap:0 6px}\n"
+    ".board .r .bulb{width:14px;height:14px;border-width:1px}\n"
+    ".board .r .bulb.none{visibility:hidden}\n"
+    ".board .bulb.dim{background:radial-gradient(circle at 40% 35%,#e8d9b8,var(--dim) 45%,#4a3b26)}\n"
+    ".board .k{color:var(--dim);letter-spacing:.15em;text-transform:uppercase;font-size:12px}\n"
+    ".board .v{color:var(--ink);letter-spacing:.06em;word-break:break-all;text-transform:uppercase}\n"
+    ".board .v.off{color:var(--dim)}\n"
+    "@media (max-width:620px){.board{padding:8px 12px;font-size:12px}.board .r{grid-template-columns:20px 74px minmax(0,1fr)}.board .k{font-size:11px;letter-spacing:.1em}}\n"
+    ".btns{display:grid;grid-template-columns:repeat(var(--cols,6),1fr);gap:14px;margin-top:24px}\n"
+    "@media (max-width:620px){.btns{grid-template-columns:repeat(2,1fr)}.btns.row{grid-template-columns:repeat(var(--cols,3),1fr)}.btns.row .btn{font-size:13px;letter-spacing:.1em}}\n"
     ".btn{position:relative;border:0;cursor:pointer;font-family:Georgia,'Times New Roman',serif;font-size:15px;letter-spacing:.22em;text-transform:uppercase;color:#2a1c10;padding:18px 8px 14px;border-radius:12px;background:linear-gradient(180deg,#e9cd84,#b08b3c 55%,#7c5c1f);box-shadow:0 7px 0 #4a3510,0 12px 20px rgba(0,0,0,.6),inset 0 1px 0 #fff1c0;transition:transform .1s,box-shadow .1s,filter .2s}\n"
     ".btn:hover{filter:brightness(1.07)}\n"
     ".btn.pressed{transform:translateY(6px);box-shadow:0 1px 0 #4a3510,0 3px 6px rgba(0,0,0,.6),inset 0 1px 0 #fff1c0}\n"
@@ -1186,7 +1195,10 @@ static const char web_page[] =
     ".tbar:focus-visible{outline:2px solid var(--brass);outline-offset:2px}\n"
     ".tbar .arrow{display:inline-block;width:12px;color:var(--brass);transition:transform .2s}\n"
     ".tbar[aria-expanded=true] .arrow{transform:rotate(90deg)}\n"
-    ".tbar .bulb{width:14px;height:14px;margin-left:auto}\n"
+    ".tbar .bulb{width:14px;height:14px;margin-left:auto;flex-shrink:0}\n"
+    "@media (max-width:620px){.tbar{gap:8px;padding:10px}.tbar .plate{white-space:nowrap;letter-spacing:.12em}}\n"
+    /* The UART plate gives way on a narrow screen rather than leave the panel. */
+    "#t-state{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n"
     ".plate.on{background:linear-gradient(180deg,#bfe9cf,#4f9c6e)}\n"
     ".plate.bad{background:linear-gradient(180deg,#f0b7a8,#a8442c)}\n"
     ".screen{margin-top:14px;height:min(62vh,640px);padding:8px;border:2px solid #574123;border-radius:8px;background:#120d0a;box-shadow:inset 0 0 20px rgba(0,0,0,.8)}\n"
@@ -1198,63 +1210,66 @@ static const char web_page[] =
 #endif
     "</head>\n"
     "<body>\n"
-    "<h1>Vectis Web Server</h1>\n"
+    "<h1 class='ttl'>Vectis<span class='ver' id='ver'></span></h1>\n"
 #ifdef VECTIS_WEBTERM
-    "<div class='sub'>RTS / DTR power control &middot; UART terminal &middot; OpenIPC Vectis 38x38</div>\n"
+    "<div class='sub'>USB-UART console <span class='br'>and RTS / DTR power</span></div>\n"
 #else
-    "<div class='sub'>RTS / DTR power control &middot; OpenIPC Vectis 38x38</div>\n"
+    "<div class='sub'>RTS / DTR power</div>\n"
 #endif
     "<div class='panel'>\n"
     "<span class='rivet tl'></span><span class='rivet tr'></span><span class='rivet bl'></span><span class='rivet br'></span>\n"
-    "<div class='top'><span class='plate'>Power console</span><span class='plate' id='ver'>vectis</span></div>\n"
-    "<div class='deck'>\n"
-    "<div>\n"
-    "<div class='lamps'>\n"
-    "<div class='lamp'><span class='bulb' id='l-link'></span><span id='t-link'>Link</span></div>\n"
-    "<div class='lamp'><span class='bulb' id='l-lines'></span>RTS+DTR</div>\n"
-    "</div>\n"
-    "<div class='mid'>\n"
-    "<div class='readout'><div class='state off' id='state'>Stand by</div><div class='meta' id='meta'>Reading the console&hellip;</div></div>\n"
-    "</div>\n"
-    "</div>\n"
-    "<div class='btns'>\n"
-    "<button class='btn' id='b-on' onclick='act(this)' disabled>Enable<span class='ind'></span></button>\n"
-    "<button class='btn' id='b-off' onclick='act(this)' disabled>Disable<span class='ind'></span></button>\n"
+    "<div class='top'><span class='plate'>Power console</span></div>\n"
+    "<div class='board' id='board'><div class='r'><span class='bulb none'></span><span class='k'>Adapter</span><span class='v off'>Reading&hellip;</span></div></div>\n"
+    "<div class='btns row' style='--cols:3'>\n"
+    "<button class='btn' id='b-on' onclick='act(this)' disabled>Pwr on<span class='ind'></span></button>\n"
+    "<button class='btn' id='b-off' onclick='act(this)' disabled>Pwr off<span class='ind'></span></button>\n"
     "<button class='btn reset' id='b-reset' onclick='act(this)' disabled>Reset<span class='gear'>&#9881;</span><span class='ind'></span></button>\n"
-    "</div>\n"
     "</div>\n"
     "<div class='log' id='log'>&nbsp;</div>\n"
 #ifdef VECTIS_WEBTERM
     "<button class='tbar' id='t-bar' aria-expanded='false' aria-controls='t-body'><span class='arrow'>&#9656;</span><span class='plate'>UART terminal</span>"
-    "<span class='bulb' id='t-act' title='New output'></span><span class='plate' id='t-state'>Closed</span></button>\n"
+    "<span class='bulb' id='t-act'></span><span class='plate' id='t-state'>&hellip;</span></button>\n"
     "<div class='screen' id='t-body' hidden><div id='term'></div></div>\n"
 #endif
     "</div>\n"
     "<div class='foot'>Vectis &middot; OpenIPC &middot; MIT License</div>\n"
     "<script>\n"
-    "var busy=false,lastSeq=-1;\n"
+    "var busy=false,lastSeq=-1,noTerm=false;\n"
     "function $(i){return document.getElementById(i)}\n"
     /* Absolute URLs: a page opened as http://user:pass@host/ may not
      * fetch() a relative path (it would carry the credentials). */
     "function url(p){return location.origin+p}\n"
-    "function bulb(id,c){$(id).className='bulb'+(c?' '+c:'')}\n"
     "var LAMP={on:'%235ad38f',off:'%23b09873',reset:'%23ffb347',bad:'%23c8452c'};\n"
-    "function setState(t,c){var st=$('state');st.textContent=t;st.className='state'+(c?' '+c:'');document.title=t+' \\u00b7 Vectis';\n"
+    "function setState(t,c){document.title=t+' \\u00b7 Vectis';\n"
     " $('icon').href='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%276.5%27 stroke=%27%236e5320%27 fill=%27'+LAMP[c||(t==='Resetting'?'reset':'on')]+'%27/%3E%3C/svg%3E'}\n"
     "function esc(t){return String(t).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}\n"
     "function ago(ms){var s=Math.floor(ms/1000);return s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h'}\n"
     "function last(e){return esc((e.kind==='reset'?'reset':'power '+e.kind)+' by '+e.source+', '+ago(e.ago_ms)+' ago')}\n"
     "function render(s){\n"
-    " var online=s.link==='online',on=s.power==='on';\n"
-    " bulb('l-link',online?'ok':'bad');$('t-link').textContent=online?'Link':'No link';\n"
-    " bulb('l-lines',online&&(s.rts<0||s.dtr<0?on:s.rts===1&&s.dtr===1)?'on':'');\n"
-    " setState(online?(on?'Power enabled':'Power disabled'):'Link offline',online?(on?'':'off'):'bad');\n"
-    " $('meta').innerHTML='TARGET&nbsp; '+esc(s.target)+' ['+esc(s.mode)+']<br>PULSE&nbsp;&nbsp; '+esc(s.reset_ms)+' ms &middot; RTS+DTR'+(s.tcp_client?'<br>CLIENT&nbsp; '+esc(s.tcp_client):'')+(online&&s.event?'<br>LAST&nbsp;&nbsp;&nbsp; '+last(s.event):'');\n"
-    " $('ver').textContent='vectis '+s.version;\n"
+    " var online=s.link==='online',on=s.power==='on',dead=s.link==='none';\n"
+    " setState(online?(on?'Power enabled':'Power disabled'):dead?'No answer':'Link offline',online?(on?'':'off'):'bad');\n"
+    /* The board: a row per state with its own lamp; red only for an error. */
+    " $('board').innerHTML=row(dead?'bad':online?'ok':'bad','Adapter',dead?'no answer':online?'online &middot; '+esc(s.mode):'no link',s.target)\n"
+    "  +row(online?(on?'ok':'dim'):'on','Power',online?(on?'on':'off')+' &middot; RTS+DTR':'unknown')\n"
+    "  +row('','Pulse',esc(s.reset_ms)+' ms &middot; RTS+DTR')\n"
+    "  +(s.tcp_client?row('','Client',esc(s.tcp_client)):'')\n"
+    "  +(online&&s.event?row('','Last',last(s.event),'','off'):'');\n"
+    " if(s.version)$('ver').textContent=s.version;\n"
+    " uart(online,dead,s.mode);\n"
     " $('b-on').classList.toggle('engaged',online&&on);$('b-off').classList.toggle('engaged',online&&!on);\n"
     " var d=!online||busy;$('b-on').disabled=d;$('b-off').disabled=d;$('b-reset').disabled=d;\n"
     " remote(s.event);\n"
     "}\n"
+    "function row(c,k,v,title,vc){return '<div class=r'+(title?' title=\\''+esc(title).replace(/'/g,'&#39;')+'\\'':'')+'><span class=\\'bulb '+(c||'none')+'\\'></span><span class=k>'+k+'</span><span class=\\'v '+(vc||'')+'\\'>'+v+'</span></div>'}\n"
+    /* The terminal bar shows the UART line, not the page's link (brass 1.3.0). */
+#ifdef VECTIS_WEBTERM
+    "function uart(online,dead,mode){var p=$('t-state'),l=$('t-act');\n"
+    " if(noTerm){p.textContent='No xterm';p.className='plate bad';l.className='bulb bad';return}\n"
+    " p.innerHTML=dead?'No service':online?esc(mode)+' &middot; online':'No adapter';\n"
+    " p.className='plate'+(online?' on':' bad');l.className='bulb'+(online?' ok':' bad')}\n"
+#else
+    "function uart(){}\n"
+#endif
     "function remote(e){\n"
     " if(!e){return}\n"
     " if(lastSeq<0){lastSeq=e.seq;return}\n"
@@ -1269,13 +1284,13 @@ static const char web_page[] =
     " var b=$('b-reset');b.classList.add('engaged');setState('Resetting');\n"
     " setTimeout(function(){b.classList.remove('engaged');if(!busy)poll()},900);\n"
     "}\n"
-    "function offline(){render({link:'offline',power:'off',rts:-1,dtr:-1,target:'?',mode:'?',reset_ms:'?',version:'?'})}\n"
+    "function offline(){render({link:'none',power:'off',rts:-1,dtr:-1,target:'',mode:'?',reset_ms:'?'})}\n"
     "function poll(){if(busy)return;fetch(url('/status'),{cache:'no-store'}).then(function(r){return r.json()}).then(render).catch(offline)}\n"
     "function finish(btn){busy=false;setTimeout(function(){btn.classList.remove('pressed')},180);if(btn.id==='b-reset')btn.classList.remove('engaged')}\n"
     "function act(btn){\n"
     " if(busy)return;busy=true;\n"
     " var id=btn.id,path=id==='b-on'?'/power/enable':id==='b-off'?'/power/disable':'/power/reset';\n"
-    " var label=id==='b-on'?'Enable':id==='b-off'?'Disable':'Reset';\n"
+    " var label=id==='b-on'?'Pwr on':id==='b-off'?'Pwr off':'Reset';\n"
     " btn.classList.add('pressed');\n"
     " ['b-on','b-off','b-reset'].forEach(function(i){$(i).disabled=true});\n"
     " if(id==='b-reset'){btn.classList.add('engaged');setState('Resetting')}\n"
@@ -1295,20 +1310,19 @@ static const char web_page[] =
     "<script src='" WT_ASSET_JS "'></script>\n"
     "<script>\n"
     "(function(){\n"
-    " var st=$('t-state'),bar=$('t-bar'),body=$('t-body'),term=null,fit=null,ws=null,enc=new TextEncoder(),KEY='vectis.terminal';\n"
-    " function tstate(t,c){st.textContent=t;st.className='plate'+(c?' '+c:'')}\n"
+    " var bar=$('t-bar'),body=$('t-body'),term=null,fit=null,ws=null,enc=new TextEncoder(),KEY='vectis.terminal';\n"
     /* Browser storage may be missing or refuse (private mode): then the
      * section just starts closed. */
     " function remember(v){try{localStorage.setItem(KEY,v?'open':'closed')}catch(e){}}\n"
     " function send(b){if(ws&&ws.readyState===1)for(var i=0;i<b.length;i+=2048)ws.send(b.subarray(i,i+2048))}\n"
     /* The token from /status proves the page is this server's own. */
-    " function retry(){tstate('Reconnecting','bad');setTimeout(connect,2000)}\n"
+    " function retry(){setTimeout(connect,2000)}\n"
     " function connect(){\n"
     "  fetch(url('/status'),{cache:'no-store'}).then(function(r){return r.json()}).then(function(s){\n"
     "   ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host+'/ws/terminal?token='+s.terminal_token);\n"
     "   ws.binaryType='arraybuffer';\n"
-    "   ws.onopen=function(){term.reset();tstate('Connected','on')};\n"
-    "   ws.onmessage=function(e){if(typeof e.data!=='string'){term.write(new Uint8Array(e.data));if(body.hidden)bulb('t-act','on')}};\n"
+    "   ws.onopen=function(){term.reset()};\n"
+    "   ws.onmessage=function(e){if(typeof e.data!=='string')term.write(new Uint8Array(e.data))};\n"
     "   ws.onclose=retry;\n"
     "  }).catch(retry);\n"
     " }\n"
@@ -1316,20 +1330,19 @@ static const char web_page[] =
      * a closed section keeps collecting output, a page that never opens
      * it takes no terminal on the server. */
     " function start(){\n"
-    "  if(!window.Terminal||!window.FitAddon){tstate('No terminal','bad');return false}\n"
+    "  if(!window.Terminal||!window.FitAddon){noTerm=true;poll();return false}\n"
     "  term=new Terminal({cursorBlink:true,convertEol:true,fontSize:13,scrollback:5000,\n"
     "   theme:{background:'#120d0a',foreground:'#e8d9b8',cursor:'#ffb347',cursorAccent:'#120d0a',selectionBackground:'rgba(201,162,77,.4)'}});\n"
     "  fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open($('term'));\n"
     "  term.onData(function(d){send(enc.encode(d))});\n"
     "  term.onBinary(function(d){var b=new Uint8Array(d.length);for(var i=0;i<d.length;i++)b[i]=d.charCodeAt(i)&255;send(b)});\n"
     "  addEventListener('resize',function(){if(!body.hidden)fit.fit()});\n"
-    "  tstate('Connecting');connect();return true;\n"
+    "  connect();return true;\n"
     " }\n"
     " function show(open,keep){\n"
     "  body.hidden=!open;bar.setAttribute('aria-expanded',open?'true':'false');\n"
     "  if(keep)remember(open);\n"
     "  if(!open)return;\n"
-    "  bulb('t-act','');\n"
     "  if(!term&&!start())return;\n"
     "  fit.fit();if(keep)term.focus();\n"
     " }\n"
@@ -1366,6 +1379,16 @@ static void web_shutdown(void)
         close(g_web_listen_fd);
         g_web_listen_fd = -1;
     }
+    if (g_web_local_fd >= 0) {
+        close(g_web_local_fd);
+        g_web_local_fd = -1;
+    }
+}
+
+/* The web server is up: -w, --web-local or both. */
+static int web_on(void)
+{
+    return g_web_listen_fd >= 0 || g_web_local_fd >= 0;
 }
 
 /* Parse a "PORT" or "ADDR:PORT" argument (-w, -l).  Returns 0 on success. */
@@ -1430,12 +1453,11 @@ static int tcp_listen(const char *addr, int port, const char *what)
     return fd;
 }
 
-static int web_listen(const char *addr, int port)
+/* The client slots and the terminals, once, by the first web listener. */
+static void web_init(void)
 {
-    int fd = tcp_listen(addr, port, "web");
-
-    if (fd < 0)
-        return -1;
+    if (web_on())
+        return;
     for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
         g_web_clients[i].fd      = -1;
         g_web_clients[i].len     = 0;
@@ -1445,8 +1467,55 @@ static int web_listen(const char *addr, int port)
 #ifdef VECTIS_WEBTERM
     wt_init();
 #endif
+}
+
+static int web_listen(const char *addr, int port)
+{
+    int fd = tcp_listen(addr, port, "web");
+
+    if (fd < 0)
+        return -1;
+    web_init();
     g_web_listen_fd = fd;
     log_message(LOG_INFO, "Web server ready on http://%s:%d/", addr[0] ? addr : "0.0.0.0", port);
+    return 0;
+}
+
+/* --web-local @NAME: the same web server on an abstract unix socket, for
+ * an app on the same device (the Android app's own screen and terminal,
+ * with or without -w).  Only a peer with our own UID is served
+ * (web_accept), and it needs no password. */
+static int web_local_listen(const char *name)
+{
+    struct sockaddr_un sa;
+    size_t n = strlen(name);
+    int fd;
+
+    if (n == 0 || n >= sizeof sa.sun_path - 1) {
+        log_message(LOG_ERR, "Invalid --web-local name: @%s", name);
+        return -1;
+    }
+    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        log_errno(LOG_ERR, "socket(web-local)");
+        return -1;
+    }
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    memcpy(sa.sun_path + 1, name, n);   /* sun_path[0] = 0: the abstract namespace */
+    if (bind(fd, (struct sockaddr *)&sa, (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + n)) != 0) {
+        log_errno(LOG_ERR, "bind(web-local @%s)", name);
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 8) != 0) {
+        log_errno(LOG_ERR, "listen(web-local)");
+        close(fd);
+        return -1;
+    }
+    web_init();
+    g_web_local_fd = fd;
+    log_message(LOG_INFO, "Web server ready on the local socket @%s", name);
     return 0;
 }
 
@@ -1929,7 +1998,7 @@ static void wt_hist_add(const uint8_t *d, size_t n)
 /* Device bytes: into the history and out to every terminal. */
 static void wt_broadcast(const uint8_t *data, size_t len)
 {
-    if (len == 0 || g_web_listen_fd < 0)
+    if (len == 0 || !web_on())
         return;
     wt_hist_add(data, len);
     for (int i = 0; i < WT_MAX_CLIENTS; i++) {
@@ -2414,7 +2483,7 @@ static void web_process_request(struct web_client *c, size_t hdr_len)
     is_head = strcmp(method, "HEAD") == 0;
     is_post = strcmp(method, "POST") == 0;
 
-    if (!web_auth_ok(c->buf, hdr_len)) {
+    if (!c->local && !web_auth_ok(c->buf, hdr_len)) {
         web_reply_ex(c, 401, "Unauthorized", "text/plain",
                      "WWW-Authenticate: Basic realm=\"vectis\", charset=\"UTF-8\"\r\n",
                      "no-store", WEB_TEXT("password required\n"), is_head);
@@ -2530,12 +2599,12 @@ static void web_client_read(struct web_client *c)
         web_client_close(c);
 }
 
-static void web_accept(void)
+static void web_accept(int lfd, int local)
 {
     struct sockaddr_in peer;
     socklen_t pl = sizeof peer;
     struct web_client *c = NULL;
-    int cfd = accept4(g_web_listen_fd, (struct sockaddr *)&peer, &pl,
+    int cfd = accept4(lfd, (struct sockaddr *)&peer, &pl,
                       SOCK_NONBLOCK | SOCK_CLOEXEC);
 
     if (cfd < 0) {
@@ -2543,6 +2612,16 @@ static void web_accept(void)
             errno != ECONNABORTED)
             log_errno(LOG_WARNING, "accept(web)");
         return;
+    }
+    if (local) {
+        /* An abstract socket has no file permissions: check who it is. */
+        struct ucred cr;
+        socklen_t cl = sizeof cr;
+        if (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cr, &cl) != 0 || cr.uid != getuid()) {
+            log_message(LOG_WARNING, "[web] local socket: refused a peer with another UID");
+            close(cfd);
+            return;
+        }
     }
     for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
         if (g_web_clients[i].fd < 0) {
@@ -2562,7 +2641,10 @@ static void web_accept(void)
     c->pending    = 0;
     c->rd_closed  = 0;
     c->started_ms = now_ms();
-    if (inet_ntop(AF_INET, &peer.sin_addr, c->peer, sizeof c->peer) == NULL)
+    c->local      = local;
+    if (local)
+        snprintf(c->peer, sizeof c->peer, "local");
+    else if (inet_ntop(AF_INET, &peer.sin_addr, c->peer, sizeof c->peer) == NULL)
         snprintf(c->peer, sizeof c->peer, "?");
 }
 
@@ -2586,30 +2668,33 @@ static void web_pending_check(struct web_client *c)
 
 /* Fill poll slots for the listener and every client slot (fd = -1 where
  * unused, which poll() skips).  Returns the number of slots filled: 0
- * when -w is off, WEB_NPOLL otherwise. */
+ * when the web server is off, WEB_NPOLL otherwise. */
 static int web_fill_pollfds(struct pollfd *p)
 {
-    if (g_web_listen_fd < 0)
+    if (!web_on())
         return 0;
-    p[0].fd      = g_web_listen_fd;
+    p[0].fd      = g_web_listen_fd;   /* -1 when only one of the two is on: poll() skips it */
     p[0].events  = POLLIN;
     p[0].revents = 0;
+    p[1].fd      = g_web_local_fd;
+    p[1].events  = POLLIN;
+    p[1].revents = 0;
     for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
-        p[1 + i].fd      = g_web_clients[i].fd;
+        p[WEB_NLISTEN + i].fd      = g_web_clients[i].fd;
         /* A client waiting for its reset reply has said all it had to
          * say: watch only for its half-close, then for errors alone
          * (POLLHUP/POLLERR are always reported). */
         if (g_web_clients[i].body_left > 0)
-            p[1 + i].events = POLLOUT;  /* only the rest of a static body to send */
+            p[WEB_NLISTEN + i].events = POLLOUT;  /* only the rest of a static body to send */
         else if (!g_web_clients[i].pending)
-            p[1 + i].events = POLLIN;
+            p[WEB_NLISTEN + i].events = POLLIN;
         else
-            p[1 + i].events = g_web_clients[i].rd_closed ? 0 : (POLLIN | POLLRDHUP);
-        p[1 + i].revents = 0;
+            p[WEB_NLISTEN + i].events = g_web_clients[i].rd_closed ? 0 : (POLLIN | POLLRDHUP);
+        p[WEB_NLISTEN + i].revents = 0;
     }
 #ifdef VECTIS_WEBTERM
     for (int i = 0; i < WT_MAX_CLIENTS; i++) {
-        struct pollfd *t = &p[1 + WEB_MAX_CLIENTS + i];
+        struct pollfd *t = &p[WEB_NLISTEN + WEB_MAX_CLIENTS + i];
         t->fd      = g_wt[i].fd;
         t->events  = (short)(POLLIN | (g_wt[i].out_len > 0 ? POLLOUT : 0));
         t->revents = 0;
@@ -2627,18 +2712,20 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
     if (n <= 0)
         return;
     if (p[0].revents & POLLIN)
-        web_accept();
+        web_accept(g_web_listen_fd, 0);
+    if (p[1].revents & POLLIN)
+        web_accept(g_web_local_fd, 1);
     now = now_ms();
     for (int i = 0; i < WEB_MAX_CLIENTS; i++) {
         struct web_client *c = &g_web_clients[i];
-        if (c->fd < 0 || p[1 + i].fd != c->fd)
+        if (c->fd < 0 || p[WEB_NLISTEN + i].fd != c->fd)
             continue;  /* empty slot, or accepted only just now */
-        if (p[1 + i].revents & POLLNVAL)
+        if (p[WEB_NLISTEN + i].revents & POLLNVAL)
             web_client_close(c);
         else if (c->body_left > 0) {
-            if (p[1 + i].revents & (POLLERR | POLLHUP))
+            if (p[WEB_NLISTEN + i].revents & (POLLERR | POLLHUP))
                 web_client_close(c);
-            else if (p[1 + i].revents & POLLOUT) {
+            else if (p[WEB_NLISTEN + i].revents & POLLOUT) {
                 web_body_flush(c);
                 if (c->fd >= 0 && c->body_left == 0)
                     web_client_close(c);
@@ -2646,11 +2733,11 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
             if (c->fd >= 0 && now - c->body_ms > WEB_BODY_TIMEOUT_MS)
                 web_client_close(c);
             continue;
-        } else if (c->pending && (p[1 + i].revents & (POLLHUP | POLLERR)))
+        } else if (c->pending && (p[WEB_NLISTEN + i].revents & (POLLHUP | POLLERR)))
             web_client_close(c);   /* the peer is gone */
-        else if (c->pending && (p[1 + i].revents & (POLLIN | POLLRDHUP)))
+        else if (c->pending && (p[WEB_NLISTEN + i].revents & (POLLIN | POLLRDHUP)))
             web_pending_check(c);
-        else if (p[1 + i].revents & (POLLIN | POLLHUP | POLLERR))
+        else if (p[WEB_NLISTEN + i].revents & (POLLIN | POLLHUP | POLLERR))
             web_client_read(c);
         /* The idle timeout guards the request; a client waiting for a
          * pulse (up to -t, 60 s) is answered when the pulse ends. */
@@ -2660,8 +2747,8 @@ static void web_handle_pollfds(const struct pollfd *p, int n)
 #ifdef VECTIS_WEBTERM
     for (int i = 0; i < WT_MAX_CLIENTS; i++) {
         struct wt_client *t = &g_wt[i];
-        short re = p[1 + WEB_MAX_CLIENTS + i].revents;
-        if (t->fd < 0 || p[1 + WEB_MAX_CLIENTS + i].fd != t->fd)
+        short re = p[WEB_NLISTEN + WEB_MAX_CLIENTS + i].revents;
+        if (t->fd < 0 || p[WEB_NLISTEN + WEB_MAX_CLIENTS + i].fd != t->fd)
             continue;  /* empty slot, or opened only just now */
         if (re & POLLNVAL) {
             wt_close(t, "socket invalid");
@@ -3388,7 +3475,7 @@ static int connect_to(const char *host, const char *port)
 /* -w or -l: the process is a daemon whose listeners must outlive the link. */
 static int daemon_mode(void)
 {
-    return g_web_listen_fd >= 0 || g_srv_listen_fd >= 0;
+    return web_on() || g_srv_listen_fd >= 0;
 }
 
 /* Keyboard input while the link is down.  Nothing can reach the device,
@@ -3623,6 +3710,9 @@ static void usage(const char *prog)
         "  -W PASSWORD     password of the -w page (HTTP Basic, any user name);\n"
         "                  also VECTIS_WEB_PASSWORD, -W wins.  Unset or empty: open.\n"
         "                  -l has no password.\n"
+        "  --web-local @NAME  the -w page and terminal also on the abstract unix\n"
+        "                  socket NAME, for an app on this device (Android); only\n"
+        "                  a peer with this UID, no password.  Works without -w.\n"
         "  -v, --version   print version and release date\n"
         "  --help, -?      this help\n"
         "\n"
@@ -3666,6 +3756,7 @@ int main(int argc, char **argv)
     int want_help = 0;
     int want_version = 0;
     char web_addr[64] = "";
+    const char *web_local = NULL;
     int web_port = 0;
     char lsn_addr[64] = "";
     int lsn_port = 0;
@@ -3688,6 +3779,7 @@ int main(int argc, char **argv)
         { "web",       required_argument, NULL,        'w' },
         { "web-password", required_argument, NULL,     'W' },
         { "listen",    required_argument, NULL,        'l' },
+        { "web-local", required_argument, NULL,        1000 },
         { 0, 0, 0, 0 }
     };
 
@@ -3769,6 +3861,13 @@ int main(int argc, char **argv)
                 log_message(LOG_ERR, "Invalid -w spec: %s (use PORT or ADDR:PORT)", optarg);
                 return 1;
             }
+            break;
+        case 1000:
+            if (optarg[0] != '@' || optarg[1] == '\0') {
+                log_message(LOG_ERR, "--web-local takes @NAME (an abstract unix socket): %s", optarg);
+                return 1;
+            }
+            web_local = optarg + 1;
             break;
         case 'W':
             web_password = optarg;   /* wins over VECTIS_WEB_PASSWORD */
@@ -3914,6 +4013,8 @@ int main(int argc, char **argv)
     if (lsn_port > 0 && srv_listen(lsn_addr, lsn_port) != 0)
         return 1;
     if (web_port > 0 && web_listen(web_addr, web_port) != 0)
+        return 1;
+    if (web_local != NULL && web_local_listen(web_local) != 0)
         return 1;
     if (web_port > 0)
         log_message(LOG_INFO, "Web page %s", g_web_password[0]

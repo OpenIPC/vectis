@@ -322,16 +322,17 @@ def test_server(tmp):
         check(ids and not missing, "web page: script ids exist (missing %r)" % missing)
         check("needle" not in page and "gauge" not in page, "web page: no arrow gauge")
         check("document.title=" in page, "web page: the tab title follows the state")
-        check("LAST" in page and ".btn:disabled.engaged{filter:none}" in page,
-              "web page: LAST line, the engaged button stays lit")
+        check("'Last'" in page and "id='board'" in page and ".btn:disabled.engaged{filter:none}" in page,
+              "web page: the lamp board with a Last row, the engaged button stays lit")
         check("rel='icon'" in page and "LAMP[" in page, "web page: lamp tab icon")
         check(page.count("stroke=%27%236e5320%27") == 2 and "stroke-width" not in page,
               "web page: tab icon stroke #6e5320, width 1 (brass)")
         check("--foot:#a08a69" in page and "color:var(--foot)" in page and "#958061" not in page,
               "web page: footer uses --foot #a08a69 (brass)")
         check("prefers-reduced-motion:reduce" in page, "web page: reduced motion respected")
-        check("OpenIPC Vectis 38x38" in page and "UART 38x38" not in page,
-              "web page: names the OpenIPC Vectis 38x38 board")
+        check(("USB-UART console" in page or "RTS / DTR power" in page) and "Web Server" not in page
+              and "class='ttl'" in page and "Pwr on" in page and "Pwr off" in page,
+              "web page: title Vectis with the version beside it, the app's subtitle, PWR ON / PWR OFF")
         check('"' not in page, "web page: single quotes only")
         check("fetch('/" not in page and "fetch(path" not in page and "location.origin" in page,
               "web page: fetch() with absolute URLs (a page opened as http://user:pass@host/)")
@@ -783,6 +784,80 @@ def test_web_password(tmp):
     check(r.returncode == 1 and b"give -w too" in r.stdout, "-W without -w: refused")
 
 
+def local_request(name, raw, timeout=3.0):
+    """Send raw bytes to the abstract unix socket @name; return what comes back."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect("\0" + name)
+    s.sendall(raw)
+    out = b""
+    try:
+        while True:
+            b = s.recv(4096)
+            if not b:
+                break
+            out += b
+            if raw.startswith(b"GET /ws/") and b"\r\n\r\n" in out:
+                break
+    except socket.timeout:
+        pass
+    return s, out
+
+
+def test_web_local(tmp):
+    print("== web on a local unix socket (--web-local)")
+    dev = FakeDevice(os.path.join(tmp, "dev-local"))
+    name = "vectis-test-%d" % os.getpid()
+
+    p, log = start_quiet([VECTIS, "-u", dev.link, "--web-local", "@" + name, "-n"],
+                         os.path.join(tmp, "local.log"))
+    try:
+        end = time.time() + 5
+        st = None
+        while time.time() < end and st is None:
+            try:
+                s, out = local_request(name, b"GET /status HTTP/1.1\r\nHost: x\r\n\r\n")
+                s.close()
+                if out.startswith(b"HTTP/1.1 200"):
+                    st = json.loads(out.split(b"\r\n\r\n", 1)[1])
+            except OSError:
+                time.sleep(0.05)
+        check(st is not None and "power" in st, "--web-local alone: /status over the unix socket")
+        if st is not None and st.get("terminals") is not None:
+            s, out = local_request(name, b"GET /ws/terminal HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+                                   b"Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+                                   b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+            check(out.startswith(b"HTTP/1.1 101"), "--web-local: the terminal opens (%r)" % out[:20])
+            dev.write(b"local-hello")
+            got = b""
+            end = time.time() + 3
+            while time.time() < end and b"local-hello" not in got:
+                try:
+                    got += s.recv(4096)
+                except socket.timeout:
+                    break
+            check(b"local-hello" in got, "--web-local: device output reaches the terminal")
+            s.close()
+    finally:
+        stop_quiet(p, log)
+
+    wport = free_port()
+    p, log = start_quiet([VECTIS, "-u", dev.link, "-w", "127.0.0.1:%d" % wport, "-W", "pw",
+                          "--web-local", "@" + name, "-n"], os.path.join(tmp, "local2.log"))
+    try:
+        check(wait_listen(wport), "web up beside --web-local")
+        check(http_raw(wport, "/status")[0] == 401, "-w keeps its password")
+        s, out = local_request(name, b"GET /status HTTP/1.1\r\nHost: x\r\n\r\n")
+        s.close()
+        check(out.startswith(b"HTTP/1.1 200"), "--web-local needs no password (own UID)")
+    finally:
+        stop_quiet(p, log)
+
+    r = subprocess.run([VECTIS, "-u", dev.link, "--web-local", "name"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
+    check(r.returncode == 1 and b"@NAME" in r.stdout, "--web-local without @: refused")
+
+
 class FakeSysfs:
     """A sysfs tree that says which USB adapter a pty is (VECTIS_SYSFS_ROOT)."""
 
@@ -1074,6 +1149,7 @@ def main():
         idle.start()
         test_web_terminal(tmp)
         test_web_password(tmp)
+        test_web_local(tmp)
         test_stdin_eof(tmp)
         test_identity(tmp)
         test_usb_fd(tmp)

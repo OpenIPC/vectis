@@ -50,8 +50,11 @@ change that can be exercised without hardware.
 - `android/` → the Android app (`org.openipc.vectis`): a foreground service owns the
   USB adapter (UsbManager) and runs vectis, built by `android/build-native.sh` as
   `libvectis.so`, with `-U fd:@org.openipc.vectis.usb`; a fresh `openDevice()` per
-  connection; web port 8085 by default, the web page password from the settings in
-  `VECTIS_WEB_PASSWORD`; `TerminalActivity` is a native screen on `/ws/terminal`
+  connection; web port 8085 by default (taken: the next free one, `freePort()`), the
+  web page password from the settings in `VECTIS_WEB_PASSWORD`; the app's own requests
+  (`Http`) and its terminal go to `--web-local @org.openipc.vectis.web` (an abstract
+  unix socket, own UID, no password), so they work with remote access off (no `-l`,
+  no `-w`); `TerminalActivity` is a native screen on `/ws/terminal`
   (`WsCodec`, `TermBuffer`). Remote access through a camex server (#97): the submodule
   `bundles/camex` (pinned to a camex release; `git submodule update --init`), its tunnel
   library as `:camex-tunnel`, started and stopped with vectis by the service
