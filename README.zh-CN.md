@@ -982,7 +982,9 @@ Microsnander 相同：盒子连接到 camex 服务器，操作员可以在任何
 盒子不需要开放端口，也不需要公网地址。
 
 - **Settings → CAMEX**：勾选“Join a camex server”，填写服务器（`host:port`）、
-  客户端名称、UDP 或 TCP（默认 UDP）、服务器公钥和 psk。或者在盒子上打开
+  客户端名称（默认为 `vectis-` 加盒子 ANDROID_ID 的最后四个字符）、Proto（默认
+  UDP）、服务器公钥和预共享密钥（隐藏；**Show the key** 可显示）。字段、标签和
+  提示来自 camex 库，所有应用都相同。或者在盒子上打开
   camex 的 `install.sh` 打印的链接（`https://openipc.github.io/camex/connect/#…`
   或 `camex://connect?…`）：设置会以已填好、已勾选隧道的状态打开。
 - 隧道会把实际使用的 Web 端口告诉服务器（默认 8085：`--web-port`，需要 camex 3.19.0
@@ -996,8 +998,8 @@ Microsnander 相同：盒子连接到 camex 服务器，操作员可以在任何
 - 屏幕和通知显示隧道的状态和盒子在隧道中的地址（**CAMEX**）。隧道在远程访问开启时随 vectis
   一起运行，会自动重连，并在重启后随服务一起恢复。
 - 隧道把盒子加入服务器的网络：如果页面没有密码，任何通过 nginx 打开页面的人
-  以及该网络的任何客户端都可以使用电源和终端；控制台端口（`-l`，始终没有密码）
-  对隧道网络同样开放。服务器与他人共用时请设置密码。
+  以及该网络的任何客户端都可以使用电源和终端。通过隧道只能访问 Web 端口
+  （camex 4.1.2 及以上），控制台端口不行。服务器与他人共用时请设置密码。
 
 在路由器或 Linux 主机上 camex 不是内置的：在 vectis 旁边运行 camex 客户端
 （MIPS 路由器上使用 [camex 发布版](https://github.com/OpenIPC/camex/releases/latest)

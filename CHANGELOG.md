@@ -6,6 +6,19 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.1 — 2026-11-19
+
+- Android: camex 4.2.0 (`bundles/camex`). The CAMEX settings take their fields, labels
+  and hints from the library (`CamexTunnel.fields(context, "vectis")`): Client name,
+  Proto, MTU, Keepalive, Server timeout; the pre-shared key is hidden, with **Show the
+  key**; the client name is `vectis-` and the last four characters of ANDROID_ID by
+  default (an emptied name goes back to it). Through the tunnel only the web port is
+  reachable now, not the console port (camex 4.1.2) (#115).
+- Android: a restart to apply new settings no longer shows the CONSOLE and WEB rows as
+  FAILED for a moment, nor VECTIS as RESTARTING (review of #114).
+- `--web-local`: a terminal on the unix socket no longer logs a `TCP_NODELAY` warning
+  (review of #114).
+
 ## 1.17.0 — 2026-11-19
 
 The interface review of 2026-11-18 (brand brass 1.3.0), and the app no longer needs the

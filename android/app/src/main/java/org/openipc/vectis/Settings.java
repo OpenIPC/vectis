@@ -21,6 +21,8 @@ import org.openipc.camex.tunnel.CamexTunnel;
 import org.openipc.camex.tunnel.Field;
 
 final class Settings {
+    /** The app's name for the camex library: the default client name is vectis-<ANDROID_ID>. */
+    static final String APP = "vectis";
     static final int DEFAULT_BAUD = 115200;
     static final int DEFAULT_CONSOLE = 2021;
     static final int DEFAULT_WEB = 8085;
@@ -153,6 +155,10 @@ final class Settings {
         Map<String, String> v = new HashMap<>();
         for (String k : tunnelKeys())
             v.put(k, prefs(c).getString(TUNNEL_PREFIX + k, CamexTunnel.TRANSPORT.equals(k) ? "UDP" : ""));
+        // an empty client name is not kept: the library's default (vectis-<ANDROID_ID>)
+        String name = v.get(CamexTunnel.NAME);
+        if (name == null || name.trim().isEmpty())
+            v.put(CamexTunnel.NAME, CamexTunnel.defaultName(c, APP));
         int inUse = VectisService.webPortInUse;
         v.put(CamexTunnel.WEB_PORT, String.valueOf(inUse > 0 ? inUse : webPort(c)));
         return v;

@@ -58,7 +58,6 @@
     <string name="tunnel_on">Join a camex server</string>
     <string name="tunnel_link_bad">Not a camex link</string>
     <string name="tunnel_link_field">%1$s: %2$s</string>
-    <string name="tunnel_optional">%1$s (optional)</string>
     <string name="tunnel_connected">%1$s</string>
     <string name="tunnel_connecting">connecting</string>
     <string name="tunnel_needs_consent">needs the VPN consent</string>

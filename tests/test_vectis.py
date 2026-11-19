@@ -839,7 +839,8 @@ def test_web_local(tmp):
             check(b"local-hello" in got, "--web-local: device output reaches the terminal")
             s.close()
     finally:
-        stop_quiet(p, log)
+        text = stop_quiet(p, log)
+    check("TCP_NODELAY" not in text, "--web-local: no TCP option warning for a unix-socket terminal")
 
     wport = free_port()
     p, log = start_quiet([VECTIS, "-u", dev.link, "-w", "127.0.0.1:%d" % wport, "-W", "pw",

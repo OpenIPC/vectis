@@ -15,7 +15,7 @@
  *   - The app's own screen and terminal talk to vectis on the local socket
  *     (Http, TerminalActivity): our own UID only, no password, and it works
  *     with remote access off.  The web port is the setting or, when another
- *     app holds it, the next free one (webPortInUse; ANDROID.md section 12).
+ *     app holds it, the next free one (webPortInUse, #112).
  *   - Only root can open /dev/bus/usb, so the service opens the adapter with
  *     UsbManager and serves a usbfs fd on the abstract socket of -U: every
  *     connection from our own uid gets the adapter opened anew (vectis
@@ -609,12 +609,20 @@ public class VectisService extends Service {
             p.destroy();
             code = -1;
         }
+        boolean meant;
         synchronized (lock) {
             if (process == p)
                 process = null;
+            // Stopped, replaced or restarted for new settings: not a failure to show
+            meant = !wanted || gen != generation || seq != settingsSeq;
         }
-        lastExit = "vectis exited with code " + code;
-        line("app: " + lastExit);
+        if (meant) {
+            lastExit = "";
+            line("app: vectis stopped (code " + code + ")");
+        } else {
+            lastExit = "vectis exited with code " + code;
+            line("app: " + lastExit);
+        }
         updateNotification();
     }
 

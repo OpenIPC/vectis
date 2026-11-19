@@ -1062,8 +1062,11 @@ the server ([camex: nginx in front of the clients](https://github.com/OpenIPC/ca
 The box needs no open port and no public address.
 
 - **Settings → CAMEX**: tick "Join a camex server" and fill in the
-  server (`host:port`), the client name, UDP or TCP (UDP by default),
-  the server's public key and the psk. Or open the link that camex's
+  server (`host:port`), the client name (`vectis-` and the last four
+  characters of the box's ANDROID_ID by default), the proto (UDP by
+  default), the server's public key and the pre-shared key (hidden;
+  **Show the key** shows it). The fields, their labels and hints come
+  from the camex library, the same in every app. Or open the link that camex's
   `install.sh` prints (`https://openipc.github.io/camex/connect/#…`, or
   `camex://connect?…`) on the box: the settings open filled in, with the
   tunnel ticked.
@@ -1083,9 +1086,9 @@ The box needs no open port and no public address.
   reconnects by itself, and comes back after a reboot with the service.
 - The tunnel puts the box on the server's network: whoever reaches the
   page through nginx, and every client of that network, can use the
-  power and the terminal unless the page has a password, and the console
-  port (`-l`, never a password) is open to the tunnel network too. Set a
-  password when the server is shared.
+  power and the terminal unless the page has a password. Only the web
+  port is reachable through the tunnel (camex 4.1.2 and later), not the
+  console port. Set a password when the server is shared.
 
 On a router or a Linux host camex is not built in: run the camex client
 next to vectis (`camex-mipsel` from the [camex releases](https://github.com/OpenIPC/camex/releases/latest)
