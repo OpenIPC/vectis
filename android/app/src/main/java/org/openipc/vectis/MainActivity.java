@@ -133,7 +133,7 @@ public class MainActivity extends Activity {
         accessRow = row(col);
         start = button(r1, R.string.btn_start, v -> {
             Settings.setRunning(this, true);
-            VectisService.send(this, VectisService.ACTION_START);
+            VectisService.send(this, VectisService.ACTION_START, true);   // the user's: takes the VPN
         });
         stop = button(r1, R.string.btn_stop, v -> {
             Settings.setRunning(this, false);
@@ -241,11 +241,14 @@ public class MainActivity extends Activity {
         update();
     }
 
-    /** The new settings to the service: vectis restarted if its own changed, the tunnel either way. */
+    /**
+     * The new settings to the service: vectis restarted if its own changed, the tunnel either way.
+     * Only for what the user does (Save, the consent): the tunnel takes the VPN from another app.
+     */
     private void restartService(boolean vectis) {
         if (VectisService.instance == null)
             return;                       // stopped: Start takes the settings
-        VectisService.send(this, vectis ? VectisService.ACTION_RESTART : VectisService.ACTION_START);
+        VectisService.send(this, vectis ? VectisService.ACTION_RESTART : VectisService.ACTION_START, true);
     }
 
     @Override
@@ -644,8 +647,9 @@ public class MainActivity extends Activity {
             int c = ts == CamexTunnel.State.CONNECTED ? R.color.green : ts == CamexTunnel.State.FAILED ? R.color.red
                     : ts == CamexTunnel.State.STOPPED ? R.color.dim : R.color.amber;
             String addr = VectisService.tunnelAddress;
-            rCamex.set(c, ts.name().replace('_', ' ')
-                    + (ts == CamexTunnel.State.CONNECTED && !addr.isEmpty() ? " · " + addr : ""));
+            // WAITING as the camex app says it: the tunnel waits for another app's VPN to go
+            String name = ts == CamexTunnel.State.WAITING ? "WAITING FOR THE VPN" : ts.name().replace('_', ' ');
+            rCamex.set(c, name + (ts == CamexTunnel.State.CONNECTED && !addr.isEmpty() ? " · " + addr : ""));
         }
 
         start.setEnabled(s == null || !s.isWanted());

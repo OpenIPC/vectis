@@ -6,6 +6,16 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.9 — 2026-11-21
+
+- Android: camex 4.4.1 (`bundles/camex` 0c3e7cb → 7a8834e). The tunnel the app starts by itself
+  (the service's start, a reboot, an update, the retries, a web port change) no longer takes the
+  VPN from another app that holds it (`CamexTunnel.startWhenFree`): the CAMEX row says `WAITING FOR THE VPN`
+  (amber) and camex brings the tunnel up when that VPN goes away. Start, Save and OK in the VPN
+  consent dialog are the user's and still take the VPN (`CamexTunnel.start`). Two apps with a
+  tunnel on one box (Decoder, Microsnander) used to take the VPN from each other every minute
+  (#130).
+
 ## 1.17.8 — 2026-11-19
 
 - Web page: the lamp and plate on the UART TERMINAL bar show the terminal's own connection

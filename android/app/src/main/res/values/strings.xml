@@ -61,6 +61,7 @@
     <string name="tunnel_connected">%1$s</string>
     <string name="tunnel_connecting">connecting</string>
     <string name="tunnel_needs_consent">needs the VPN consent</string>
+    <string name="tunnel_waiting">waits: another app\'s VPN is on</string>
     <string name="tunnel_failed">failed: %1$s</string>
     <string name="tunnel_stopped">stopped</string>
     <string name="tunnel_consent_refused">The VPN consent was not given: the tunnel stays off</string>
