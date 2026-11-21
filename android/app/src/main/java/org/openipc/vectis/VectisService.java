@@ -130,11 +130,12 @@ public class VectisService extends Service {
     private int generation;               // guarded by lock: which runLoop is the current one
     private volatile LocalServerSocket server;
     private int bindTries;                // main thread: failed binds of this Start
+    private boolean userStart;            // main thread: the latest START or RESTART was the user's
     /** The one pending bind retry (main thread): a new Start or Stop replaces or cancels it. */
     private final Runnable retryBind = () -> {
         if (Settings.running(this) && !isWanted() && instance == this) {
             bindVectis();
-            startTunnel();
+            startTunnel(userStart);       // the Start it retries: the user's takes the VPN
             updateNotification();
         }
     };
@@ -246,7 +247,8 @@ public class VectisService extends Service {
             openAdapter();
             startVectis();
         }
-        startTunnel(intent != null && intent.getBooleanExtra(EXTRA_USER, false));
+        userStart = intent != null && intent.getBooleanExtra(EXTRA_USER, false);
+        startTunnel(userStart);
         updateNotification();
         return START_STICKY;
     }
