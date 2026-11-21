@@ -6,6 +6,14 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.10 — 2026-11-21
+
+- Android: Save in the settings no longer takes the VPN from another app while vectis is
+  stopped (#132). Save asked for the VPN consent whenever the tunnel was checked, and with the
+  consent given that alone makes vectis the VPN owner and drops the other app's tunnel; a
+  stopped vectis started nothing in its place. Save now asks only when the tunnel starts (the
+  service is up); stopped, Start takes the settings. The e2e test checks it.
+
 ## 1.17.9 — 2026-11-21
 
 - Android: camex 4.4.1 (`bundles/camex` 0c3e7cb → 7a8834e). The tunnel the app starts by itself
