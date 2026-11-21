@@ -215,6 +215,14 @@ public class MainActivity extends Activity {
         return (flags & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0 ? null : data;
     }
 
+    /**
+     * Whether Save asks for the VPN consent: only when the tunnel starts now, the service up and
+     * the tunnel checked. Asking takes the VPN from another app once the consent is given.
+     */
+    static boolean consentOnSave(boolean serviceUp, boolean tunnelOn) {
+        return serviceUp && tunnelOn;
+    }
+
     /** The system's VPN dialog, once; the service starts the tunnel after OK. */
     private void askConsent() {
         Intent i = CamexTunnel.consentIntent(this);
@@ -509,7 +517,11 @@ public class MainActivity extends Activity {
             // The service first, either way: without the consent it records that and retries,
             // so a declined dialog still leaves the TUNNEL line, the button and the retries
             restartService(vectis);
-            if (tunnelOn.isChecked() && CamexTunnel.consentIntent(this) != null)
+            // Only when the tunnel starts now: with the consent given, asking for it takes the
+            // VPN from the app that holds it, and a stopped vectis would start nothing in its
+            // place (#132). Stopped, Start takes the settings; the service then shows the button
+            if (consentOnSave(VectisService.instance != null, tunnelOn.isChecked())
+                    && CamexTunnel.consentIntent(this) != null)
                 askConsent();             // the tunnel starts after the answer
             update();
         });

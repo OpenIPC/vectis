@@ -17,6 +17,8 @@
 #      60 s retry; A stops: V comes up by itself.
 #   3. A's START (the user) takes the VPN: V waits and takes nothing back past its retry;
 #      V's Stop and Start (the user) take the VPN: A waits; V's Stop: A comes back by itself.
+#   4. Save in the settings of a stopped V (Stop on its screen, then Settings, Save) takes
+#      nothing: A keeps the VPN (#132).
 #
 # Usage: tests/android/vpn-yield-e2e.sh [API]   (API 34 by default)
 #   ANDROID_IMAGE, CROSS_IMAGE, EMULATOR_IMAGE  Docker images
@@ -187,6 +189,62 @@ v_user() {
         $ADB shell am startservice -n $V/.VectisService -a $V.STOP >/dev/null
     fi
 }
+# v_button <n>: tap the n-th visible button of V's screen. uiautomator cannot dump that screen,
+# so the place comes from the view tree of `dumpsys activity top` (offsets added up);
+# 1 Start, 2 Stop, 3 Terminal, 4 Settings
+cat > "$OUT/vbutton.py" <<'EOP'
+import re, sys
+pkg, n = sys.argv[1], int(sys.argv[2])
+found, stack, inside, base, mine = [], [], False, 0, False
+for line in sys.stdin:
+    ind = len(line) - len(line.lstrip())
+    a = re.match(r'\s*ACTIVITY (\S+)/', line)
+    if a:                   # every top activity is listed: the other app's MainActivity too
+        mine, inside = a.group(1) == pkg, False
+        continue
+    if 'DecorView@' in line:
+        inside, base, stack = mine, ind, [(ind, 0, 0, True)]
+        continue
+    m = re.search(r'\{\S+ (\S)\S* \S+ (-?\d+),(-?\d+)-(-?\d+),(-?\d+)', line)
+    if not inside or ind <= base or not m:
+        inside = inside and ind > base
+        continue
+    while stack[-1][0] >= ind:
+        stack.pop()
+    x, y, shown = stack[-1][1:]
+    l, t, r, b = map(int, m.group(2, 3, 4, 5))
+    shown = shown and m.group(1) == 'V'
+    stack.append((ind, x + l, y + t, shown))
+    if shown and line.lstrip().startswith('android.widget.Button{'):
+        found.append((x + (l + r) // 2, y + (t + b) // 2))
+if len(found) >= n:
+    print('%d %d' % found[n - 1])
+EOP
+v_button() {
+    local xy
+    $ADB shell am start -n $V/.MainActivity >/dev/null 2>&1
+    sleep 2
+    xy=$($ADB shell dumpsys activity top | python3 "$OUT/vbutton.py" $V "$1")
+    [ -n "$xy" ] && { $ADB shell input tap $xy; return 0; }
+    echo "no button $1 on the screen of $V"
+    return 1
+}
+# v_dialog <text>: tap a button of V's dialog: over the screen, uiautomator can dump it
+v_dialog() {
+    local xy _
+    for _ in 1 2 3 4 5; do
+        sleep 1
+        $ADB shell rm -f /data/local/tmp/ui.xml
+        $ADB shell uiautomator dump /data/local/tmp/ui.xml >/dev/null 2>&1
+        xy=$($ADB shell cat /data/local/tmp/ui.xml 2>/dev/null | tr '>' '\n' | grep -i "text=\"$1\"" | head -1 |
+            sed -nE 's/.*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1 \2 \3 \4/p' |
+            awk '{ print int(($1 + $3) / 2), int(($2 + $4) / 2) }')
+        [ -n "$xy" ] && { $ADB shell input tap $xy; return 0; }
+    done
+    echo "no $1 in the dialog of $V"
+    $ADB shell screencap -p /data/local/tmp/v.png && $ADB pull /data/local/tmp/v.png /w/v-dialog.png >/dev/null 2>&1
+    return 1
+}
 a_board() {  # the text of A's TUNNEL row
     $ADB shell am start -n $A/.MainActivity >/dev/null 2>&1
     sleep 2
@@ -244,6 +302,24 @@ esac
 v_user STOP
 i=0; until a_board | grep -q CONNECTED; do i=$((i + 1)); [ $i -lt 20 ] || break; done
 a_board | grep -q CONNECTED && ok "V stopped: A came back by itself" || bad "A after V's Stop: $(a_board)"
+
+echo "== 4. Save in the settings of a stopped V takes nothing (#132)"
+v_button 2 || bad "V's Stop not reached"   # the screen's: it clears "running", so V stays stopped
+sleep 3
+$ADB shell run-as $V cat shared_prefs/vectis.xml 2>/dev/null | grep -q 'name="running" value="false"' \
+    && ! $ADB shell dumpsys activity services $V | grep -q ServiceRecord \
+    && ok "V is stopped: its service is gone, running is false" || bad "V is not stopped before its Save"
+i=0; until a_board | grep -q CONNECTED; do i=$((i + 1)); [ $i -lt 20 ] || break; done
+a_board | grep -q CONNECTED && ok "V stopped by its Stop: A holds the VPN" || bad "A before V's Save: $(a_board)"
+$ADB logcat -c
+v_button 4 && v_dialog SAVE && ok "V's settings saved" || bad "V's Save not reached"
+sleep 10
+[ "$(switches)" = 0 ] && ok "V's Save took nothing: no VPN switch" || bad "the VPN switched $(switches) times after V's Save"
+client_up appA && ok "A's tunnel is still up" || bad "A's tunnel went after V's Save"
+case "$(a_board)" in
+    *CONNECTED*) ok "A is still connected";;
+    *) bad "A's board after V's Save: $(a_board)";;
+esac
 
 $ADB logcat -d > "$OUT/logcat.txt" 2>&1 || true
 grep -q 'FATAL EXCEPTION' "$OUT/logcat.txt" && bad "a crash in logcat ($OUT/logcat.txt)" || ok "no crash"

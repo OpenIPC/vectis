@@ -349,4 +349,12 @@ public class LogicTest {
         assertEquals(null, MainActivity.linkToOpen("android.intent.action.MAIN", l, 0));
         assertEquals(null, MainActivity.linkToOpen(view, null, 0));
     }
+
+    @Test
+    public void saveAsksForTheConsentOnlyWhenTheTunnelStarts() {   // #132
+        assertEquals(true, MainActivity.consentOnSave(true, true));
+        assertEquals(false, MainActivity.consentOnSave(false, true));   // stopped: Start asks
+        assertEquals(false, MainActivity.consentOnSave(true, false));
+        assertEquals(false, MainActivity.consentOnSave(false, false));
+    }
 }
