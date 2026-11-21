@@ -82,6 +82,11 @@ public class VectisService extends Service {
     public static final String ACTION_STOP = "org.openipc.vectis.STOP";
     public static final String ACTION_RESTART = "org.openipc.vectis.RESTART";
     public static final String ACTION_USB = "org.openipc.vectis.USB";
+    /**
+     * On START and RESTART: the user asked for it (Start, Save, the VPN consent), so the tunnel
+     * takes the VPN from another app that holds it; without it the tunnel waits for that VPN.
+     */
+    static final String EXTRA_USER = "org.openipc.vectis.USER";
     /** The abstract socket of -U fd:@NAME (at most 27 characters). */
     static final String SOCKET = "org.openipc.vectis.usb";
     /** The abstract socket of --web-local: the web API and terminal for this app. */
@@ -125,11 +130,12 @@ public class VectisService extends Service {
     private int generation;               // guarded by lock: which runLoop is the current one
     private volatile LocalServerSocket server;
     private int bindTries;                // main thread: failed binds of this Start
+    private boolean userStart;            // main thread: the latest START or RESTART was the user's
     /** The one pending bind retry (main thread): a new Start or Stop replaces or cancels it. */
     private final Runnable retryBind = () -> {
         if (Settings.running(this) && !isWanted() && instance == this) {
             bindVectis();
-            startTunnel();
+            startTunnel(userStart);       // the Start it retries: the user's takes the VPN
             updateNotification();
         }
     };
@@ -165,7 +171,14 @@ public class VectisService extends Service {
     };
 
     static void send(Context c, String action) {
+        send(c, action, false);
+    }
+
+    /** As {@link #send(Context, String)}; user: the user asked for it ({@link #EXTRA_USER}). */
+    static void send(Context c, String action, boolean user) {
         Intent i = new Intent(c, VectisService.class).setAction(action);
+        if (user)
+            i.putExtra(EXTRA_USER, true);
         if (action.equals(ACTION_START))
             Compat.startForegroundService(c, i);
         else
@@ -234,7 +247,8 @@ public class VectisService extends Service {
             openAdapter();
             startVectis();
         }
-        startTunnel();
+        userStart = intent != null && intent.getBooleanExtra(EXTRA_USER, false);
+        startTunnel(userStart);
         updateNotification();
         return START_STICKY;
     }
@@ -706,8 +720,18 @@ public class VectisService extends Service {
 
     // ── the camex tunnel ─────────────────────────────────────────
 
-    /** The tunnel of the settings, when it is on; a start refused now is tried again later. */
+    /** A start the app makes by itself: {@link #startTunnel(boolean)} that waits for another VPN. */
     private void startTunnel() {
+        startTunnel(false);
+    }
+
+    /**
+     * The tunnel of the settings, when it is on; a start refused now is tried again later.
+     * user: the user asked for it, so it takes the VPN from another app (CamexTunnel.start);
+     * otherwise it waits while another app's VPN is up (startWhenFree, WAITING), and camex starts
+     * it when that VPN goes away: two apps with a tunnel do not take the VPN from each other.
+     */
+    private void startTunnel(boolean user) {
         main.removeCallbacks(retryTunnel);
         // Settings.running too: a start that arrives after Stop (queued, or a sticky restart)
         // must not bring the tunnel back
@@ -717,10 +741,14 @@ public class VectisService extends Service {
             return;
         }
         Map<String, String> v = Settings.tunnel(this);
-        if (CamexTunnel.running() && v.equals(tunnelValues))
-            return;                       // up with these values: a vectis restart does not cut it
+        // up with these values: a vectis restart does not cut it; waiting with them: the wait
+        // stands, unless the user asks for the tunnel now
+        if (v.equals(tunnelValues) && (CamexTunnel.running()
+                || !user && CamexTunnel.state() == CamexTunnel.State.WAITING))
+            return;
         tunnelValues = v;
-        if (!CamexTunnel.start(this, v))
+        boolean up = user ? CamexTunnel.start(this, v) : CamexTunnel.startWhenFree(this, v);
+        if (!up && CamexTunnel.state() != CamexTunnel.State.WAITING)
             main.postDelayed(retryTunnel, TUNNEL_RETRY_MS);   // no consent yet: adb may give it meanwhile
     }
 
@@ -759,6 +787,8 @@ public class VectisService extends Service {
             t = getString(R.string.tunnel_connecting) + (err.isEmpty() ? "" : " (" + err + ")");
         else if (st == CamexTunnel.State.NEEDS_CONSENT)
             t = getString(R.string.tunnel_needs_consent);
+        else if (st == CamexTunnel.State.WAITING)
+            t = getString(R.string.tunnel_waiting);
         else if (st == CamexTunnel.State.FAILED)
             t = getString(R.string.tunnel_failed, err);
         else

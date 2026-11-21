@@ -1092,6 +1092,13 @@ The box needs no open port and no public address.
   (**CAMEX**), the notification too. The tunnel runs while vectis does
   with remote access on (off, there is no page to offer the server),
   reconnects by itself, and comes back after a reboot with the service.
+- **One VPN at a time** (Android holds one; camex 4.4.1 and later): when
+  another app's VPN is on (Decoder's or Microsnander's tunnel, any VPN),
+  the tunnel the app starts by itself (Start of the service, a reboot, an
+  update, a retry) does not take it: **CAMEX** says `WAITING FOR THE VPN` (amber), and
+  the tunnel comes up by itself when that VPN goes away. **Start**,
+  **Save** in the settings and OK in the VPN dialog are the user's: they
+  take the VPN now, and the other app's tunnel waits in turn.
 - The tunnel puts the box on the server's network: whoever reaches the
   page through nginx, and every client of that network, can use the
   power and the terminal unless the page has a password. Only the web

@@ -12,6 +12,7 @@ make DEBUG=1                  # -g -O0, no strip
 make vectis-bootrom           # the original bridge, not part of `make all`
 make clean                    # run it when switching CC: make compares timestamps only
 python3 tests/test_vectis.py .   # regression tests, Python 3 stdlib only, no hardware
+tests/android/vpn-yield-e2e.sh   # vectis and the camex app on one emulator (Docker, KVM): one VPN at a time
 ```
 
 C99/GNU99, libc + Linux headers only, no libusb. `-Wall -Wextra -Wpedantic` is the
