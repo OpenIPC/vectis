@@ -304,8 +304,11 @@ i=0; until a_board | grep -q CONNECTED; do i=$((i + 1)); [ $i -lt 20 ] || break;
 a_board | grep -q CONNECTED && ok "V stopped: A came back by itself" || bad "A after V's Stop: $(a_board)"
 
 echo "== 4. Save in the settings of a stopped V takes nothing (#132)"
-v_button 2 || true    # Stop: the screen's, so V stays stopped
+v_button 2 || bad "V's Stop not reached"   # the screen's: it clears "running", so V stays stopped
 sleep 3
+$ADB shell run-as $V cat shared_prefs/vectis.xml 2>/dev/null | grep -q 'name="running" value="false"' \
+    && ! $ADB shell dumpsys activity services $V | grep -q ServiceRecord \
+    && ok "V is stopped: its service is gone, running is false" || bad "V is not stopped before its Save"
 i=0; until a_board | grep -q CONNECTED; do i=$((i + 1)); [ $i -lt 20 ] || break; done
 a_board | grep -q CONNECTED && ok "V stopped by its Stop: A holds the VPN" || bad "A before V's Save: $(a_board)"
 $ADB logcat -c
