@@ -221,11 +221,13 @@ if len(found) >= n:
     print('%d %d' % found[n - 1])
 EOP
 v_button() {
-    local xy
+    local xy _
     $ADB shell am start -n $V/.MainActivity >/dev/null 2>&1
-    sleep 2
-    xy=$($ADB shell dumpsys activity top | python3 "$OUT/vbutton.py" $V "$1")
-    [ -n "$xy" ] && { $ADB shell input tap $xy; return 0; }
+    for _ in 1 2 3 4 5; do   # the screen may not be on top yet
+        sleep 2
+        xy=$($ADB shell dumpsys activity top | python3 "$OUT/vbutton.py" $V "$1")
+        [ -n "$xy" ] && { $ADB shell input tap $xy; return 0; }
+    done
     echo "no button $1 on the screen of $V"
     return 1
 }

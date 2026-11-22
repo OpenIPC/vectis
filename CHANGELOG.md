@@ -6,6 +6,15 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.12 — 2026-11-22
+
+- Android: camex 6.0.0 (`bundles/camex` 9b1c7a3 → 3577182, #136). A client with a network name
+  no longer falls back to trust on first contact when the server does not answer CPace, and no
+  longer creates a new network on an open server by itself; joining a network the server knows
+  (the link from the server's setup) is as before. Under load the server may ask for CPace again
+  with a cookie; the library answers it by itself.
+- The e2e test waits for vectis's screen before it looks for a button.
+
 ## 1.17.11 — 2026-11-22
 
 - Android: camex 5.2.1 (`bundles/camex` 7a8834e → 9b1c7a3, #134). The tunnel library is
