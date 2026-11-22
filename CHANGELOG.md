@@ -6,6 +6,12 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.17.11 — 2026-11-22
+
+- Android: camex 5.2.1 (`bundles/camex` 7a8834e → 9b1c7a3, #134). The tunnel library is
+  built with camex's client profile (no server parts); the protocol and the VPN yield are as
+  in 4.4.1.
+
 ## 1.17.10 — 2026-11-21
 
 - Android: Save in the settings no longer takes the VPN from another app while vectis is
