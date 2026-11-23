@@ -115,7 +115,7 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.19.0"
+#define PROGRAM_VERSION      "1.19.1"
 #define PROGRAM_RELEASE_DATE "2026-11-23"
 
 #define RECONNECT_DELAY_S 5
@@ -1420,7 +1420,7 @@ WEB_FONT_FACES
     ".board .r .bulb.none{visibility:hidden}\n"
     ".board .bulb.dim{background:radial-gradient(circle at 40% 35%,#e8d9b8,var(--dim) 45%,#4a3b26)}\n"
     ".board .k{color:var(--dim);letter-spacing:.15em;text-transform:uppercase;font-size:12px}\n"
-    ".board .v{color:var(--ink);letter-spacing:.06em;word-break:break-all;text-transform:uppercase}\n"
+    ".board .v{color:var(--ink);letter-spacing:.06em;overflow-wrap:anywhere;text-transform:uppercase}\n"
     ".board .v.off{color:var(--dim)}\n"
     "@media (max-width:620px){.board{padding:8px 12px;font-size:12px}.board .r{grid-template-columns:20px 74px minmax(0,1fr)}.board .k{font-size:11px;letter-spacing:.1em}}\n"
     ".btns{display:grid;grid-template-columns:repeat(var(--cols,6),1fr);gap:14px;margin-top:24px}\n"
