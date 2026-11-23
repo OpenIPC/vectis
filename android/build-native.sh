@@ -35,11 +35,10 @@ esac
 TC=${ANDROID_NDK_HOME:?ANDROID_NDK_HOME is not set}/toolchains/llvm/prebuilt/$HOST/bin
 [ -d "$TC" ] || { echo "build-native.sh: no NDK toolchain in $TC" >&2; exit 1; }
 
-# The page's brass fonts as C arrays, made here and never committed
-# (web/gen-fonts.sh); next to OUT, not in it: OUT holds only the ABI folders
-GEN=$OUT.gen
-mkdir -p "$GEN"
-sh "$ROOT/web/gen-fonts.sh" "$GEN/webfonts_assets.h"
+# The page's brass fonts as C arrays (web/gen-fonts.sh), made anew on every
+# run and never committed: next to vectis.c, where make puts them too, so
+# #include "webfonts_assets.h" can never pick up a stale copy from there
+sh "$ROOT/web/gen-fonts.sh" "$ROOT/webfonts_assets.h"
 
 for abi in "$@"; do
 	case $abi in
@@ -50,7 +49,7 @@ for abi in "$@"; do
 	esac
 	mkdir -p "$OUT/$abi"
 	"$cc" -std=gnu99 -Wall -Wextra -Wpedantic -Werror -Os -ffunction-sections -fdata-sections \
-		-DVECTIS_USB -DVECTIS_CHIP_CH34X -DVECTIS_FONTS -I"$GEN" \
+		-DVECTIS_USB -DVECTIS_CHIP_CH34X -DVECTIS_FONTS \
 		-o "$OUT/$abi/libvectis.so" \
 		"$ROOT/vectis.c" "$ROOT/usbserial.c" "$ROOT/ch34x.c" \
 		-Wl,--gc-sections -Wl,-z,max-page-size=16384 -s

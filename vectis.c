@@ -1600,6 +1600,12 @@ WEB_FONT_FACES
     "  term.onData(function(d){send(enc.encode(d))});\n"
     "  term.onBinary(function(d){var b=new Uint8Array(d.length);for(var i=0;i<d.length;i++)b[i]=d.charCodeAt(i)&255;send(b)});\n"
     "  addEventListener('resize',function(){if(!body.hidden)fit.fit()});\n"
+    /* xterm measures its cells on open: when Brass Mono comes later (the
+     * terminal restored open at load, a new ?v=), measure again with it.
+     * xterm measures on a changed fontFamily only, hence the added space;
+     * no font loaded (FONTS=0) leaves it as it is. */
+    "  if(document.fonts&&document.fonts.load)document.fonts.load('13px Brass Mono').then(function(f){\n"
+    "   if(!f.length)return;term.options.fontFamily=term.options.fontFamily+' ';if(!body.hidden)fit.fit()},function(){});\n"
     "  connect();return true;\n"
     " }\n"
     " function show(open,keep){\n"
