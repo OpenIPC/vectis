@@ -6,6 +6,12 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.19.1 — 2026-11-23
+
+- Web page: a board value wraps at spaces (brass 1.5.1, #142). With Brass Mono the LAST row
+  broke inside a word at a narrow width ("10 S A" / "GO"): `word-break:break-all` is now
+  `overflow-wrap:anywhere`, so a long value without spaces (a device path) still wraps.
+
 ## 1.19.0 — 2026-11-23
 
 - Web page: the brass fonts (brand's brass 1.5.0, #140). The heading and the buttons are in

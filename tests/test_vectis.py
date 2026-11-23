@@ -790,6 +790,11 @@ def test_web_fonts(tmp):
               "web page: no font outside the --serif/--mono tokens")
         check("font-family:var(--serif)" in css and "font-family:var(--mono)" in css,
               "web page: headings and buttons --serif, the rest --mono")
+        # brass 1.5.1: board values wrap at spaces, a value without any anywhere.
+        board_v = re.search(r"\.board \.v\{[^}]*\}", css)
+        check(board_v is not None and "overflow-wrap:anywhere" in board_v.group(0) and
+              "break-all" not in board_v.group(0),
+              "web page: board values wrap at spaces (overflow-wrap:anywhere)")
         if "@font-face" not in page:
             # make FONTS=0: no fonts served, the fallbacks apply.
             check(http_raw(wport, "/fonts/" + names[0])[0] == 404, "FONTS=0: no /fonts/")
