@@ -3,7 +3,7 @@
 #
 # build.yml — CI for vectis: build vectis (with -U) and vectis-bootrom
 # for Linux targets through the Makefile (any compiler warning fails the
-# job), check that `make USB=0` and `make WEBTERM=0` still build, that
+# job), check that `make USB=0`, `make WEBTERM=0` and `make FONTS=0` still build, that
 # webterm_assets.h matches web/xterm/, and run the regression tests on
 # x86_64; plus the static musl builds the release ships: x86_64
 # (ci/build-static.sh) and soft-float mipsel for OpenWrt routers
@@ -170,6 +170,23 @@ jobs:
           ${{ matrix.platform.run }} ./vectis --version
 
       - name: Regression tests without the web terminal (WEBTERM=0)
+        if: matrix.platform.name == 'x86_64'
+        run: python3 tests/test_vectis.py .
+
+      # make FONTS=0 stays a build option: vectis without the page's brass fonts
+      - name: Build without the brass fonts (FONTS=0)
+        shell: bash
+        run: |
+          make clean
+          make CC=${{ matrix.platform.cross }}gcc STRIP=${{ matrix.platform.cross }}strip \
+               FONTS=0 2>&1 | tee build.log
+          if grep -q 'warning:' build.log; then
+            echo "::error::compiler warnings, see the build log"
+            exit 1
+          fi
+          ${{ matrix.platform.run }} ./vectis --version
+
+      - name: Regression tests without the brass fonts (FONTS=0)
         if: matrix.platform.name == 'x86_64'
         run: python3 tests/test_vectis.py .
 

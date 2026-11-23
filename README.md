@@ -134,7 +134,9 @@ binary; the chip is picked by its USB VID:PID at run time, and `ch34x` is
 the only one so far. `make USB=0` builds `vectis` without `-U` (tty and
 RFC 2217 only). `make WEBTERM=0` builds it without the terminal of the
 web page (no `/ws/terminal`, no built-in xterm.js, about 75 KB smaller);
-the power page stays. `make DEBUG=1` builds
+the power page stays. `make FONTS=0` builds it without the page's fonts
+(about 45 KB smaller; the page then uses the browser's serif and
+monospace). `make DEBUG=1` builds
 with debug symbols and no optimisation instead. `make vectis-bootrom`
 builds the original bridge on demand; `make all` does not.
 
@@ -155,8 +157,8 @@ source and binary timestamps, so a different `CC` alone does not
 rebuild a binary that is already there.
 
 CI builds `vectis` and `vectis-bootrom` for x86_64, arm, aarch64 and
-mipsel on every push and pull request, and checks that `make USB=0` and
-`make WEBTERM=0` build; the binaries are
+mipsel on every push and pull request, and checks that `make USB=0`,
+`make WEBTERM=0` and `make FONTS=0` build; the binaries are
 attached to each run as artifacts. On x86_64 it also runs the regression
 tests, which need only Python 3 and use a pty in place of the serial
 device:
@@ -834,6 +836,14 @@ or the password no longer matches. A page that never opens the terminal takes no
 `vectis` and served by it (`/xterm-5.5.0.js`, `/xterm-5.5.0.css`,
 gzipped, about 70 KB), so the browser needs no internet; `make WEBTERM=0`
 leaves it out.
+
+The page's fonts are served by `vectis` too, so they need no internet
+either: Brass Serif for the heading and the buttons, Brass Mono for the
+rest and the terminal (IBM Plex cut down and renamed, SIL Open Font
+License: `web/fonts/OFL.txt`), at `/fonts/<file>.woff2`, kept by the
+browser for a year (a new `vectis` version asks for them anew). The
+build turns `web/fonts/*.woff2` into C arrays (`web/gen-fonts.sh`);
+`make FONTS=0` leaves them out.
 
 - On connect the terminal first gets the last 64 KB of device output, so
   a boot that started before the page was opened is there.

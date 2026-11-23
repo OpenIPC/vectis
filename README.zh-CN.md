@@ -127,7 +127,8 @@ make
 支持的 USB 芯片系列，它们都链接进同一个二进制文件；运行时按 USB VID:PID
 选择芯片，目前只有 `ch34x`。`make USB=0` 构建不带 `-U` 的 `vectis`（仅 tty
 和 RFC 2217）。`make WEBTERM=0` 构建不带 Web 页面终端的版本（没有
-`/ws/terminal` 和内置的 xterm.js，约小 75 KB）；电源页面仍然保留。`make DEBUG=1` 则构建
+`/ws/terminal` 和内置的 xterm.js，约小 75 KB）；电源页面仍然保留。`make FONTS=0`
+构建不带页面字体的版本（约小 45 KB；页面改用浏览器的衬线和等宽字体）。`make DEBUG=1` 则构建
 带调试符号、不做优化的版本。`make vectis-bootrom`
 按需构建原始的桥接程序；`make all` 不会构建它。
 
@@ -147,8 +148,8 @@ make CC=aarch64-linux-gnu-gcc STRIP=aarch64-linux-gnu-strip
 时间戳，仅更换 `CC` 不会重新构建已存在的二进制文件。
 
 每次 push 和 pull request 时，CI 都会为 x86_64、arm、aarch64 和 mipsel
-构建 `vectis` 和 `vectis-bootrom`，并检查 `make USB=0` 和 `make WEBTERM=0`
-能否构建；生成的二进制文件作为
+构建 `vectis` 和 `vectis-bootrom`，并检查 `make USB=0`、`make WEBTERM=0` 和
+`make FONTS=0` 能否构建；生成的二进制文件作为
 构建产物附加在每次运行上。在 x86_64 上 CI 还会运行回归测试：测试只需要
 Python 3，并用 pty 代替串口设备：
 
@@ -794,6 +795,12 @@ RESET 按钮点亮、标签页标题显示 `Resetting`，日志行中会注明
 不再匹配。从未展开终端的页面不占用服务器上的终端。它是 [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0，内置于
 `vectis` 并由其自身提供（`/xterm-5.5.0.js`、`/xterm-5.5.0.css`，gzip 压缩，
 约 70 KB），因此浏览器无需访问互联网；`make WEBTERM=0` 不包含它。
+
+页面的字体同样由 `vectis` 自己提供，也无需互联网：标题和按钮使用 Brass Serif，
+其余文字和终端使用 Brass Mono（经过精简并改名的 IBM Plex，SIL Open Font
+License：`web/fonts/OFL.txt`），地址为 `/fonts/<文件>.woff2`，浏览器缓存一年
+（新版本的 `vectis` 会重新请求）。构建时把 `web/fonts/*.woff2` 转成 C 数组
+（`web/gen-fonts.sh`）；`make FONTS=0` 不包含它们。
 
 - 连接时终端首先收到设备最近 64 KB 的输出，因此在打开页面之前就已开始的
   启动过程也能看到。

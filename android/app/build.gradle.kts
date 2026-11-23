@@ -44,6 +44,8 @@ val buildNative by tasks.registering(Exec::class) {
     inputs.files(rootProject.files("../vectis.c", "../usbserial.c", "../usbserial.h", "../ch34x.c",
                                   "../webterm_assets.h"))
     inputs.file(rootProject.file("build-native.sh"))
+    inputs.dir(rootProject.file("../web/fonts"))          // the page's brass fonts (web/gen-fonts.sh)
+    inputs.file(rootProject.file("../web/gen-fonts.sh"))
     inputs.property("abis", vectisAbis)   // another ABI list must rebuild
     outputs.dir(nativeOut)
     commandLine(listOf("sh", rootProject.file("build-native.sh").path,
