@@ -988,7 +988,9 @@ Microsnander 相同：盒子连接到 camex 服务器，操作员可以在任何
 
 - **Settings → CAMEX**：勾选“Join a camex server”，填写服务器（`host:port`）、
   客户端名称（默认为 `vectis-` 加盒子 ANDROID_ID 的最后四个字符）、Proto（默认
-  UDP）、服务器公钥和预共享密钥（隐藏；**Show the key** 可显示）。字段、标签和
+  UDP）、服务器公钥和预共享密钥（隐藏；**Show the key** 可显示）。对于服务器上的
+  命名网络：填写网络名称，并且仅当服务器上的该网络设置了选择器时才填写选择器
+  （camex 6.1.0 或更高版本；链接中的 `e=`）；留空则不产生任何影响。字段、标签和
   提示来自 camex 库，所有应用都相同。或者在盒子上打开
   camex 的 `install.sh` 打印的链接（`https://openipc.github.io/camex/connect/#…`
   或 `camex://connect?…`）：设置会以已填好、已勾选隧道的状态打开。

@@ -1073,8 +1073,11 @@ The box needs no open port and no public address.
   server (`host:port`), the client name (`vectis-` and the last four
   characters of the box's ANDROID_ID by default), the proto (UDP by
   default), the server's public key and the pre-shared key (hidden;
-  **Show the key** shows it). The fields, their labels and hints come
-  from the camex library, the same in every app. Or open the link that camex's
+  **Show the key** shows it). For a named network on the server: its
+  name and, only when the server's network sets one, its selector
+  (camex 6.1.0 and later; the link's `e=`); empty, it changes nothing.
+  The fields, their labels and hints come from the camex library, the
+  same in every app. Or open the link that camex's
   `install.sh` prints (`https://openipc.github.io/camex/connect/#…`, or
   `camex://connect?…`) on the box: the settings open filled in, with the
   tunnel ticked.

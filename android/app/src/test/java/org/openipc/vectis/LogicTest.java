@@ -337,6 +337,7 @@ public class LogicTest {
         assertTrue(k.contains(org.openipc.camex.tunnel.CamexTunnel.SERVER));
         assertTrue(k.contains(org.openipc.camex.tunnel.CamexTunnel.PSK));
         assertTrue(k.contains(org.openipc.camex.tunnel.CamexTunnel.TRANSPORT));
+        assertTrue(k.contains(org.openipc.camex.tunnel.CamexTunnel.SELECTOR));   // camex 6.2.0
         assertTrue(!k.contains(org.openipc.camex.tunnel.CamexTunnel.WEB_PORT));
     }
 

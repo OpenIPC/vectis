@@ -6,6 +6,13 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.18.0 — 2026-11-23
+
+- Android: camex 6.2.0 (`bundles/camex` 3577182 → 16c29dc, #138). The camex settings get the
+  field **Network selector** after the network name: needed only when the server's network sets
+  `selector=` (camex 6.1.0), then the server answers CPace only for it; empty, nothing changes.
+  A connect link carries it as `e=` and fills it in.
+
 ## 1.17.12 — 2026-11-22
 
 - Android: camex 6.0.0 (`bundles/camex` 9b1c7a3 → 3577182, #136). A client with a network name
