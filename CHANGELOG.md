@@ -6,6 +6,16 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.19.0 — 2026-11-23
+
+- Web page: the brass fonts (brand's brass 1.5.0, #140). The heading and the buttons are in
+  Brass Serif (IBM Plex Serif Bold), the rest and the web terminal in Brass Mono (IBM Plex Mono),
+  served by vectis itself at `/fonts/<file>.woff2` (`font/woff2`, cached a year; the page asks
+  with `?v=<version>`), so the page needs no internet. The fonts and their licence are in
+  `web/fonts/` (`OFL.txt`); the build turns them into C arrays (`web/gen-fonts.sh`, not
+  committed). `make FONTS=0` leaves them out (about 45 KB): the page then uses the fallbacks.
+  The CSS names fonts only through the `--serif` and `--mono` tokens.
+
 ## 1.18.0 — 2026-11-23
 
 - Android: camex 6.2.0 (`bundles/camex` 3577182 → 16c29dc, #138). The camex settings get the

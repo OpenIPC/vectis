@@ -115,7 +115,7 @@
 #define CPC_STOP_1   1
 #define CPC_STOP_2   2
 
-#define PROGRAM_VERSION      "1.18.0"
+#define PROGRAM_VERSION      "1.19.0"
 #define PROGRAM_RELEASE_DATE "2026-11-23"
 
 #define RECONNECT_DELAY_S 5
@@ -1298,6 +1298,7 @@ static int on_stdin_eof(void)
  *
  *   GET  /ws/terminal    -> WebSocket: the UART terminal (see "Web terminal")
  *   GET  /xterm-*.js|css -> xterm.js for the page, gzipped (WEBTERM builds)
+ *   GET  /fonts/<file>   -> the page's brass fonts, woff2 (FONTS builds)
  *
  * The buttons act on the very same transport the terminal session uses,
  * so the web page and the keyboard drive the device side by side.
@@ -1360,6 +1361,23 @@ static void wt_shutdown(void);
 #define WT_ASSET_CSS "/xterm-5.5.0.css"
 #endif
 
+/* The page's fonts (brand's brass 1.5.0, web/fonts/OFL.txt): Brass Serif
+ * for the heading and the buttons, Brass Mono for the rest and the
+ * terminal.  `make FONTS=0` (no -DVECTIS_FONTS), or a build without the
+ * generated webfonts_assets.h, leaves them out: the page then has no
+ * @font-face and the --serif/--mono fallbacks apply.  The ?v= is the
+ * version, so a new vectis gets the fonts anew despite the year-long cache. */
+#ifdef VECTIS_FONTS
+#include "webfonts_assets.h"  /* web_fonts[]: web/gen-fonts.sh, at build time */
+#define WEB_FONT_URL(f) "url(fonts/" f "?v=" PROGRAM_VERSION ") format('woff2')"
+#define WEB_FONT_FACES \
+    "@font-face{font-family:'Brass Serif';src:" WEB_FONT_URL("BrassSerif-Bold.woff2") ";font-weight:100 900;font-display:swap}\n" \
+    "@font-face{font-family:'Brass Mono';src:" WEB_FONT_URL("BrassMono-Regular.woff2") ";font-weight:400;font-display:swap}\n" \
+    "@font-face{font-family:'Brass Mono';src:" WEB_FONT_URL("BrassMono-Bold.woff2") ";font-weight:700;font-display:swap}\n"
+#else
+#define WEB_FONT_FACES ""
+#endif
+
 /* The page: HTML, CSS and JS in one document, written with single quotes
  * only so it embeds as plain string lines (one source line per HTML line,
  * "\n" terminated).  Keep the heading "Vectis Web Server" at the top. */
@@ -1374,19 +1392,21 @@ static const char web_page[] =
     "<title>Vectis</title>\n"
     "<link rel='icon' id='icon' type='image/svg+xml' href='data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%276.5%27 stroke=%27%236e5320%27 fill=%27%23b09873%27/%3E%3C/svg%3E'>\n"
     "<style>\n"
-    ":root{--panel:#2c2119;--panel2:#3d2d22;--brass:#c9a24d;--brass2:#8c6a2a;--amber:#ffb347;--ember:#ff6a1a;--ink:#e8d9b8;--dim:#b09873;--red:#c8452c;--green:#5ad38f;--foot:#a08a69}\n"
+WEB_FONT_FACES
+    ":root{--serif:'Brass Serif',Georgia,'Times New Roman',serif;--mono:'Brass Mono','Courier New',monospace;--panel:#2c2119;--panel2:#3d2d22;--brass:#c9a24d;--brass2:#8c6a2a;--amber:#ffb347;--ember:#ff6a1a;--ink:#e8d9b8;--dim:#b09873;--red:#c8452c;--green:#5ad38f;--foot:#a08a69}\n"
     "*{box-sizing:border-box}\n"
-    "body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 50% 0,#3b2c22 0,#1a1512 55%,#0f0b09 100%);color:var(--ink);font-family:Georgia,'Times New Roman',serif;display:flex;flex-direction:column;align-items:center;padding:28px 12px}\n"
+    "body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 50% 0,#3b2c22 0,#1a1512 55%,#0f0b09 100%);color:var(--ink);font-family:var(--mono);display:flex;flex-direction:column;align-items:center;padding:28px 12px}\n"
+    "h1,h2,h3{font-family:var(--serif)}\n"
     "h1{font-size:clamp(22px,4.5vw,40px);letter-spacing:.2em;text-transform:uppercase;margin:0 0 6px;text-align:center;color:var(--brass);text-shadow:0 1px 0 #f3d78a,0 -1px 0 #3d2a0c,0 0 22px rgba(201,162,77,.35)}\n"
-    ".sub{font-family:'Courier New',monospace;font-size:12px;color:var(--dim);letter-spacing:.3em;text-transform:uppercase;margin-bottom:24px;text-align:center}\n"
+    ".sub{font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.3em;text-transform:uppercase;margin-bottom:24px;text-align:center}\n"
     /* The title centred, the version number alone beside it (brass 1.3.0). */
     ".ttl{position:relative;display:inline-block}\n"
-    ".ttl .ver{position:absolute;left:100%;bottom:.24em;margin-left:.6em;font:12px/1 'Courier New',monospace;letter-spacing:.12em;color:var(--dim);text-shadow:none;white-space:nowrap}\n"
+    ".ttl .ver{position:absolute;left:100%;bottom:.24em;margin-left:.6em;font:12px/1 var(--mono);letter-spacing:.12em;color:var(--dim);text-shadow:none;white-space:nowrap}\n"
     "@media (max-width:620px){.ttl .ver{bottom:.1em}.sub .br{display:block}}\n"
     ".panel{position:relative;width:min(1000px,100%);background:linear-gradient(180deg,var(--panel2),var(--panel));border:3px solid var(--brass2);border-radius:16px;box-shadow:inset 0 0 0 2px #1a1210,inset 0 0 50px rgba(0,0,0,.6),0 24px 48px rgba(0,0,0,.65);padding:30px 24px 24px}\n"
     ".rivet{position:absolute;width:14px;height:14px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#f1d38b,#8c6a2a 60%,#3a2a10);box-shadow:0 1px 2px #000,inset 0 -1px 1px rgba(0,0,0,.5)}\n"
     ".rivet.tl{top:8px;left:8px}.rivet.tr{top:8px;right:8px}.rivet.bl{bottom:8px;left:8px}.rivet.br{bottom:8px;right:8px}\n"
-    ".plate{font-family:'Courier New',monospace;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:#2a1c10;background:linear-gradient(180deg,#e2c377,#a88237);border:1px solid #5b4416;border-radius:4px;padding:4px 10px;display:inline-block;box-shadow:inset 0 1px 0 #fbe6a8,0 1px 2px #000}\n"
+    ".plate{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:#2a1c10;background:linear-gradient(180deg,#e2c377,#a88237);border:1px solid #5b4416;border-radius:4px;padding:4px 10px;display:inline-block;box-shadow:inset 0 1px 0 #fbe6a8,0 1px 2px #000}\n"
     ".top{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}\n"
     ".bulb{width:18px;height:18px;border-radius:50%;border:2px solid #6e5320;background:#2a2118;box-shadow:inset 0 0 6px #000;transition:background .3s,box-shadow .3s}\n"
     ".bulb.on{background:radial-gradient(circle at 40% 35%,#fff3c4,var(--amber) 45%,#a24d0a);box-shadow:0 0 14px var(--amber),0 0 30px rgba(255,179,71,.45)}\n"
@@ -1394,7 +1414,7 @@ static const char web_page[] =
     ".bulb.bad{background:radial-gradient(circle at 40% 35%,#ffd0c4,var(--red) 45%,#5a1a0e);box-shadow:0 0 14px var(--red);animation:blink 1.2s infinite}\n"
     "@keyframes blink{50%{box-shadow:0 0 2px var(--red)}}\n"
     /* The lamp board: a row per state, each with its own lamp (brass 1.3.0). */
-    ".board{margin-top:18px;padding:10px 16px;border:2px solid #574123;border-radius:8px;background:#120d0a;box-shadow:inset 0 0 20px rgba(0,0,0,.8);font-family:'Courier New',monospace;font-size:14px}\n"
+    ".board{margin-top:18px;padding:10px 16px;border:2px solid #574123;border-radius:8px;background:#120d0a;box-shadow:inset 0 0 20px rgba(0,0,0,.8);font-family:var(--mono);font-size:14px}\n"
     ".board .r{display:grid;grid-template-columns:22px 120px minmax(0,1fr);align-items:center;padding:5px 0;gap:0 6px}\n"
     ".board .r .bulb{width:14px;height:14px;border-width:1px}\n"
     ".board .r .bulb.none{visibility:hidden}\n"
@@ -1405,7 +1425,7 @@ static const char web_page[] =
     "@media (max-width:620px){.board{padding:8px 12px;font-size:12px}.board .r{grid-template-columns:20px 74px minmax(0,1fr)}.board .k{font-size:11px;letter-spacing:.1em}}\n"
     ".btns{display:grid;grid-template-columns:repeat(var(--cols,6),1fr);gap:14px;margin-top:24px}\n"
     "@media (max-width:620px){.btns{grid-template-columns:repeat(2,1fr)}.btns.row{grid-template-columns:repeat(var(--cols,3),1fr)}.btns.row .btn{font-size:13px;letter-spacing:.1em}}\n"
-    ".btn{position:relative;border:0;cursor:pointer;font-family:Georgia,'Times New Roman',serif;font-size:15px;letter-spacing:.22em;text-transform:uppercase;color:#2a1c10;padding:18px 8px 14px;border-radius:12px;background:linear-gradient(180deg,#e9cd84,#b08b3c 55%,#7c5c1f);box-shadow:0 7px 0 #4a3510,0 12px 20px rgba(0,0,0,.6),inset 0 1px 0 #fff1c0;transition:transform .1s,box-shadow .1s,filter .2s}\n"
+    ".btn{position:relative;border:0;cursor:pointer;font-family:var(--serif);font-size:15px;letter-spacing:.22em;text-transform:uppercase;color:#2a1c10;padding:18px 8px 14px;border-radius:12px;background:linear-gradient(180deg,#e9cd84,#b08b3c 55%,#7c5c1f);box-shadow:0 7px 0 #4a3510,0 12px 20px rgba(0,0,0,.6),inset 0 1px 0 #fff1c0;transition:transform .1s,box-shadow .1s,filter .2s}\n"
     ".btn:hover{filter:brightness(1.07)}\n"
     ".btn.pressed{transform:translateY(6px);box-shadow:0 1px 0 #4a3510,0 3px 6px rgba(0,0,0,.6),inset 0 1px 0 #fff1c0}\n"
     ".btn .ind{display:block;margin:10px auto 0;width:12px;height:12px;border-radius:50%;background:#3b2a12;border:1px solid #241806;box-shadow:inset 0 0 4px #000;transition:background .3s,box-shadow .3s}\n"
@@ -1419,8 +1439,8 @@ static const char web_page[] =
     ".btn.reset.engaged .gear{opacity:1;animation:spin 1s linear infinite}\n"
     "@keyframes spin{to{transform:rotate(360deg)}}\n"
     "@media (prefers-reduced-motion:reduce){.bulb.bad,.btn.reset.engaged .ind,.btn.reset.engaged .gear{animation:none}}\n"
-    ".log{font-family:'Courier New',monospace;font-size:12px;color:var(--dim);margin-top:18px;min-height:16px;letter-spacing:.08em}\n"
-    ".foot{margin-top:18px;font-family:'Courier New',monospace;font-size:11px;color:var(--foot);letter-spacing:.2em;text-transform:uppercase;text-align:center}\n"
+    ".log{font-family:var(--mono);font-size:12px;color:var(--dim);margin-top:18px;min-height:16px;letter-spacing:.08em}\n"
+    ".foot{margin-top:18px;font-family:var(--mono);font-size:11px;color:var(--foot);letter-spacing:.2em;text-transform:uppercase;text-align:center}\n"
 #ifdef VECTIS_WEBTERM
     /* The terminal: a bar that opens a section in the same panel (#105). */
     ".tbar{display:flex;align-items:center;gap:12px;width:100%;margin-top:22px;padding:10px 14px;border:1px solid #574123;border-radius:10px;background:rgba(0,0,0,.25);box-shadow:inset 0 2px 8px rgba(0,0,0,.6);color:var(--dim);font:inherit;cursor:pointer;text-align:left}\n"
@@ -1574,6 +1594,7 @@ static const char web_page[] =
     " function start(){\n"
     "  if(!window.Terminal||!window.FitAddon){lost('No xterm');return false}\n"
     "  term=new Terminal({cursorBlink:true,convertEol:true,fontSize:13,scrollback:5000,\n"
+    "    fontFamily:getComputedStyle(document.documentElement).getPropertyValue('--mono').trim(),\n"
     "   theme:{background:'#120d0a',foreground:'#e8d9b8',cursor:'#ffb347',cursorAccent:'#120d0a',selectionBackground:'rgba(201,162,77,.4)'}});\n"
     "  fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open($('term'));\n"
     "  term.onData(function(d){send(enc.encode(d))});\n"
@@ -2829,6 +2850,22 @@ static void web_process_request(struct web_client *c, size_t hdr_len)
         web_power_action(c, path + 7);
         return;
     }
+#ifdef VECTIS_FONTS
+    if (strncmp(path, "/fonts/", 7) == 0) {
+        /* The page's fonts: any ?v= (a version for the cache), kept a year. */
+        for (size_t i = 0; i < sizeof web_fonts / sizeof web_fonts[0]; i++) {
+            if (strcmp(path + 7, web_fonts[i].name) != 0)
+                continue;
+            if (!is_get && !is_head) {
+                web_reply(c, 405, "Method Not Allowed", "text/plain", WEB_TEXT("GET only\n"), 0);
+                return;
+            }
+            web_reply_static(c, "font/woff2", NULL, "max-age=31536000, immutable",
+                             web_fonts[i].data, web_fonts[i].len, is_head);
+            return;
+        }
+    }
+#endif
 #ifdef VECTIS_WEBTERM
     if (strcmp(path, "/ws/terminal") == 0) {
         web_terminal(c, hdr_len, is_get, q ? q + 1 : NULL);

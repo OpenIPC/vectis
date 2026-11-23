@@ -769,6 +769,48 @@ def test_web_terminal(tmp):
           "the log names opened, dropped and refused terminals")
 
 
+def test_web_fonts(tmp):
+    """The page's brass fonts: served by vectis as the files of web/fonts, in
+    CSS only through the --serif/--mono tokens (FONTS=0: none of it)."""
+    print("== web page fonts (/fonts/*.woff2)")
+    fonts = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "web", "fonts")
+    names = sorted(f for f in os.listdir(fonts) if f.endswith(".woff2"))
+    dev = FakeDevice(os.path.join(tmp, "dev-wf"))
+    wport = free_port()
+    p, log = start_quiet([VECTIS, "-u", dev.link, "-w", "127.0.0.1:%d" % wport, "-n"],
+                         os.path.join(tmp, "wf.log"))
+    try:
+        check(wait_listen(wport), "web up")
+        page = http_raw(wport, "/")[2].decode()
+        css = page[page.index("<style>"):page.index("</style>")]
+        # Font names only in the tokens and the @font-face rules.
+        rest = "\n".join(l for l in css.splitlines()
+                         if not l.startswith(":root{") and not l.startswith("@font-face"))
+        check(not re.search(r"Georgia|Courier|serif[;}]|monospace", rest),
+              "web page: no font outside the --serif/--mono tokens")
+        check("font-family:var(--serif)" in css and "font-family:var(--mono)" in css,
+              "web page: headings and buttons --serif, the rest --mono")
+        if "@font-face" not in page:
+            # make FONTS=0: no fonts served, the fallbacks apply.
+            check(http_raw(wport, "/fonts/" + names[0])[0] == 404, "FONTS=0: no /fonts/")
+            return
+        ver = wait_status(wport, "link", "online").get("version")
+        for name in names:
+            check("url(fonts/%s?v=%s)" % (name, ver) in page,
+                  "web page: @font-face asks for fonts/%s?v=%s" % (name, ver))
+            with open(os.path.join(fonts, name), "rb") as f:
+                want = f.read()
+            code, hdr, body = http_raw(wport, "/fonts/%s?v=%s" % (name, ver))
+            check(code == 200 and body == want and hdr.get("Content-Type") == "font/woff2" and
+                  hdr.get("Cache-Control") == "max-age=31536000, immutable",
+                  "/fonts/%s: the file's %d bytes, font/woff2, cached a year" % (name, len(want)))
+        check(http_raw(wport, "/fonts/OFL.txt")[0] == 404 and
+              http_raw(wport, "/fonts/../vectis.c")[0] == 404, "/fonts/: only the fonts")
+    finally:
+        stop_quiet(p, log)
+        dev.unplug()
+
+
 def test_web_terminal_closed(tmp):
     print("== web terminal: the bar shows the terminal's own link (brass 1.4.2)")
     dev = FakeDevice(os.path.join(tmp, "dev-wtc"))
@@ -1269,6 +1311,7 @@ def main():
         idle = threading.Thread(target=test_web_terminal_idle, args=(tmp, idle_results))
         idle.start()
         test_web_terminal(tmp)
+        test_web_fonts(tmp)
         test_web_terminal_closed(tmp)
         test_web_password(tmp)
         test_web_local(tmp)
