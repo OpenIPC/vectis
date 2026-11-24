@@ -6,6 +6,13 @@ rebuilt from every push to `master`; this file is the change history. Versions
 up to 1.3.2 are those of the original UART bridge, now `vectis-bootrom.c`; from 1.6.0 on,
 `vectis` is the former `vectis-cli`.
 
+## 1.20.0 — 2026-11-24
+
+- Android: the brass fonts on the app's screens (brand's brass 1.5.1, #144). Headings, section
+  bands and buttons are in Brass Serif, everything else (the board, labels, fields, check boxes,
+  the log, the terminal) in Brass Mono, from the APK (`assets/fonts/`, with `OFL.txt`), so the
+  app looks the same on every firmware.
+
 ## 1.19.1 — 2026-11-23
 
 - Web page: a board value wraps at spaces (brass 1.5.1, #142). With Brass Mono the LAST row

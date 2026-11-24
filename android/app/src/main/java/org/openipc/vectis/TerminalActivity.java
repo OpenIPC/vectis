@@ -17,7 +17,6 @@
 package org.openipc.vectis;
 
 import android.app.Activity;
-import android.graphics.Typeface;
 import android.hardware.usb.UsbDevice;
 import android.net.LocalSocket;
 import android.os.Bundle;
@@ -155,7 +154,6 @@ public class TerminalActivity extends Activity {
         out.setBackground(null);          // the scroll view carries the display
         out.setTextSize(12);
         out.setTextColor(Brass.color(this, R.color.ink));
-        out.setTypeface(Typeface.MONOSPACE);
         scroll = new ScrollView(this);
         scroll.setBackgroundResource(R.drawable.display);
         scroll.addView(out);
@@ -169,7 +167,6 @@ public class TerminalActivity extends Activity {
         line.setGravity(Gravity.CENTER_VERTICAL);
         input = new EditText(this);
         input.setSingleLine(true);
-        input.setTypeface(Typeface.MONOSPACE);
         input.setHint(R.string.term_hint);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         input.setImeOptions(EditorInfo.IME_ACTION_SEND);
@@ -194,6 +191,7 @@ public class TerminalActivity extends Activity {
         key(keys, R.string.term_off, v -> power("disable", R.string.term_off));
         page.addView(keys);
 
+        Brass.fonts(page);
         setContentView(page);
         // Mostly read: the keyboard comes up only when the input line is clicked
         scroll.setFocusable(true);
@@ -202,7 +200,8 @@ public class TerminalActivity extends Activity {
 
     private void key(LinearLayout row, int text, View.OnClickListener l) {
         Button b = Brass.button(this, text);
-        b.setLetterSpacing(0.08f);         // four in a row: PWR OFF fits on a phone
+        b.setTextSize(12);                 // four in a row: PWR OFF fits on a phone (Brass Serif is wide)
+        b.setLetterSpacing(0.02f);
         b.setPadding(0, b.getPaddingTop(), 0, b.getPaddingBottom());
         b.setOnClickListener(l);
         row.addView(b, Brass.margins(this, 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));

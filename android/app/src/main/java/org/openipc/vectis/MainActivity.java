@@ -25,7 +25,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.graphics.Typeface;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
 import android.os.Build;
@@ -178,6 +177,7 @@ public class MainActivity extends Activity {
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(page);
+        Brass.fonts(scroll);
         setContentView(scroll);
         if (Build.VERSION.SDK_INT >= 33)
             requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 1);
@@ -348,7 +348,6 @@ public class MainActivity extends Activity {
         box.addView(t);
         EditText e = new EditText(this);
         e.setText(value);
-        e.setTypeface(Typeface.MONOSPACE);
         box.addView(e);
         return e;
     }
@@ -414,12 +413,10 @@ public class MainActivity extends Activity {
             } else {
                 EditText e = new EditText(this);
                 e.setSingleLine(true);
-                e.setTypeface(Typeface.MONOSPACE);
                 boolean secret = f.kind == Field.Kind.SECRET;
                 // the key hidden, with Show the key under it; the rest shown as typed
                 e.setInputType(InputType.TYPE_CLASS_TEXT | (secret ? InputType.TYPE_TEXT_VARIATION_PASSWORD
                         : InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
-                e.setTypeface(Typeface.MONOSPACE);   // setInputType resets it for a password
                 if (!f.hint.isEmpty())
                     e.setHint(f.hint);
                 e.setText(value == null ? "" : value);
@@ -433,7 +430,7 @@ public class MainActivity extends Activity {
                         int at = e.getSelectionEnd();
                         e.setInputType(InputType.TYPE_CLASS_TEXT | (on ? InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
                                 : InputType.TYPE_TEXT_VARIATION_PASSWORD));
-                        e.setTypeface(Typeface.MONOSPACE);
+                        e.setTypeface(Brass.mono(this));   // setInputType resets it
                         e.setSelection(Math.max(0, Math.min(at, e.length())));
                     });
                     box.addView(show);
@@ -464,6 +461,7 @@ public class MainActivity extends Activity {
                     (int) (dm.heightPixels * 0.9));
         }
         styleFields(box);
+        Brass.fonts(frame);               // after the fields have their input types
         d.show();
         cancel.setOnClickListener(v -> d.dismiss());
         // Save checks the fields first: the window stays with what is wrong

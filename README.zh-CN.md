@@ -1035,7 +1035,8 @@ camex --mode client --auto --server-host camex.example.org --port 5800 \
 和 Gradle 8：先 `git submodule update --init`（camex，`bundles/camex`），
 再 `cd android && gradle assembleDebug`；APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`。
 `gradle testDebugUnitTest` 无需设备即可运行应用逻辑（设置、命令行和密码、日志、
-终端文本和 WebSocket 帧）的测试。
+终端文本和 WebSocket 帧）的测试，并校验字体。应用界面使用与网页相同的字体，
+由 APK 自带（`android/app/src/main/assets/fonts`，附 `OFL.txt`）。
 `android/build-native.sh` 用 NDK 为应用构建 vectis，生成名为 `libvectis.so`
 的可执行文件。已在 Android 10 电视盒（32 位 ARM，无 root）上用 CH340 验证。
 
