@@ -1134,7 +1134,9 @@ and Gradle 8: `git submodule update --init` (camex, `bundles/camex`),
 then `cd android && gradle assembleDebug`; the APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
 `gradle testDebugUnitTest` runs the tests of the app's logic (settings,
 command line and password, log, the terminal's text and WebSocket
-frames) without a device.
+frames) and checks the fonts, without a device. The screens use the
+same fonts as the page, from the APK (`android/app/src/main/assets/fonts`,
+with `OFL.txt`).
 `android/build-native.sh` builds vectis for the app with the NDK, as an
 executable named `libvectis.so`. Checked on an Android 10 TV box (32-bit
 ARM, no root) with a CH340.

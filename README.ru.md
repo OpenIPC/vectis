@@ -1137,8 +1137,9 @@ camex --mode client --auto --server-host camex.example.org --port 5800 \
 Gradle 8: `git submodule update --init` (camex, `bundles/camex`), затем
 `cd android && gradle assembleDebug`; APK — `android/app/build/outputs/apk/debug/app-debug.apk`.
 `gradle testDebugUnitTest` запускает тесты логики приложения (настройки,
-командная строка и пароль, журнал, текст терминала и кадры WebSocket) без
-устройства.
+командная строка и пароль, журнал, текст терминала и кадры WebSocket) и
+проверяет шрифты, без устройства. Экраны приложения — теми же шрифтами, что
+и страница, из APK (`android/app/src/main/assets/fonts`, с `OFL.txt`).
 `android/build-native.sh` собирает vectis для приложения через NDK как
 исполняемый файл с именем `libvectis.so`. Проверено на ТВ-приставке с
 Android 10 (32-битный ARM, без root) и CH340.

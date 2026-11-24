@@ -67,7 +67,8 @@ change that can be exercised without hardware.
   `bundles/camex` (pinned to a camex release; `git submodule update --init`), its tunnel
   library as `:camex-tunnel`, started and stopped with vectis by the service
   (`startTunnel()`), its settings in `Settings.tunnel*`. Version from `PROGRAM_VERSION`. Build: `cd android && gradle assembleDebug`;
-  tests of the device-free logic: `gradle testDebugUnitTest` (`android/app/src/test`).
+  screens use brand's brass faces from `assets/fonts` (byte for byte, SHA-256 in `LogicTest`;
+  `Brass.fonts()` sets them, only `Brass.java` names system faces); tests of the device-free logic: `gradle testDebugUnitTest` (`android/app/src/test`).
 - `tests/test_vectis.py`, `ci/`, `.github/workflows/{build,version}.yml`,
   `.github/check-version.sh`.
 

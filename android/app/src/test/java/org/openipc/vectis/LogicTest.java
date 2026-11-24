@@ -13,7 +13,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -357,5 +360,32 @@ public class LogicTest {
         assertEquals(false, MainActivity.consentOnSave(false, true));   // stopped: Start asks
         assertEquals(false, MainActivity.consentOnSave(true, false));
         assertEquals(false, MainActivity.consentOnSave(false, false));
+    }
+
+    @Test
+    public void brassFontsAreBrands() throws Exception {   // #144: brand's brass/fonts/SHA256SUMS
+        Map<String, String> sums = new HashMap<>();
+        sums.put("OFL.txt", "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da");
+        sums.put("BrassMono-Bold.ttf", "190657fa835af45738bcad97b968dde8148ca0e854c1e8737d518919f2394544");
+        sums.put("BrassMono-Regular.ttf", "e139010955613c1a95467f4fa403bd158b5a608855b4eeac7643e0f635256749");
+        sums.put("BrassSerif-Bold.ttf", "3d0968d62ec97a044c651bbd86b74974e02452be1522bfd4ddc7e4b50bf30bfc");
+        File dir = new File("src/main/assets/fonts");
+        assertEquals(sums.size(), dir.list().length);
+        for (Map.Entry<String, String> e : sums.entrySet()) {
+            byte[] h = MessageDigest.getInstance("SHA-256")
+                    .digest(Files.readAllBytes(new File(dir, e.getKey()).toPath()));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : h)
+                hex.append(String.format("%02x", b));
+            assertEquals(e.getKey(), e.getValue(), hex.toString());
+        }
+    }
+
+    @Test
+    public void systemFacesAreOnlyFallbacks() throws Exception {   // #144: Brass.java alone names them
+        for (File f : new File("src/main/java/org/openipc/vectis").listFiles())
+            if (!f.getName().equals("Brass.java"))
+                assertFalse(f.getName(), new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8)
+                        .contains("Typeface."));
     }
 }
